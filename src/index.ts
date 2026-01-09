@@ -33,7 +33,7 @@ import {
 } from './review/index.js';
 import { detectRefType } from './git/ref.js';
 import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './config/store.js';
-import type { PreviousReviewData } from './review/types.js';
+import type { PreviousReviewData, PRContext } from './review/types.js';
 
 /**
  * Get package version from package.json
@@ -170,6 +170,7 @@ External Diff Options (for integration with PR systems):
   --diff-stdin             Read diff from stdin instead of computing from git
   --commits=<sha1,sha2>    Only diff specific commits (comma-separated)
   --no-smart-merge-filter  Disable smart merge filtering for incremental mode
+  --pr-context=<file>      PR business context JSON file (Jira integration)
 
 Config subcommands:
   argus config set <key> <value>     Set a configuration value
@@ -409,6 +410,7 @@ function parseOptions(args: string[]): {
   previousReview?: string;
   verifyFixes?: boolean;
   requireWorktree?: boolean;
+  prContext?: string;
   externalDiff: ExternalDiffOptions;
 } {
   const options: {
@@ -422,6 +424,7 @@ function parseOptions(args: string[]): {
     previousReview?: string;
     verifyFixes?: boolean;
     requireWorktree?: boolean;
+    prContext?: string;
     externalDiff: ExternalDiffOptions;
   } = {
     language: 'zh',
@@ -434,6 +437,7 @@ function parseOptions(args: string[]): {
     previousReview: undefined,
     verifyFixes: undefined,
     requireWorktree: undefined,
+    prContext: undefined,
     externalDiff: {},
   };
 
@@ -493,6 +497,11 @@ function parseOptions(args: string[]): {
       options.externalDiff.disableSmartMergeFilter = true;
     } else if (arg === '--require-worktree') {
       options.requireWorktree = true;
+    } else if (arg.startsWith('--pr-context=')) {
+      const filePath = arg.split('=')[1];
+      if (filePath) {
+        options.prContext = filePath;
+      }
     }
   }
 
@@ -553,6 +562,22 @@ async function runReviewCommand(
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Error: Failed to load previous review: ${message}`);
       process.exit(1);
+    }
+  }
+
+  // Load PR context if specified (Jira integration from bitbucket-pr-manager)
+  let prContext: PRContext | undefined;
+  if (options.prContext) {
+    try {
+      const content = readFileSync(options.prContext, 'utf-8');
+      prContext = JSON.parse(content) as PRContext;
+      if (prContext.jiraIssues && prContext.jiraIssues.length > 0) {
+        console.log(`PR Context: ${prContext.jiraIssues.length} Jira issue(s) loaded`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Warning: Failed to load PR context: ${message}`);
+      // Don't exit - PR context is optional
     }
   }
 
@@ -622,6 +647,8 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       verifyFixes: options.verifyFixes,
       // Worktree requirement
       requireWorktree: options.requireWorktree,
+      // PR business context (Jira integration)
+      prContext,
     },
   });
 

@@ -269,6 +269,8 @@ export interface ReviewContext {
   diffFiles?: DiffFile[];
   /** Deleted files list (content removed, only paths preserved for context) */
   deletedFiles?: string[];
+  /** PR business context (Jira integration) */
+  prContext?: PRContext;
 }
 
 // ============================================================================
@@ -375,6 +377,43 @@ export interface PreviousReviewData {
   source?: string;
   /** Target reference from previous review (optional, for display) */
   target?: string;
+}
+
+// ============================================================================
+// PR Context Types (for Jira integration)
+// ============================================================================
+
+/**
+ * Jira issue summary extracted by LLM
+ */
+export interface JiraIssueSummary {
+  /** Issue key (e.g., "PROJ-123") */
+  key: string;
+  /** Issue type (Bug, Story, Task, etc.) */
+  type: string;
+  /** Concise summary (100-200 chars) */
+  summary: string;
+  /** Key acceptance criteria or fix points */
+  keyPoints: string[];
+  /** Context relevant to code review */
+  reviewContext: string;
+}
+
+/**
+ * PR business context passed from bitbucket-pr-manager
+ * Contains Jira information to provide context for code review
+ */
+export interface PRContext {
+  /** PR title */
+  prTitle: string;
+  /** PR description */
+  prDescription: string | null;
+  /** Jira issues associated with this PR (may be empty) */
+  jiraIssues: JiraIssueSummary[];
+  /** Parse status */
+  parseStatus: 'found' | 'none' | 'partial_error';
+  /** Parse message for debugging */
+  parseMessage?: string;
 }
 
 // ============================================================================
@@ -545,6 +584,11 @@ export interface OrchestratorOptions {
    * This ensures agents read code from the correct branch/commit version
    */
   requireWorktree?: boolean;
+  /**
+   * PR business context for code review (from bitbucket-pr-manager)
+   * Contains Jira information to provide additional context for review agents
+   */
+  prContext?: PRContext;
 }
 
 /**

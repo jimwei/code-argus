@@ -85,12 +85,13 @@ import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
  * Default orchestrator options
  */
 const DEFAULT_OPTIONS: Required<
-  Omit<OrchestratorOptions, 'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree'>
+  Omit<OrchestratorOptions, 'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree' | 'prContext'>
 > & {
   onEvent?: OrchestratorOptions['onEvent'];
   previousReviewData?: PreviousReviewData;
   verifyFixes?: boolean;
   requireWorktree?: boolean;
+  prContext?: OrchestratorOptions['prContext'];
 } = {
   maxConcurrency: 4,
   verbose: false,
@@ -107,6 +108,7 @@ const DEFAULT_OPTIONS: Required<
   previousReviewData: undefined,
   verifyFixes: undefined,
   requireWorktree: false,
+  prContext: undefined,
 };
 
 /**
@@ -132,6 +134,8 @@ export class StreamingReviewOrchestrator {
   private rawIssuesForSkipMode: RawIssue[] = [];
   private loadedCustomAgents: LoadedCustomAgent[] = [];
   private fixVerificationResults?: FixVerificationSummary;
+  /** Track issue count per agent for progress reporting */
+  private issueCountByAgent: Map<string, number> = new Map();
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -349,6 +353,7 @@ export class StreamingReviewOrchestrator {
       // Reset state for this review
       this.autoRejectedIssues = [];
       this.rawIssuesForSkipMode = [];
+      this.issueCountByAgent.clear();
 
       // Create realtime deduplicator with progress callbacks
       this.realtimeDeduplicator = createRealtimeDeduplicator({
@@ -935,6 +940,7 @@ export class StreamingReviewOrchestrator {
       // Reset state for this review
       this.autoRejectedIssues = [];
       this.rawIssuesForSkipMode = [];
+      this.issueCountByAgent.clear();
 
       // Create realtime deduplicator with progress callbacks
       this.realtimeDeduplicator = createRealtimeDeduplicator({
@@ -1349,6 +1355,11 @@ export class StreamingReviewOrchestrator {
     const standards = await createStandards(repoPath);
     this.progress.success('项目标准提取完成');
 
+    // Log PR context if present
+    if (this.options.prContext && this.options.prContext.jiraIssues?.length > 0) {
+      this.progress.info(`PR Context: ${this.options.prContext.jiraIssues.length} Jira issue(s) - ${this.options.prContext.jiraIssues.map(i => i.key).join(', ')}`);
+    }
+
     return {
       context: {
         repoPath,
@@ -1356,6 +1367,7 @@ export class StreamingReviewOrchestrator {
         fileAnalyses: analysisResult.changes,
         standards,
         diffFiles, // Include parsed diff files for filtering
+        prContext: this.options.prContext,
       },
       diffFiles,
     };
@@ -1573,6 +1585,7 @@ export class StreamingReviewOrchestrator {
           standards,
           diffFiles,
           deletedFiles, // 删除文件列表（只传路径，供 logic-reviewer 上下文）
+          prContext: this.options.prContext,
         },
         diffFiles,
         sourceRef: resolvedSourceRef,
@@ -1658,6 +1671,7 @@ export class StreamingReviewOrchestrator {
         standards,
         diffFiles, // Include parsed diff files for filtering
         deletedFiles, // 删除文件列表（只传路径，供 logic-reviewer 上下文）
+        prContext: this.options.prContext,
       },
       diffFiles,
       sourceRef: rawDiffResult.sourceRef!,
@@ -1810,7 +1824,9 @@ export class StreamingReviewOrchestrator {
         totalTokens += res.result.tokensUsed;
         allChecklists.push(...res.result.checklists);
 
-        this.progress.agent(res.agentType, 'completed', elapsedStr);
+        // Get issue count for this agent
+        const issueCount = this.issueCountByAgent.get(res.agentType) || 0;
+        this.progress.agent(res.agentType, 'completed', `${issueCount} issues, ${elapsedStr}`);
 
         if (this.options.verbose) {
           console.log(`[StreamingOrchestrator] Agent ${res.agentType} completed in ${elapsedStr}`);
@@ -2004,6 +2020,10 @@ Write all text (title, description, suggestion) in Chinese.`,
                 }
               }
 
+              // Track issue count per agent (for progress reporting)
+              const currentCount = this.issueCountByAgent.get(agentType) || 0;
+              this.issueCountByAgent.set(agentType, currentCount + 1);
+
               // Step 2: Process accepted issue
               if (skipValidation) {
                 // Skip validation mode - just collect issues
@@ -2063,6 +2083,11 @@ Write all text (title, description, suggestion) in Chinese.`,
         ? formatDeletedFilesContext(context.deletedFiles)
         : undefined;
 
+    // Log PR context injection for this agent
+    if (context.prContext?.jiraIssues?.length) {
+      this.progress.info(`[${agentType}] 注入 PR Context: ${context.prContext.jiraIssues.length} 个 Jira issue - ${context.prContext.jiraIssues.map(i => i.key).join(', ')}`);
+    }
+
     const userPrompt = buildStreamingUserPrompt(agentType, {
       diff: context.diff.diff,
       fileAnalyses: context.fileAnalyses
@@ -2073,6 +2098,7 @@ Write all text (title, description, suggestion) in Chinese.`,
         ? `## Project-Specific Review Guidelines\n\n> Loaded from: ${this.rulesConfig.sources.join(', ')}\n\n${projectRules}`
         : undefined,
       deletedFilesContext,
+      prContext: context.prContext,
     });
 
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
