@@ -170,7 +170,7 @@ External Diff Options (for integration with PR systems):
   --diff-stdin             Read diff from stdin instead of computing from git
   --commits=<sha1,sha2>    Only diff specific commits (comma-separated)
   --no-smart-merge-filter  Disable smart merge filtering for incremental mode
-  --pr-context=<file>      PR business context JSON file (Jira integration)
+  --pr-context=<file>      PR business context JSON file (see PR Context below)
 
 Config subcommands:
   argus config set <key> <value>     Set a configuration value
@@ -183,6 +183,29 @@ Config keys:
   api-key       Anthropic API key
   base-url      Custom API base URL (for proxies)
   model         Model to use (e.g., claude-sonnet-4-5-20250929)
+
+PR Context (--pr-context):
+  Provides business context for code review, typically from Jira integration.
+  The JSON file must follow this structure:
+
+  {
+    "prTitle": "PROJ-123: Fix login validation",      // PR title (required)
+    "prDescription": "Fixes the login bug...",        // PR description (optional)
+    "jiraIssues": [                                   // Jira issues array (required, can be empty)
+      {
+        "key": "PROJ-123",                            // Jira issue key
+        "type": "Bug",                                // Issue type (Bug/Story/Task/Epic)
+        "summary": "Login fails with special chars",  // Brief summary
+        "keyPoints": [                                // Acceptance criteria
+          "Handle special characters in password",
+          "Show proper error message"
+        ],
+        "reviewContext": "Check input validation"     // Review focus hint
+      }
+    ],
+    "parseStatus": "found",                           // found | none | partial_error
+    "parseMessage": "Successfully processed 1 issue" // Optional status message
+  }
 
 Examples:
   # Branch-based review (initial PR review)
@@ -206,6 +229,9 @@ Examples:
 
   # Only review specific commits (skip merge commits)
   argus review /path/to/repo --commits=abc123,def456,ghi789
+
+  # With PR context (Jira integration)
+  argus review /path/to/repo feature-branch main --pr-context=./pr-context.json
 `);
 }
 
