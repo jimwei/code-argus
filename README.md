@@ -387,6 +387,71 @@ argus review /repo feature main --previous-review=./review.json --no-verify-fixe
 
 ---
 
+### `--pr-context=<file>`
+
+**PR business context (Jira integration)**
+
+Provide business context for the PR (e.g., Jira issue information) to help review agents better understand the purpose of code changes.
+
+```bash
+argus review /repo feature main --pr-context=./pr-context.json
+```
+
+**JSON file structure:**
+
+```json
+{
+  "prTitle": "PROJ-123: Fix login validation bug",
+  "prDescription": "Fixes the login validation issue with special characters",
+  "jiraIssues": [
+    {
+      "key": "PROJ-123",
+      "type": "Bug",
+      "summary": "Login fails with special characters in password",
+      "keyPoints": [
+        "Handle special characters in password input",
+        "Show proper error message"
+      ],
+      "reviewContext": "Check input validation and character encoding"
+    }
+  ],
+  "parseStatus": "found",
+  "parseMessage": "Successfully processed 1 Jira issue"
+}
+```
+
+**Field descriptions:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `prTitle` | string | ✅ | PR title |
+| `prDescription` | string \| null | ❌ | PR description |
+| `jiraIssues` | array | ✅ | Jira issues array (can be empty) |
+| `parseStatus` | string | ✅ | Parse status: `found` / `none` / `partial_error` |
+| `parseMessage` | string | ❌ | Debug message |
+
+**JiraIssueSummary structure:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `key` | string | Jira issue key (e.g., `PROJ-123`) |
+| `type` | string | Issue type (Bug/Story/Task/Epic) |
+| `summary` | string | Brief summary (100-200 chars) |
+| `keyPoints` | string[] | Acceptance criteria or fix points |
+| `reviewContext` | string | Code review focus hints |
+
+**JSON Schema:**
+
+A complete JSON Schema is available at `schemas/pr-context.schema.json` for IDE auto-completion and validation.
+
+**Use cases:**
+
+- Integration with Jira to automatically fetch issue information
+- Help review agents understand business context of code changes
+- Verify if code satisfies acceptance criteria
+
+---
+
 ## Examples
 
 ### Basic Usage
@@ -457,6 +522,9 @@ argus review /repo feature main --skip-validation --json-logs
 
 # Commit-based incremental CI check
 argus review /repo $NEW_COMMIT $OLD_COMMIT --json-logs
+
+# Review with Jira context
+argus review /repo feature main --pr-context=./pr-context.json --json-logs
 ```
 
 ---
@@ -499,6 +567,9 @@ src/
 └── analyzer/
     ├── local-analyzer.ts # Local fast analysis
     └── diff-analyzer.ts  # LLM semantic analysis
+
+schemas/                  # JSON Schema definitions
+└── pr-context.schema.json # PR Context structure validation
 
 .claude/agents/           # Built-in agent prompt definitions
 ├── security-reviewer.md  # Security review
