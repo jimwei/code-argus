@@ -333,27 +333,40 @@ export class StreamingReviewOrchestrator {
       }
 
       // Get or create managed worktree (reuses existing if available)
-      this.progress.progress(`准备 worktree: ${input.sourceBranch}...`);
-      if (this.options.verbose) {
-        console.log(
-          `[StreamingOrchestrator] Getting/creating worktree for source branch: ${input.sourceBranch}`
+      // In local mode, use repo directly (skip worktree creation)
+      let reviewRepoPath: string;
+
+      if (this.options.local) {
+        // Local mode - use repo directly
+        this.progress.progress('本地模式: 使用仓库目录进行审查...');
+        reviewRepoPath = resolve(input.repoPath);
+        this.progress.success(`使用仓库目录: ${reviewRepoPath}`);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Using repo directly (local mode): ${reviewRepoPath}`
+          );
+        }
+      } else {
+        this.progress.progress(`准备 worktree: ${input.sourceBranch}...`);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Getting/creating worktree for source branch: ${input.sourceBranch}`
+          );
+        }
+
+        const managedWorktree = getManagedWorktree(input.repoPath, input.sourceBranch, 'origin', {
+          logger: this.createWorktreeLogger(),
+          verbose: this.options.verbose,
+        });
+        worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
+        reviewRepoPath = worktreeInfo.worktreePath;
+        this.progress.success(
+          `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
         );
+        if (this.options.verbose) {
+          console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
+        }
       }
-
-      const managedWorktree = getManagedWorktree(input.repoPath, input.sourceBranch, 'origin', {
-        logger: this.createWorktreeLogger(),
-        verbose: this.options.verbose,
-      });
-      worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
-      this.progress.success(
-        `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
-      );
-      if (this.options.verbose) {
-        console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
-      }
-
-      // Update context to use worktree path for agent execution
-      const reviewRepoPath = worktreeInfo.worktreePath;
 
       // Reset state for this review
       this.autoRejectedIssues = [];
@@ -906,6 +919,16 @@ export class StreamingReviewOrchestrator {
         if (this.options.verbose) {
           console.log(
             `[StreamingOrchestrator] Using repo directly (external diff mode): ${reviewRepoPath}`
+          );
+        }
+      } else if (this.options.local) {
+        // Local mode - use repo directly (skip worktree creation)
+        this.progress.progress('本地模式: 使用仓库目录进行审查...');
+        reviewRepoPath = resolve(input.repoPath);
+        this.progress.success(`使用仓库目录: ${reviewRepoPath}`);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Using repo directly (local mode): ${reviewRepoPath}`
           );
         }
       } else if (sourceRef) {
