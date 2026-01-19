@@ -85,13 +85,17 @@ import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
  * Default orchestrator options
  */
 const DEFAULT_OPTIONS: Required<
-  Omit<OrchestratorOptions, 'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree' | 'prContext'>
+  Omit<
+    OrchestratorOptions,
+    'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree' | 'prContext' | 'local'
+  >
 > & {
   onEvent?: OrchestratorOptions['onEvent'];
   previousReviewData?: PreviousReviewData;
   verifyFixes?: boolean;
   requireWorktree?: boolean;
   prContext?: OrchestratorOptions['prContext'];
+  local?: boolean;
 } = {
   maxConcurrency: 4,
   verbose: false,
@@ -109,6 +113,7 @@ const DEFAULT_OPTIONS: Required<
   verifyFixes: undefined,
   requireWorktree: false,
   prContext: undefined,
+  local: false,
 };
 
 /**
@@ -1320,12 +1325,15 @@ export class StreamingReviewOrchestrator {
     const { sourceBranch, targetBranch, repoPath } = input;
     const remote = 'origin';
 
-    this.progress.progress('获取远程 refs...');
-    if (this.options.verbose) {
-      console.log('[StreamingOrchestrator] Fetching remote refs...');
+    // Skip fetch in local mode
+    if (!this.options.local) {
+      this.progress.progress('获取远程 refs...');
+      if (this.options.verbose) {
+        console.log('[StreamingOrchestrator] Fetching remote refs...');
+      }
+      fetchRemote(repoPath, remote);
+      this.progress.success('获取远程 refs 完成');
     }
-    fetchRemote(repoPath, remote);
-    this.progress.success('获取远程 refs 完成');
 
     this.progress.progress('获取 diff...');
     const diffResult = getDiffWithOptions({
@@ -1333,6 +1341,7 @@ export class StreamingReviewOrchestrator {
       targetBranch,
       repoPath,
       skipFetch: true,
+      local: this.options.local,
     });
     const diffSizeKB = Math.round(diffResult.diff.length / 1024);
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
@@ -1357,7 +1366,9 @@ export class StreamingReviewOrchestrator {
 
     // Log PR context if present
     if (this.options.prContext && this.options.prContext.jiraIssues?.length > 0) {
-      this.progress.info(`PR Context: ${this.options.prContext.jiraIssues.length} Jira issue(s) - ${this.options.prContext.jiraIssues.map(i => i.key).join(', ')}`);
+      this.progress.info(
+        `PR Context: ${this.options.prContext.jiraIssues.length} Jira issue(s) - ${this.options.prContext.jiraIssues.map((i) => i.key).join(', ')}`
+      );
     }
 
     return {
@@ -1541,10 +1552,13 @@ export class StreamingReviewOrchestrator {
         try {
           // Fetch remote first to ensure we have the latest branch refs
           // This is necessary because external diff mode skips getDiffByRefs which normally handles fetch
-          this.progress.progress('获取远程分支...');
-          fetchRemote(repoPath, 'origin');
+          // Skip fetch in local mode
+          if (!this.options.local) {
+            this.progress.progress('获取远程分支...');
+            fetchRemote(repoPath, 'origin');
+          }
 
-          resolvedSourceRef = resolveRef(repoPath, sourceRefStr);
+          resolvedSourceRef = resolveRef(repoPath, sourceRefStr, 'origin', this.options.local);
           if (this.options.verbose) {
             console.log(
               `[StreamingOrchestrator] External diff mode with sourceRef: ${sourceRefStr} → worktree will be created`
@@ -1622,6 +1636,7 @@ export class StreamingReviewOrchestrator {
       repoPath,
       skipFetch: false, // Let getDiffByRefs handle smart fetch logic
       smartMergeFilter: !externalDiff?.disableSmartMergeFilter, // Use smart filtering by default
+      local: this.options.local, // Pass local option
     });
     const diffSizeKB = Math.round(rawDiffResult.diff.length / 1024);
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
@@ -2085,7 +2100,9 @@ Write all text (title, description, suggestion) in Chinese.`,
 
     // Log PR context injection for this agent
     if (context.prContext?.jiraIssues?.length) {
-      this.progress.info(`[${agentType}] 注入 PR Context: ${context.prContext.jiraIssues.length} 个 Jira issue - ${context.prContext.jiraIssues.map(i => i.key).join(', ')}`);
+      this.progress.info(
+        `[${agentType}] 注入 PR Context: ${context.prContext.jiraIssues.length} 个 Jira issue - ${context.prContext.jiraIssues.map((i) => i.key).join(', ')}`
+      );
     }
 
     const userPrompt = buildStreamingUserPrompt(agentType, {

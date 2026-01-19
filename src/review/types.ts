@@ -589,6 +589,13 @@ export interface OrchestratorOptions {
    * Contains Jira information to provide additional context for review agents
    */
   prContext?: PRContext;
+  /**
+   * Use local branches instead of remote branches (default: false)
+   * When true, branches are resolved without 'origin/' prefix,
+   * allowing review of local branches that haven't been pushed.
+   * This also skips git fetch operations.
+   */
+  local?: boolean;
 }
 
 /**

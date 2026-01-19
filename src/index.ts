@@ -164,6 +164,7 @@ Options (review command):
   --previous-review=<file> Previous review JSON file for fix verification
   --no-verify-fixes        Disable fix verification (when previous-review is set)
   --require-worktree       Require worktree creation, fail if unable to create
+  --local                  Use local branches (skip fetch, no origin/ prefix)
 
 External Diff Options (for integration with PR systems):
   --diff-file=<path>       Read diff from file instead of computing from git
@@ -438,6 +439,7 @@ function parseOptions(args: string[]): {
   requireWorktree?: boolean;
   prContext?: string;
   externalDiff: ExternalDiffOptions;
+  local?: boolean;
 } {
   const options: {
     language: 'en' | 'zh';
@@ -452,6 +454,7 @@ function parseOptions(args: string[]): {
     requireWorktree?: boolean;
     prContext?: string;
     externalDiff: ExternalDiffOptions;
+    local?: boolean;
   } = {
     language: 'zh',
     configDirs: [],
@@ -465,6 +468,7 @@ function parseOptions(args: string[]): {
     requireWorktree: undefined,
     prContext: undefined,
     externalDiff: {},
+    local: undefined,
   };
 
   for (const arg of args) {
@@ -523,6 +527,8 @@ function parseOptions(args: string[]): {
       options.externalDiff.disableSmartMergeFilter = true;
     } else if (arg === '--require-worktree') {
       options.requireWorktree = true;
+    } else if (arg === '--local') {
+      options.local = true;
     } else if (arg.startsWith('--pr-context=')) {
       const filePath = arg.split('=')[1];
       if (filePath) {
@@ -675,6 +681,8 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       requireWorktree: options.requireWorktree,
       // PR business context (Jira integration)
       prContext,
+      // Local branch mode (skip fetch, use local branches)
+      local: options.local,
     },
   });
 
