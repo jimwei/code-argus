@@ -333,6 +333,23 @@ argus review /repo feature main --verbose
 
 ---
 
+### `--local`
+
+**本地分支模式**
+
+审查本地分支，无需推送到远程。启用后：
+
+- 跳过 `git fetch` 操作
+- 直接解析本地分支（如 `feature` 而不是 `origin/feature`）
+- 适用于审查进行中的工作分支
+
+```bash
+# 审查尚未推送的本地分支
+argus review /repo feature main --local
+```
+
+---
+
 ### `--previous-review=<file>`
 
 **修复验证模式**
@@ -408,10 +425,7 @@ argus review /repo feature main --pr-context=./pr-context.json
       "key": "PROJ-123",
       "type": "Bug",
       "summary": "登录时特殊字符导致验证失败",
-      "keyPoints": [
-        "处理密码中的特殊字符",
-        "显示正确的错误提示"
-      ],
+      "keyPoints": ["处理密码中的特殊字符", "显示正确的错误提示"],
       "reviewContext": "检查输入验证和字符编码处理"
     }
   ],
@@ -422,23 +436,23 @@ argus review /repo feature main --pr-context=./pr-context.json
 
 **字段说明：**
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `prTitle` | string | ✅ | PR 标题 |
-| `prDescription` | string \| null | ❌ | PR 描述 |
-| `jiraIssues` | array | ✅ | Jira Issue 数组（可为空） |
-| `parseStatus` | string | ✅ | 解析状态：`found` / `none` / `partial_error` |
-| `parseMessage` | string | ❌ | 调试信息 |
+| 字段            | 类型           | 必填 | 说明                                         |
+| --------------- | -------------- | ---- | -------------------------------------------- |
+| `prTitle`       | string         | ✅   | PR 标题                                      |
+| `prDescription` | string \| null | ❌   | PR 描述                                      |
+| `jiraIssues`    | array          | ✅   | Jira Issue 数组（可为空）                    |
+| `parseStatus`   | string         | ✅   | 解析状态：`found` / `none` / `partial_error` |
+| `parseMessage`  | string         | ❌   | 调试信息                                     |
 
 **JiraIssueSummary 结构：**
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `key` | string | Jira Issue Key（如 `PROJ-123`） |
-| `type` | string | Issue 类型（Bug/Story/Task/Epic） |
-| `summary` | string | 简要摘要（100-200 字符） |
-| `keyPoints` | string[] | 验收标准或修复要点 |
-| `reviewContext` | string | 代码审查关注点 |
+| 字段            | 类型     | 说明                              |
+| --------------- | -------- | --------------------------------- |
+| `key`           | string   | Jira Issue Key（如 `PROJ-123`）   |
+| `type`          | string   | Issue 类型（Bug/Story/Task/Epic） |
+| `summary`       | string   | 简要摘要（100-200 字符）          |
+| `keyPoints`     | string[] | 验收标准或修复要点                |
+| `reviewContext` | string   | 代码审查关注点                    |
 
 **JSON Schema：**
 

@@ -333,6 +333,23 @@ argus review /repo feature main --verbose
 
 ---
 
+### `--local`
+
+**Local branch mode**
+
+Review local branches without requiring them to be pushed to remote. When enabled:
+
+- Skips `git fetch` operations
+- Resolves branches directly (e.g., `feature` instead of `origin/feature`)
+- Useful for reviewing work-in-progress branches
+
+```bash
+# Review a local branch that hasn't been pushed
+argus review /repo feature main --local
+```
+
+---
+
 ### `--previous-review=<file>`
 
 **Fix verification mode**
@@ -408,10 +425,7 @@ argus review /repo feature main --pr-context=./pr-context.json
       "key": "PROJ-123",
       "type": "Bug",
       "summary": "Login fails with special characters in password",
-      "keyPoints": [
-        "Handle special characters in password input",
-        "Show proper error message"
-      ],
+      "keyPoints": ["Handle special characters in password input", "Show proper error message"],
       "reviewContext": "Check input validation and character encoding"
     }
   ],
@@ -422,23 +436,23 @@ argus review /repo feature main --pr-context=./pr-context.json
 
 **Field descriptions:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `prTitle` | string | ✅ | PR title |
-| `prDescription` | string \| null | ❌ | PR description |
-| `jiraIssues` | array | ✅ | Jira issues array (can be empty) |
-| `parseStatus` | string | ✅ | Parse status: `found` / `none` / `partial_error` |
-| `parseMessage` | string | ❌ | Debug message |
+| Field           | Type           | Required | Description                                      |
+| --------------- | -------------- | -------- | ------------------------------------------------ |
+| `prTitle`       | string         | ✅       | PR title                                         |
+| `prDescription` | string \| null | ❌       | PR description                                   |
+| `jiraIssues`    | array          | ✅       | Jira issues array (can be empty)                 |
+| `parseStatus`   | string         | ✅       | Parse status: `found` / `none` / `partial_error` |
+| `parseMessage`  | string         | ❌       | Debug message                                    |
 
 **JiraIssueSummary structure:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `key` | string | Jira issue key (e.g., `PROJ-123`) |
-| `type` | string | Issue type (Bug/Story/Task/Epic) |
-| `summary` | string | Brief summary (100-200 chars) |
-| `keyPoints` | string[] | Acceptance criteria or fix points |
-| `reviewContext` | string | Code review focus hints |
+| Field           | Type     | Description                       |
+| --------------- | -------- | --------------------------------- |
+| `key`           | string   | Jira issue key (e.g., `PROJ-123`) |
+| `type`          | string   | Issue type (Bug/Story/Task/Epic)  |
+| `summary`       | string   | Brief summary (100-200 chars)     |
+| `keyPoints`     | string[] | Acceptance criteria or fix points |
+| `reviewContext` | string   | Code review focus hints           |
 
 **JSON Schema:**
 
