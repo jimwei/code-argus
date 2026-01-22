@@ -232,8 +232,11 @@ Call this after deep investigation of unresolved/unclear issues.`,
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
   // Execute agent
+  // 用于资源清理的变量
+  let queryStream: ReturnType<typeof query> | null = null;
+
   try {
-    const queryStream = query({
+    queryStream = query({
       prompt: fullPrompt,
       options: {
         cwd: repoPath,
@@ -257,6 +260,17 @@ Call this after deep investigation of unresolved/unclear issues.`,
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[FixVerifier] Error during verification: ${errorMessage}`);
     progress?.error(`修复验证失败: ${errorMessage}`);
+  } finally {
+    // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
+    if (queryStream) {
+      try {
+        await queryStream.return?.(undefined);
+      } catch (cleanupError) {
+        if (verbose) {
+          console.warn(`[FixVerifier] Cleanup warning:`, cleanupError);
+        }
+      }
+    }
   }
 
   // Process issues that were only screened (resolved in Phase 1)

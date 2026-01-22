@@ -563,7 +563,10 @@ export class StreamingValidator {
     }
 
     // Start the query
-    const queryStream = query({
+    // 用于资源清理的变量
+    let queryStream: ReturnType<typeof query> | null = null;
+
+    queryStream = query({
       prompt: messageGenerator(),
       options: {
         cwd: this.options.repoPath,
@@ -828,6 +831,23 @@ export class StreamingValidator {
               this.totalEnqueued,
               uncertainIssue.id,
               'uncertain'
+            );
+          }
+        }
+      }
+    } finally {
+      // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
+      if (queryStream) {
+        try {
+          // 调用迭代器的 return() 方法触发 SDK 内部的 cleanup
+          // 这会导致 transport.close() 被调用，从而移除 process.on('exit') 监听器
+          await queryStream.return?.(undefined);
+        } catch (cleanupError) {
+          // 忽略清理过程中的错误
+          if (this.options.verbose) {
+            console.warn(
+              `[StreamingValidator] Cleanup warning for session ${session.file}:`,
+              cleanupError
             );
           }
         }

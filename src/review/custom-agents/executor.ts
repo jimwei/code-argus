@@ -256,8 +256,11 @@ export async function executeCustomAgent(
 
   let tokensUsed = 0;
 
+  // 用于资源清理的变量
+  let queryStream: ReturnType<typeof query> | null = null;
+
   try {
-    const queryStream = query({
+    queryStream = query({
       prompt: fullPrompt,
       options: {
         cwd: options.repoPath,
@@ -322,6 +325,20 @@ export async function executeCustomAgent(
       execution_time_ms: Date.now() - startTime,
       error: errorMessage,
     };
+  } finally {
+    // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
+    if (queryStream) {
+      try {
+        await queryStream.return?.(undefined);
+      } catch (cleanupError) {
+        if (options.verbose) {
+          console.warn(
+            `[CustomAgentExecutor] Cleanup warning for agent ${agent.name}:`,
+            cleanupError
+          );
+        }
+      }
+    }
   }
 }
 
