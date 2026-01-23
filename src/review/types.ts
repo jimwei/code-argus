@@ -596,6 +596,11 @@ export interface OrchestratorOptions {
    * This also skips git fetch operations.
    */
   local?: boolean;
+  /**
+   * AbortController for graceful shutdown
+   * When abort() is called, running agents will be interrupted and cleanup will occur
+   */
+  abortController?: AbortController;
 }
 
 /**

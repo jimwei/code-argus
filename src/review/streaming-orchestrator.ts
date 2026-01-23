@@ -87,7 +87,13 @@ import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
 const DEFAULT_OPTIONS: Required<
   Omit<
     OrchestratorOptions,
-    'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree' | 'prContext' | 'local'
+    | 'onEvent'
+    | 'previousReviewData'
+    | 'verifyFixes'
+    | 'requireWorktree'
+    | 'prContext'
+    | 'local'
+    | 'abortController'
   >
 > & {
   onEvent?: OrchestratorOptions['onEvent'];
@@ -96,6 +102,7 @@ const DEFAULT_OPTIONS: Required<
   requireWorktree?: boolean;
   prContext?: OrchestratorOptions['prContext'];
   local?: boolean;
+  abortController?: AbortController;
 } = {
   maxConcurrency: 4,
   verbose: false,
@@ -114,6 +121,7 @@ const DEFAULT_OPTIONS: Required<
   requireWorktree: false,
   prContext: undefined,
   local: false,
+  abortController: undefined,
 };
 
 /**
@@ -2165,6 +2173,8 @@ Write all text (title, description, suggestion) in Chinese.`,
           mcpServers: {
             'code-review-tools': mcpServer,
           },
+          // 传递 AbortController 以支持优雅关闭
+          abortController: this.options.abortController,
         },
       });
 
@@ -2198,6 +2208,12 @@ Write all text (title, description, suggestion) in Chinese.`,
         }
       }
     } catch (error) {
+      // 检查是否是 AbortError（用户取消操作）
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log(`[StreamingOrchestrator] Agent ${agentType} aborted by user`);
+        // 不重新抛出 AbortError，让调用方优雅处理
+        return { tokensUsed, checklists: [] };
+      }
       console.error(`[StreamingOrchestrator] Agent ${agentType} threw error:`, error);
       // Re-throw the error so it's properly handled by the caller
       throw error;

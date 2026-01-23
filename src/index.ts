@@ -4,6 +4,9 @@
  * Main Entry Point
  */
 
+// Increase max listeners to prevent warnings (multiple cleanup handlers may be registered)
+process.setMaxListeners(20);
+
 // Global error handlers - must be set up first to catch any errors during startup
 process.on('uncaughtException', (error, origin) => {
   console.error(`[Argus] Fatal: Uncaught exception from ${origin}:`, error);
@@ -14,6 +17,25 @@ process.on('unhandledRejection', (reason) => {
   console.error('[Argus] Fatal: Unhandled promise rejection:', reason);
   process.exit(1);
 });
+
+// Global AbortController for graceful shutdown - registered once at module level
+const globalAbortController = new AbortController();
+let isGlobalShuttingDown = false;
+
+const handleGlobalShutdown = (signal: string) => {
+  if (isGlobalShuttingDown) return;
+  isGlobalShuttingDown = true;
+  console.log(`\n[Argus] Received ${signal}, gracefully shutting down...`);
+  globalAbortController.abort();
+  // Give time for cleanup, then force exit
+  setTimeout(() => {
+    console.log('[Argus] Cleanup timeout, forcing exit');
+    process.exit(1);
+  }, 10000);
+};
+
+process.on('SIGTERM', () => handleGlobalShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGlobalShutdown('SIGINT'));
 
 import 'dotenv/config';
 import { initializeEnv } from './config/env.js';
@@ -661,6 +683,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       }
     : undefined;
 
+  // Use the global AbortController for graceful shutdown (registered at module level)
   // Use the new reviewByRefs API which auto-detects ref types
   const report = await reviewByRefs({
     repoPath,
@@ -683,6 +706,8 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       prContext,
       // Local branch mode (skip fetch, use local branches)
       local: options.local,
+      // AbortController for graceful shutdown (use global one registered at module level)
+      abortController: globalAbortController,
     },
   });
 
