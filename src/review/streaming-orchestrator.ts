@@ -1048,6 +1048,43 @@ export class StreamingReviewOrchestrator {
       // Check if diff needs segmentation (large PR handling)
       const diffSize = Buffer.byteLength(context.diff.diff, 'utf8');
       const segmentSizeLimit = 150 * 1024; // 150KB
+      const maxDiffSize = 1 * 1024 * 1024; // 1MB - skip review if diff is too large
+
+      // Skip review if diff is too large (prevent OOM)
+      if (diffSize > maxDiffSize) {
+        const diffSizeMB = (diffSize / 1024 / 1024).toFixed(2);
+        const skipReason = `PR diff 过大 (${diffSizeMB}MB > 1MB 限制)，跳过审核以防止内存溢出`;
+        this.progress.warn(skipReason);
+        console.warn(`[StreamingOrchestrator] ${skipReason}`);
+
+        // Return a skipped review report
+        return {
+          summary: skipReason,
+          risk_level: 'low' as const,
+          issues: [],
+          checklist: [],
+          metrics: {
+            total_scanned: 0,
+            confirmed: 0,
+            rejected: 0,
+            uncertain: 0,
+            by_severity: { critical: 0, error: 0, warning: 0, suggestion: 0 },
+            by_category: {
+              logic: 0,
+              security: 0,
+              performance: 0,
+              style: 0,
+              maintainability: 0,
+            },
+            files_reviewed: 0,
+          },
+          metadata: {
+            review_time_ms: Date.now() - startTime,
+            tokens_used: 0,
+            agents_used: [],
+          },
+        };
+      }
 
       if (needsSegmentation(diffSize, { segmentSizeLimit })) {
         this.progress.info(

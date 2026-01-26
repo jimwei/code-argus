@@ -578,6 +578,27 @@ export class StreamingValidator {
       },
     });
 
+    // 注册信号处理器，确保 SIGTERM/SIGINT 时能正确清理资源
+    // 这解决了 PR Manager 发送 SIGTERM 时 finally 块不执行的问题
+    let isCleaningUp = false;
+    const cleanupAndExit = async (signal: string) => {
+      if (isCleaningUp || !queryStream) return;
+      isCleaningUp = true;
+      console.log(
+        `[StreamingValidator] Received ${signal}, cleaning up session ${session.file}...`
+      );
+      try {
+        await queryStream.return?.(undefined);
+      } catch {
+        // 忽略清理错误
+      }
+      process.exit(0);
+    };
+    const sigtermHandler = () => cleanupAndExit('SIGTERM');
+    const sigintHandler = () => cleanupAndExit('SIGINT');
+    process.on('SIGTERM', sigtermHandler);
+    process.on('SIGINT', sigintHandler);
+
     // Send first message after query starts
     sendMessage(firstPrompt);
 
@@ -836,6 +857,10 @@ export class StreamingValidator {
         }
       }
     } finally {
+      // 先移除信号处理器，防止 finally 清理时触发
+      process.off('SIGTERM', sigtermHandler);
+      process.off('SIGINT', sigintHandler);
+
       // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
       if (queryStream) {
         try {
