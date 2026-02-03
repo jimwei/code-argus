@@ -175,9 +175,29 @@ export class WorktreeManager {
 
   /**
    * Update an existing worktree to a new ref
+   *
+   * First cleans any uncommitted changes to ensure checkout can succeed.
+   * This is necessary because worktrees may have leftover changes from previous reviews.
    */
   private updateWorktree(worktreePath: string, checkoutRef: string): void {
     try {
+      // Clean any uncommitted changes first to ensure checkout can succeed
+      // This is necessary because worktrees may have leftover changes from previous reviews
+      try {
+        execSync('git reset --hard HEAD', {
+          cwd: worktreePath,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        });
+        execSync('git clean -fd', {
+          cwd: worktreePath,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        });
+      } catch {
+        // Ignore cleanup errors - proceed with checkout attempt
+      }
+
       // Fetch latest and checkout the ref
       execSync(`git checkout --detach ${checkoutRef}`, {
         cwd: worktreePath,
