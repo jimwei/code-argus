@@ -24,7 +24,9 @@ export interface FileCharacteristics {
   categories: Set<FileCategory>;
   /** Has source code files (ts, js, py, etc.) */
   hasSourceCode: boolean;
-  /** Has only style files (css, scss, less) */
+  /** Has style files (css, scss, less) */
+  hasStyles: boolean;
+  /** Has only style files (no source code) */
   hasOnlyStyles: boolean;
   /** Has security-sensitive files */
   hasSecuritySensitive: boolean;
@@ -98,6 +100,7 @@ const SOURCE_CODE_EXTENSIONS = new Set([
   'vb', // Visual Basic
   'vbs', // VBScript
   'vbhtml', // VB Razor
+  'cshtml', // C# Razor
   'swift',
   'vue',
   'svelte',
@@ -165,6 +168,8 @@ const DOC_EXTENSIONS = new Set(['md', 'mdx', 'rst', 'txt', 'adoc']);
 const TEMPLATE_EXTENSIONS = new Set([
   'html',
   'htm',
+  'cshtml', // C# Razor
+  'vbhtml', // VB Razor
   'ejs',
   'hbs',
   'pug',
@@ -265,6 +270,7 @@ export function analyzeFileCharacteristics(diffFiles: DiffFile[]): FileCharacter
     extensions,
     categories,
     hasSourceCode,
+    hasStyles: styleCount > 0,
     hasOnlyStyles: styleCount === diffFiles.length && diffFiles.length > 0,
     hasSecuritySensitive,
     hasTests,
@@ -293,6 +299,7 @@ export function selectAgentsByRules(characteristics: FileCharacteristics): {
 
   const {
     hasSourceCode,
+    hasStyles,
     hasOnlyStyles,
     hasSecuritySensitive,
     hasTests,
@@ -352,11 +359,11 @@ export function selectAgentsByRules(characteristics: FileCharacteristics): {
   }
 
   // === Style Reviewer ===
-  if (hasSourceCode || hasOnlyStyles || hasTests) {
+  if (hasSourceCode || hasStyles || hasTests) {
     agents.push('style-reviewer');
     const triggers: string[] = [];
     if (hasSourceCode) triggers.push('源代码');
-    if (hasOnlyStyles) triggers.push('样式文件');
+    if (hasStyles) triggers.push('样式文件');
     if (hasTests) triggers.push('测试文件');
     reasons['style-reviewer'] = `需要: ${triggers.join(', ')}`;
   } else if (hasDocs) {
