@@ -23,7 +23,7 @@ import type { GitRef } from './ref.js';
 const DEFAULT_WORKTREE_BASE = join(homedir(), '.code-argus', 'worktrees');
 
 /** Default age in days before a worktree is considered stale */
-const DEFAULT_STALE_DAYS = 1;
+const DEFAULT_STALE_DAYS = 3;
 
 /** Default maximum number of worktrees to keep */
 const DEFAULT_MAX_WORKTREES = 20;
@@ -45,7 +45,7 @@ export interface WorktreeLogger {
 export interface WorktreeManagerOptions {
   /** Base directory for worktrees (default: ~/.code-argus/worktrees) */
   baseDir?: string;
-  /** Days before worktree is considered stale (default: 1) */
+  /** Days before worktree is considered stale (default: 3) */
   staleDays?: number;
   /** Whether to run cleanup on each operation (default: true) */
   autoCleanup?: boolean;
