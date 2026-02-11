@@ -23,7 +23,10 @@ import type { GitRef } from './ref.js';
 const DEFAULT_WORKTREE_BASE = join(homedir(), '.code-argus', 'worktrees');
 
 /** Default age in days before a worktree is considered stale */
-const DEFAULT_STALE_DAYS = 5;
+const DEFAULT_STALE_DAYS = 1;
+
+/** Default maximum number of worktrees to keep */
+const DEFAULT_MAX_WORKTREES = 20;
 
 // ============================================================================
 // Types
@@ -42,7 +45,7 @@ export interface WorktreeLogger {
 export interface WorktreeManagerOptions {
   /** Base directory for worktrees (default: ~/.code-argus/worktrees) */
   baseDir?: string;
-  /** Days before worktree is considered stale (default: 5) */
+  /** Days before worktree is considered stale (default: 1) */
   staleDays?: number;
   /** Whether to run cleanup on each operation (default: true) */
   autoCleanup?: boolean;
@@ -50,6 +53,8 @@ export interface WorktreeManagerOptions {
   logger?: WorktreeLogger;
   /** Enable verbose logging (default: false) */
   verbose?: boolean;
+  /** Maximum number of worktrees to keep (default: 20) */
+  maxWorktrees?: number;
 }
 
 export interface ManagedWorktreeInfo {
@@ -61,6 +66,8 @@ export interface ManagedWorktreeInfo {
   checkedOutRef: string;
   /** Whether this worktree was reused (vs newly created) */
   reused: boolean;
+  /** Whether this worktree was created for a commit ref (vs branch) */
+  isCommitRef: boolean;
 }
 
 // ============================================================================
@@ -76,6 +83,7 @@ export class WorktreeManager {
   private autoCleanup: boolean;
   private logger?: WorktreeLogger;
   private verbose: boolean;
+  private maxWorktrees: number;
 
   constructor(options: WorktreeManagerOptions = {}) {
     this.baseDir = options.baseDir || DEFAULT_WORKTREE_BASE;
@@ -83,6 +91,7 @@ export class WorktreeManager {
     this.autoCleanup = options.autoCleanup ?? true;
     this.logger = options.logger;
     this.verbose = options.verbose ?? false;
+    this.maxWorktrees = options.maxWorktrees ?? DEFAULT_MAX_WORKTREES;
 
     // Ensure base directory exists
     this.ensureBaseDir();
@@ -284,6 +293,7 @@ export class WorktreeManager {
       originalRepoPath: repoPath,
       checkedOutRef: remoteRef,
       reused,
+      isCommitRef: false,
     };
   }
 
@@ -332,6 +342,7 @@ export class WorktreeManager {
       originalRepoPath: repoPath,
       checkedOutRef: checkoutRef,
       reused,
+      isCommitRef: ref.type === 'commit',
     };
   }
 
@@ -412,8 +423,72 @@ export class WorktreeManager {
       // Ignore read errors
     }
 
+    // Enforce max worktree limit
+    try {
+      const currentEntries = readdirSync(this.baseDir, { withFileTypes: true }).filter((e) =>
+        e.isDirectory()
+      );
+
+      if (currentEntries.length > this.maxWorktrees) {
+        // Sort by last used time, oldest first
+        const sorted = currentEntries
+          .map((e) => {
+            const wp = join(this.baseDir, e.name);
+            const mp = join(wp, '.argus-last-used');
+            let lu: number;
+            try {
+              lu = existsSync(mp) ? statSync(mp).mtimeMs : statSync(wp).mtimeMs;
+            } catch {
+              lu = 0;
+            }
+            return { name: e.name, path: wp, lastUsed: lu };
+          })
+          .sort((a, b) => a.lastUsed - b.lastUsed);
+
+        const excess = sorted.slice(0, sorted.length - this.maxWorktrees);
+        for (const item of excess) {
+          this.logInfo(
+            `[WorktreeManager] Removing excess worktree (limit ${this.maxWorktrees}): ${item.name}`
+          );
+          try {
+            if (repoPath) {
+              execSync(`git worktree remove --force "${item.path}"`, {
+                cwd: repoPath,
+                encoding: 'utf-8',
+                stdio: 'pipe',
+              });
+            } else {
+              rmSync(item.path, { recursive: true, force: true });
+            }
+            cleanedCount++;
+          } catch {
+            try {
+              rmSync(item.path, { recursive: true, force: true });
+              cleanedCount++;
+            } catch {
+              // Ignore removal errors
+            }
+          }
+        }
+
+        if (repoPath && excess.length > 0) {
+          try {
+            execSync('git worktree prune', {
+              cwd: repoPath,
+              encoding: 'utf-8',
+              stdio: 'pipe',
+            });
+          } catch {
+            // Ignore prune errors
+          }
+        }
+      }
+    } catch {
+      // Ignore errors during max enforcement
+    }
+
     if (cleanedCount > 0) {
-      this.logInfo(`[WorktreeManager] Cleaned up ${cleanedCount} stale worktrees`);
+      this.logInfo(`[WorktreeManager] Cleaned up ${cleanedCount} worktrees (stale + excess)`);
     }
 
     return cleanedCount;

@@ -797,7 +797,7 @@ export function getActualChangedFiles(
  * Unlike createWorktreeForReview, this:
  * - Uses a persistent directory (~/.code-argus/worktrees/)
  * - Reuses existing worktrees by updating their checkout
- * - Automatically cleans up worktrees older than 5 days
+ * - Automatically cleans up worktrees older than configured staleDays
  *
  * @param repoPath - Path to the git repository
  * @param sourceBranch - Source branch to checkout
@@ -830,6 +830,32 @@ export function getManagedWorktreeForRef(
 ): ManagedWorktreeInfo {
   const absolutePath = resolve(repoPath);
   return managedGetOrCreateWorktreeForRef(absolutePath, ref, options);
+}
+
+/**
+ * Remove a managed worktree immediately (for commit-based worktrees that won't be reused)
+ *
+ * @param info - Managed worktree info from getManagedWorktree/getManagedWorktreeForRef
+ */
+export function removeManagedWorktree(info: ManagedWorktreeInfo): void {
+  try {
+    execSync(`git worktree remove --force "${info.worktreePath}"`, {
+      cwd: info.originalRepoPath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+  } catch {
+    try {
+      rmSync(info.worktreePath, { recursive: true, force: true });
+      execSync('git worktree prune', {
+        cwd: info.originalRepoPath,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
 }
 
 // Re-export types and functions from worktree-manager

@@ -32,7 +32,9 @@ import {
   fetchRemote,
   getManagedWorktree,
   getManagedWorktreeForRef,
+  removeManagedWorktree,
   type WorktreeInfo,
+  type ManagedWorktreeInfo,
 } from '../git/diff.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -199,6 +201,7 @@ export class StreamingReviewOrchestrator {
     const startTime = Date.now();
     let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
+    let managedWorktreeRef: ManagedWorktreeInfo | null = null;
 
     try {
       // Phase 1: Build review context
@@ -366,6 +369,7 @@ export class StreamingReviewOrchestrator {
           logger: this.createWorktreeLogger(),
           verbose: this.options.verbose,
         });
+        managedWorktreeRef = managedWorktree;
         worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
         reviewRepoPath = worktreeInfo.worktreePath;
         this.progress.success(
@@ -720,9 +724,20 @@ export class StreamingReviewOrchestrator {
 
       return report;
     } finally {
-      // Managed worktrees are NOT cleaned up after each review
-      // They are cached for reuse and automatically cleaned up after staleDays (default: 5 days)
-      if (worktreeInfo && this.options.verbose) {
+      if (managedWorktreeRef?.isCommitRef) {
+        // Commit-based worktrees are unique per SHA and won't be reused - clean up immediately
+        try {
+          removeManagedWorktree(managedWorktreeRef);
+          if (this.options.verbose) {
+            console.log(
+              `[StreamingOrchestrator] Commit worktree removed: ${managedWorktreeRef.worktreePath}`
+            );
+          }
+        } catch {
+          // Ignore cleanup errors
+        }
+      } else if (worktreeInfo && this.options.verbose) {
+        // Branch-based worktrees are preserved for reuse
         console.log(
           `[StreamingOrchestrator] Worktree preserved for future reuse: ${worktreeInfo.worktreePath}`
         );
@@ -740,6 +755,7 @@ export class StreamingReviewOrchestrator {
     const startTime = Date.now();
     let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
+    let managedWorktreeRef: ManagedWorktreeInfo | null = null;
 
     // Check if using external diff mode
     const hasExternalDiff =
@@ -953,6 +969,7 @@ export class StreamingReviewOrchestrator {
           logger: this.createWorktreeLogger(),
           verbose: this.options.verbose,
         });
+        managedWorktreeRef = managedWorktree;
         worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
         reviewRepoPath = worktreeInfo.worktreePath;
         this.progress.success(
@@ -1374,9 +1391,20 @@ export class StreamingReviewOrchestrator {
 
       return report;
     } finally {
-      // Managed worktrees are NOT cleaned up after each review
-      // They are cached for reuse and automatically cleaned up after staleDays (default: 5 days)
-      if (worktreeInfo && this.options.verbose) {
+      if (managedWorktreeRef?.isCommitRef) {
+        // Commit-based worktrees are unique per SHA and won't be reused - clean up immediately
+        try {
+          removeManagedWorktree(managedWorktreeRef);
+          if (this.options.verbose) {
+            console.log(
+              `[StreamingOrchestrator] Commit worktree removed: ${managedWorktreeRef.worktreePath}`
+            );
+          }
+        } catch {
+          // Ignore cleanup errors
+        }
+      } else if (worktreeInfo && this.options.verbose) {
+        // Branch-based worktrees are preserved for reuse
         console.log(
           `[StreamingOrchestrator] Worktree preserved for future reuse: ${worktreeInfo.worktreePath}`
         );
