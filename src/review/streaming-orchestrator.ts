@@ -2263,12 +2263,20 @@ Write all text (title, description, suggestion) in Chinese.`,
                 `Tokens: input=${inputTokens}, output=${outputTokens}, total=${tokensUsed}, turns=${turnCount}`
             );
           } else {
-            if (this.options.verbose) {
-              console.error(
-                `[StreamingOrchestrator] Agent ${agentType} error:`,
-                resultMessage.subtype
-              );
-            }
+            // SDK returned non-success result (error, max_turns_reached, etc.)
+            // This must throw so the agent is properly counted as failed
+            // and retried by runAgentsWithStreaming
+            const errorDetail =
+              'error' in resultMessage
+                ? String((resultMessage as Record<string, unknown>).error)
+                : resultMessage.subtype;
+            console.error(
+              `[StreamingOrchestrator] Agent ${agentType} SDK result: ${resultMessage.subtype}`,
+              errorDetail
+            );
+            throw new Error(
+              `Agent ${agentType} failed: SDK returned ${resultMessage.subtype}${errorDetail !== resultMessage.subtype ? ` - ${errorDetail}` : ''}`
+            );
           }
         }
       }
