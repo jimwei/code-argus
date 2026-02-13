@@ -47,6 +47,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
+import { loadReviewIgnorePatterns } from './config/reviewignore.js';
 import {
   reviewByRefs,
   formatReport,
@@ -453,6 +454,7 @@ function parseOptions(args: string[]): {
   configDirs: string[];
   rulesDirs: string[];
   customAgentsDirs: string[];
+  reviewIgnorePatterns: string[];
   skipValidation: boolean;
   jsonLogs: boolean;
   verbose: boolean;
@@ -468,6 +470,7 @@ function parseOptions(args: string[]): {
     configDirs: string[];
     rulesDirs: string[];
     customAgentsDirs: string[];
+    reviewIgnorePatterns: string[];
     skipValidation: boolean;
     jsonLogs: boolean;
     verbose: boolean;
@@ -482,6 +485,7 @@ function parseOptions(args: string[]): {
     configDirs: [],
     rulesDirs: [],
     customAgentsDirs: [],
+    reviewIgnorePatterns: [],
     skipValidation: false,
     jsonLogs: false,
     verbose: false,
@@ -559,10 +563,15 @@ function parseOptions(args: string[]): {
     }
   }
 
-  // Expand config-dir into rules-dir and agents-dir
+  // Expand config-dir into rules-dir, agents-dir, and load .argusignore
   for (const configDir of options.configDirs) {
     options.rulesDirs.push(`${configDir}/rules`);
     options.customAgentsDirs.push(`${configDir}/agents`);
+  }
+
+  // Load .argusignore patterns from all config directories
+  if (options.configDirs.length > 0) {
+    options.reviewIgnorePatterns = loadReviewIgnorePatterns(options.configDirs);
   }
 
   return options;
@@ -648,13 +657,17 @@ async function runReviewCommand(
     const prevReviewInfo = previousReviewData
       ? `Prev Review:   ${options.previousReview} (${previousReviewData.issues.length} issues)`
       : '';
+    const ignoreInfo =
+      options.reviewIgnorePatterns.length > 0
+        ? `Ignore Rules:  ${options.reviewIgnorePatterns.length} patterns from .argusignore`
+        : '';
 
     if (hasExternalDiff) {
       console.log(`
 @argus/core - AI Code Review
 =================================
 Repository:    ${repoPath}
-Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}
+Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}${ignoreInfo ? '\n' + ignoreInfo : ''}
 =================================
 `);
     } else {
@@ -667,7 +680,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
 Repository:    ${repoPath}
 ${sourceLabel}: ${sourceRef}
 ${targetLabel}: ${targetRef}
-Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}
+Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}${ignoreInfo ? '\n' + ignoreInfo : ''}
 =================================
 `);
     }
@@ -708,6 +721,8 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       local: options.local,
       // AbortController for graceful shutdown (use global one registered at module level)
       abortController: globalAbortController,
+      // .argusignore patterns for filtering files from review
+      reviewIgnorePatterns: options.reviewIgnorePatterns,
     },
   });
 

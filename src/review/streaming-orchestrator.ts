@@ -48,6 +48,7 @@ import {
   type ReviewMode,
 } from '../git/ref.js';
 import { parseDiff, type DiffFile } from '../git/parser.js';
+import { isFileIgnored, stripIgnoredFromDiff } from '../config/reviewignore.js';
 import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
 import { createStreamingValidator, type StreamingValidator } from './streaming-validator.js';
@@ -124,6 +125,7 @@ const DEFAULT_OPTIONS: Required<
   prContext: undefined,
   local: false,
   abortController: undefined,
+  reviewIgnorePatterns: [],
 };
 
 /**
@@ -1432,7 +1434,7 @@ export class StreamingReviewOrchestrator {
     }
 
     this.progress.progress('获取 diff...');
-    const diffResult = getDiffWithOptions({
+    let diffResult = getDiffWithOptions({
       sourceBranch,
       targetBranch,
       repoPath,
@@ -1443,8 +1445,33 @@ export class StreamingReviewOrchestrator {
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
 
     this.progress.progress('解析 diff...');
-    const diffFiles = parseDiff(diffResult.diff);
-    this.progress.success(`解析完成 (${diffFiles.length} 个文件)`);
+    let diffFiles = parseDiff(diffResult.diff);
+
+    // Apply .argusignore filtering
+    const ignorePatterns = this.options.reviewIgnorePatterns;
+    if (ignorePatterns && ignorePatterns.length > 0) {
+      const kept: DiffFile[] = [];
+      const ignoredPaths: string[] = [];
+      for (const f of diffFiles) {
+        if (isFileIgnored(f.path, ignorePatterns)) {
+          ignoredPaths.push(f.path);
+        } else {
+          kept.push(f);
+        }
+      }
+      if (ignoredPaths.length > 0) {
+        diffFiles = kept;
+        // Also strip ignored files from raw diff to save LLM tokens
+        diffResult = { ...diffResult, diff: stripIgnoredFromDiff(diffResult.diff, ignoredPaths) };
+        this.progress.success(
+          `解析完成 (${diffFiles.length} 个文件, ${ignoredPaths.length} 个被 .argusignore 忽略)`
+        );
+      } else {
+        this.progress.success(`解析完成 (${diffFiles.length} 个文件)`);
+      }
+    } else {
+      this.progress.success(`解析完成 (${diffFiles.length} 个文件)`);
+    }
 
     // Local diff analysis (fast, no LLM)
     this.progress.progress('分析变更...');
@@ -1612,10 +1639,33 @@ export class StreamingReviewOrchestrator {
 
       // Step 2: 解析处理后的 diff
       this.progress.progress('解析 diff...');
-      const diffFiles = preprocessed.diffFiles;
-      this.progress.success(
-        `解析完成 (${diffFiles.length} 个文件, 排除 ${deletedFiles.length} 个删除文件)`
-      );
+      let diffFiles = preprocessed.diffFiles;
+      let processedDiffText = preprocessed.processedDiff;
+
+      // Apply .argusignore filtering
+      const ignorePatterns = this.options.reviewIgnorePatterns;
+      let reviewIgnoredCount = 0;
+      if (ignorePatterns && ignorePatterns.length > 0) {
+        const kept: DiffFile[] = [];
+        const ignoredPaths: string[] = [];
+        for (const f of diffFiles) {
+          if (isFileIgnored(f.path, ignorePatterns)) {
+            ignoredPaths.push(f.path);
+          } else {
+            kept.push(f);
+          }
+        }
+        reviewIgnoredCount = ignoredPaths.length;
+        if (reviewIgnoredCount > 0) {
+          diffFiles = kept;
+          processedDiffText = stripIgnoredFromDiff(processedDiffText, ignoredPaths);
+        }
+      }
+
+      const parts = [`${diffFiles.length} 个文件`];
+      if (deletedFiles.length > 0) parts.push(`排除 ${deletedFiles.length} 个删除文件`);
+      if (reviewIgnoredCount > 0) parts.push(`${reviewIgnoredCount} 个被 .argusignore 忽略`);
+      this.progress.success(`解析完成 (${parts.join(', ')})`);
 
       // Local diff analysis (fast, no LLM)
       this.progress.progress('分析变更...');
@@ -1633,7 +1683,7 @@ export class StreamingReviewOrchestrator {
 
       // Create a synthetic DiffResult for external diff (using preprocessed content)
       const diffResult = {
-        diff: preprocessed.processedDiff,
+        diff: processedDiffText,
         sourceBranch: sourceRefStr || 'external',
         targetBranch: targetRefStr || 'external',
         repoPath: resolve(repoPath),
@@ -1749,15 +1799,38 @@ export class StreamingReviewOrchestrator {
     }
 
     // 使用预处理后的 diff 文件列表
-    const diffFiles = preprocessed.diffFiles;
-    this.progress.success(
-      `解析完成 (${diffFiles.length} 个文件, 排除 ${deletedFiles.length} 个删除文件)`
-    );
+    let diffFiles = preprocessed.diffFiles;
+    let processedDiffText = preprocessed.processedDiff;
+
+    // Apply .argusignore filtering
+    const ignorePatterns = this.options.reviewIgnorePatterns;
+    let reviewIgnoredCount = 0;
+    if (ignorePatterns && ignorePatterns.length > 0) {
+      const kept: DiffFile[] = [];
+      const ignoredPaths: string[] = [];
+      for (const f of diffFiles) {
+        if (isFileIgnored(f.path, ignorePatterns)) {
+          ignoredPaths.push(f.path);
+        } else {
+          kept.push(f);
+        }
+      }
+      reviewIgnoredCount = ignoredPaths.length;
+      if (reviewIgnoredCount > 0) {
+        diffFiles = kept;
+        processedDiffText = stripIgnoredFromDiff(processedDiffText, ignoredPaths);
+      }
+    }
+
+    const parts = [`${diffFiles.length} 个文件`];
+    if (deletedFiles.length > 0) parts.push(`排除 ${deletedFiles.length} 个删除文件`);
+    if (reviewIgnoredCount > 0) parts.push(`${reviewIgnoredCount} 个被 .argusignore 忽略`);
+    this.progress.success(`解析完成 (${parts.join(', ')})`);
 
     // 更新 diffResult 使用处理后的 diff
     const diffResult = {
       ...rawDiffResult,
-      diff: preprocessed.processedDiff,
+      diff: processedDiffText,
     };
 
     // Local diff analysis (fast, no LLM)

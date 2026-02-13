@@ -601,6 +601,11 @@ export interface OrchestratorOptions {
    * When abort() is called, running agents will be interrupted and cleanup will occur
    */
   abortController?: AbortController;
+  /**
+   * Patterns from .argusignore files for filtering out files from review
+   * Supports gitignore-style patterns (*, **, directory, negation with !)
+   */
+  reviewIgnorePatterns?: string[];
 }
 
 /**
