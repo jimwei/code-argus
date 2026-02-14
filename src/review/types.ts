@@ -526,6 +526,8 @@ export interface OrchestratorOptions {
   verbose?: boolean;
   /** Custom agents to use (default: all) */
   agents?: AgentType[];
+  /** Review mode: fast (2-round) or normal (5-round validation). Default: normal */
+  reviewMode?: 'fast' | 'normal';
   /** Skip validation (not recommended) */
   skipValidation?: boolean;
   /** Show CLI progress output (default: true) */

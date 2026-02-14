@@ -1,4 +1,11 @@
 /**
+ * 审核模式类型
+ * - fast: 2轮压缩验证（第1轮内化自我挑战，第2轮最终确认）
+ * - normal: 5轮完整验证（渐进式外部挑战）
+ */
+export type ReviewMode = 'fast' | 'normal';
+
+/**
  * 审查模块常量
  */
 
@@ -51,9 +58,12 @@ export const DEFAULT_VALIDATOR_MAX_TURNS = 30;
  * - 大多数 issues 2-3 轮就会稳定（连续两轮一致即终止）
  * - 低置信度 issues 会被自动拒绝，不消耗轮数
  */
-export function getValidatorMaxTurns(issueCount: number): number {
+export function getValidatorMaxTurns(
+  issueCount: number,
+  challengeRounds: number = MAX_CHALLENGE_ROUNDS
+): number {
   const BASE_TURNS = 5;
-  const TURNS_PER_ISSUE = 5; // 对应 MAX_CHALLENGE_ROUNDS
+  const TURNS_PER_ISSUE = challengeRounds; // 每 issue 最多 challengeRounds 轮
   const MIN_TURNS = 20;
   const MAX_TURNS = 300;
 
@@ -167,10 +177,16 @@ export const DEFAULT_VALIDATION_CONCURRENCY = 3;
 export const DEFAULT_CHALLENGE_MODE = true;
 
 /**
- * 最大挑战轮数
+ * 最大挑战轮数（normal 模式）
  * 支持最多5轮渐进式挑战策略
  */
 export const MAX_CHALLENGE_ROUNDS = 5;
+
+/**
+ * 最大挑战轮数（fast 模式）
+ * 第1轮内化自我挑战（合并原 R1-R4 的逻辑），第2轮最终确认
+ */
+export const FAST_MODE_CHALLENGE_ROUNDS = 2;
 
 /**
  * 每个验证组的最大问题数

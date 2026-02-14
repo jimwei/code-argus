@@ -111,6 +111,7 @@ const DEFAULT_OPTIONS: Required<
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
   skipValidation: false,
+  reviewMode: 'normal',
   showProgress: true,
   smartAgentSelection: true,
   disableSelectionLLM: false,
@@ -208,6 +209,9 @@ export class StreamingReviewOrchestrator {
     try {
       // Phase 1: Build review context
       this.progress.phase(1, 4, '构建审查上下文...');
+      const validationMode =
+        this.options.reviewMode === 'fast' ? '快速模式 (2轮验证)' : '标准模式 (5轮验证)';
+      this.progress.info(`验证模式: ${validationMode}`);
       if (this.options.verbose) {
         console.log('[StreamingOrchestrator] Building review context...');
       }
@@ -407,6 +411,7 @@ export class StreamingReviewOrchestrator {
             verbose: this.options.verbose,
             maxConcurrentSessions: 5,
             projectRules: projectRulesText || undefined,
+            fastMode: this.options.reviewMode === 'fast',
             callbacks: {
               onIssueDiscovered: (issue) => {
                 this.progress.issueDiscovered(
@@ -673,6 +678,11 @@ export class StreamingReviewOrchestrator {
         console.log(`[StreamingOrchestrator] Total validated issues: ${validatedIssues.length}`);
       }
 
+      // Fast mode: filter issues outside diff scope (all categories, not just style)
+      if (this.options.reviewMode === 'fast') {
+        validatedIssues = this.filterIssuesByDiffScope(validatedIssues, diffFiles);
+      }
+
       // Phase 4: Aggregate and generate report
       this.progress.phase(4, 4, '生成报告...');
       if (this.options.verbose) {
@@ -791,6 +801,10 @@ export class StreamingReviewOrchestrator {
       const { context, diffFiles, sourceRef, targetRef } = await this.buildContextByRefs(input);
 
       // Show review mode info
+      const validationMode =
+        this.options.reviewMode === 'fast' ? '快速模式 (2轮验证)' : '标准模式 (5轮验证)';
+      this.progress.info(`验证模式: ${validationMode}`);
+
       if (hasExternalDiff) {
         this.progress.info(`外部 Diff 模式: ${diffFiles.length} 个文件`);
       } else if (isIncremental && input.sourceRef && input.targetRef && sourceRef && targetRef) {
@@ -1017,6 +1031,7 @@ export class StreamingReviewOrchestrator {
             verbose: this.options.verbose,
             maxConcurrentSessions: 5,
             projectRules: projectRulesText || undefined,
+            fastMode: this.options.reviewMode === 'fast',
             callbacks: {
               onIssueDiscovered: (issue) => {
                 this.progress.issueDiscovered(
@@ -1338,6 +1353,11 @@ export class StreamingReviewOrchestrator {
 
       if (this.options.verbose) {
         console.log(`[StreamingOrchestrator] Total validated issues: ${validatedIssues.length}`);
+      }
+
+      // Fast mode: filter issues outside diff scope (all categories, not just style)
+      if (this.options.reviewMode === 'fast') {
+        validatedIssues = this.filterIssuesByDiffScope(validatedIssues, diffFiles);
       }
 
       // Phase 4: Aggregate and generate report
@@ -2040,6 +2060,58 @@ export class StreamingReviewOrchestrator {
       checklists: allChecklists,
       tokens: totalTokens,
     };
+  }
+
+  /**
+   * Fast mode: filter validated issues to only those within the PR diff scope.
+   * Issues whose file is not in the diff or whose line range doesn't overlap
+   * with any changed line are filtered out.
+   */
+  private filterIssuesByDiffScope(
+    validatedIssues: ValidatedIssue[],
+    diffFiles: DiffFile[]
+  ): ValidatedIssue[] {
+    // Build changed lines map from diffFiles
+    const changedLinesByFile = new Map<string, Set<number>>();
+    for (const file of diffFiles) {
+      if (file.changedLines && file.changedLines.length > 0) {
+        changedLinesByFile.set(file.path, new Set(file.changedLines));
+      }
+    }
+
+    if (changedLinesByFile.size === 0) {
+      return validatedIssues;
+    }
+
+    const originalCount = validatedIssues.length;
+    const filtered = validatedIssues.filter((issue) => {
+      const changedLines = changedLinesByFile.get(issue.file);
+      if (!changedLines || changedLines.size === 0) {
+        return false;
+      }
+
+      // Check if issue line range overlaps with any changed line
+      const lineStart = issue.line_start;
+      const lineEnd = issue.line_end || lineStart;
+      for (let line = lineStart; line <= lineEnd; line++) {
+        if (changedLines.has(line)) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+    const removedCount = originalCount - filtered.length;
+    if (removedCount > 0) {
+      this.progress.info(`快速模式范围过滤: 移除 ${removedCount} 个非变更行问题`);
+      if (this.options.verbose) {
+        console.log(
+          `[StreamingOrchestrator] Fast mode scope filter: removed ${removedCount}/${originalCount} issues outside diff scope`
+        );
+      }
+    }
+
+    return filtered;
   }
 
   /**

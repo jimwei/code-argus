@@ -106,6 +106,8 @@ export const VALIDATION_PROMPT_CONFIGS: Record<IssueCategory, ValidationPromptCo
 export interface ValidationPromptOptions {
   /** Project-specific review rules (markdown format) */
   projectRules?: string;
+  /** Use fast mode template (self-challenge in single round) */
+  fastMode?: boolean;
 }
 
 /**
@@ -116,7 +118,7 @@ export function buildValidationSystemPrompt(
   category: IssueCategory,
   options?: ValidationPromptOptions
 ): string {
-  const baseTemplate = loadBaseValidationTemplate();
+  const baseTemplate = loadBaseValidationTemplate(options?.fastMode);
   const categoryConfig = VALIDATION_PROMPT_CONFIGS[category];
 
   // Build project rules section if provided

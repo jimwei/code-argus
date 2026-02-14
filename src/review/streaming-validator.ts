@@ -23,6 +23,7 @@ import {
   DEFAULT_VALIDATOR_MAX_TURNS,
   DEFAULT_CHALLENGE_MODE,
   MAX_CHALLENGE_ROUNDS,
+  FAST_MODE_CHALLENGE_ROUNDS,
   MIN_CONFIDENCE_FOR_VALIDATION,
   DEFAULT_AGENT_MODEL,
   getValidatorMaxTurns,
@@ -87,6 +88,10 @@ export interface StreamingValidatorOptions {
   sessionIdleTimeoutMs?: number;
   /** Project-specific review rules (markdown format) */
   projectRules?: string;
+  /** Maximum challenge rounds per issue (default: MAX_CHALLENGE_ROUNDS) */
+  maxChallengeRounds?: number;
+  /** Use fast mode validation prompt (self-challenge in single round) */
+  fastMode?: boolean;
 }
 
 /**
@@ -102,6 +107,8 @@ interface ResolvedOptions {
   maxConcurrentSessions: number;
   sessionIdleTimeoutMs: number;
   projectRules?: string;
+  maxChallengeRounds: number;
+  fastMode: boolean;
 }
 
 /**
@@ -160,6 +167,7 @@ export class StreamingValidator {
   private allAgentsComplete = false;
 
   constructor(options: StreamingValidatorOptions) {
+    const fastMode = options.fastMode ?? false;
     this.options = {
       verbose: options.verbose ?? false,
       maxTurns: options.maxTurns ?? DEFAULT_VALIDATOR_MAX_TURNS,
@@ -170,6 +178,10 @@ export class StreamingValidator {
       onProgress: options.onProgress,
       callbacks: options.callbacks,
       projectRules: options.projectRules,
+      maxChallengeRounds:
+        options.maxChallengeRounds ??
+        (fastMode ? FAST_MODE_CHALLENGE_ROUNDS : MAX_CHALLENGE_ROUNDS),
+      fastMode,
     };
   }
 
@@ -453,6 +465,7 @@ export class StreamingValidator {
     const buildIssuePrompt = (issue: RawIssue, isFirst: boolean): string => {
       const systemPrompt = buildValidationSystemPrompt(issue.category, {
         projectRules: this.options.projectRules,
+        fastMode: this.options.fastMode,
       });
       const userPrompt = this.buildUserPrompt(issue);
 
@@ -553,7 +566,10 @@ export class StreamingValidator {
     // 动态计算 maxTurns：基于当前队列大小 + buffer
     // 预留 buffer 是因为 issues 可能在 session 运行时被动态添加
     const estimatedIssueCount = Math.max(session.queue.length + 1, 5); // +1 是当前 issue，至少预估 5 个
-    const dynamicMaxTurns = getValidatorMaxTurns(estimatedIssueCount);
+    const dynamicMaxTurns = getValidatorMaxTurns(
+      estimatedIssueCount,
+      this.options.maxChallengeRounds
+    );
     const maxTurns = Math.max(dynamicMaxTurns, this.options.maxTurns);
 
     if (this.options.verbose) {
@@ -926,7 +942,7 @@ export class StreamingValidator {
    * All issues use the same number of rounds for consistent validation quality.
    */
   private getMaxRoundsForIssue(_issue: RawIssue): number {
-    return MAX_CHALLENGE_ROUNDS;
+    return this.options.maxChallengeRounds;
   }
 
   private buildUserPrompt(issue: RawIssue): string {
@@ -959,6 +975,16 @@ ${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`
   ): string {
     const prevStatus = prevResponse.validation_status;
 
+    // Fast mode: round 2 is the final confirmation
+    if (this.options.fastMode && round === 2) {
+      return `你刚才经过自我质疑后判断这个问题为 "${prevStatus}"。
+
+这是最终确认轮：请再次审视你的分析，确认你没有遗漏关键因素。如果你的判断有变，请说明原因。
+
+以相同的 JSON 格式给出你的最终判断。`;
+    }
+
+    // Normal mode: progressive challenge rounds
     if (round === 2) {
       return `你刚才判断这个问题为 "${prevStatus}"。
 
@@ -1133,6 +1159,13 @@ ${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`
         maxVotes = count;
         finalStatus = status as 'confirmed' | 'rejected' | 'uncertain';
       }
+    }
+
+    // Tie-breaking: when no clear majority, use the last response's status
+    // This is important for fast mode (2 rounds) where R2 is the final confirmation
+    const hasClearMajority = maxVotes * 2 > responses.length;
+    if (!hasClearMajority) {
+      finalStatus = responses[responses.length - 1]!.validation_status;
     }
 
     // Use last response's details

@@ -38,9 +38,10 @@ function loadTemplate(filename: string): string {
 
 /**
  * Load base validation template
+ * @param fast - If true, load the fast mode template with self-challenge instructions
  */
-export function loadBaseValidationTemplate(): string {
-  return loadTemplate('base-validation.md');
+export function loadBaseValidationTemplate(fast?: boolean): string {
+  return loadTemplate(fast ? 'base-validation-fast.md' : 'base-validation.md');
 }
 
 /**

@@ -183,6 +183,7 @@ Options (review command):
   --rules-dir=<path>       Custom review rules directory
   --agents-dir=<path>      Custom agent definitions directory
   --skip-validation        Skip issue validation (faster but less accurate)
+  --review-mode=<mode>     Review mode: normal (default, 5-round validation) | fast (2-round compressed)
   --verbose                Enable verbose output
   --previous-review=<file> Previous review JSON file for fix verification
   --no-verify-fixes        Disable fix verification (when previous-review is set)
@@ -456,6 +457,7 @@ function parseOptions(args: string[]): {
   customAgentsDirs: string[];
   reviewIgnorePatterns: string[];
   skipValidation: boolean;
+  reviewMode: 'fast' | 'normal';
   jsonLogs: boolean;
   verbose: boolean;
   previousReview?: string;
@@ -472,6 +474,7 @@ function parseOptions(args: string[]): {
     customAgentsDirs: string[];
     reviewIgnorePatterns: string[];
     skipValidation: boolean;
+    reviewMode: 'fast' | 'normal';
     jsonLogs: boolean;
     verbose: boolean;
     previousReview?: string;
@@ -487,6 +490,7 @@ function parseOptions(args: string[]): {
     customAgentsDirs: [],
     reviewIgnorePatterns: [],
     skipValidation: false,
+    reviewMode: 'normal',
     jsonLogs: false,
     verbose: false,
     previousReview: undefined,
@@ -520,6 +524,11 @@ function parseOptions(args: string[]): {
       }
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
+    } else if (arg.startsWith('--review-mode=')) {
+      const mode = arg.split('=')[1];
+      if (mode === 'fast' || mode === 'normal') {
+        options.reviewMode = mode;
+      }
     } else if (arg === '--json-logs') {
       options.jsonLogs = true;
     } else if (arg === '--verbose') {
@@ -706,6 +715,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
     options: {
       verbose: options.verbose,
       skipValidation: options.skipValidation,
+      reviewMode: options.reviewMode,
       rulesDirs: options.rulesDirs,
       customAgentsDirs: options.customAgentsDirs,
       // Use JSON logs mode if specified, otherwise auto-detect
