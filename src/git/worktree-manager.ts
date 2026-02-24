@@ -154,6 +154,19 @@ export class WorktreeManager {
    */
   private isValidWorktree(worktreePath: string, repoPath: string): boolean {
     if (!existsSync(worktreePath)) {
+      // Directory doesn't exist, but git may still have a stale worktree registration
+      // (e.g., directory was deleted externally without `git worktree remove`).
+      // Prune to clear any "missing but registered" entries, otherwise
+      // `git worktree add` will fail with "already registered worktree".
+      try {
+        execSync('git worktree prune', {
+          cwd: repoPath,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        });
+      } catch {
+        // Ignore prune errors
+      }
       return false;
     }
 
@@ -235,10 +248,11 @@ export class WorktreeManager {
       });
     } catch (error: unknown) {
       const err = error as { stderr?: string; message?: string };
+      const detail = err.stderr || err.message || 'unknown error';
       throw new GitError(
-        `Failed to create worktree for ${checkoutRef}`,
+        `Failed to create worktree for ${checkoutRef}: ${detail}`,
         'WORKTREE_CREATE_FAILED',
-        err.stderr || err.message
+        detail
       );
     }
   }
