@@ -9,9 +9,11 @@
 - **多智能体并行审查** - 4 个专业 Agent 并发运行：安全、逻辑、性能、风格
 - **智能 Agent 选择** - 根据文件特征自动选择需要运行的 Agent
 - **问题验证** - 挑战模式多轮验证，显著降低误报率
+- **快速审核模式** - 2 轮压缩验证，更快获得反馈
 - **实时去重** - 两层去重机制：快速规则检查 + LLM 语义验证
 - **项目标准感知** - 自动提取 ESLint/TypeScript/Prettier 配置
 - **自定义规则** - 支持团队级审查规则和检查清单
+- **文件忽略规则** - `.argusignore` 支持，按 gitignore 语法过滤文件
 - **增量审查** - 只审查新增的提交，提升效率
 - **服务集成** - JSON 事件流输出，便于 CI/CD 和外部服务集成
 
@@ -216,11 +218,43 @@ argus review /repo feature main --skip-validation
 
 ---
 
+### `--review-mode=<mode>`
+
+**审核模式**
+
+控制问题验证的深度。
+
+| 值       | 说明                                  |
+| -------- | ------------------------------------- |
+| `normal` | 标准模式（默认）- 5 轮渐进式挑战验证  |
+| `fast`   | 快速模式 - 2 轮压缩验证，更快获得结果 |
+
+```bash
+# 快速审核（2 轮验证）
+argus review /repo feature main --review-mode=fast
+
+# 标准审核（默认，5 轮验证）
+argus review /repo feature main --review-mode=normal
+```
+
+**区别：**
+
+- **标准模式**：5 轮渐进式挑战验证，逐步深入调查
+- **快速模式**：2 轮压缩验证，第一轮将自我挑战逻辑内化为单轮执行，第二轮为最终确认。同时更积极地过滤 diff 范围外的问题
+
+**适用场景：**
+
+- 开发迭代中快速获取反馈
+- CI/CD 流水线中速度优先于详尽验证
+- 在正式标准模式审查前的初步审查
+
+---
+
 ### `--config-dir=<path>`
 
 **配置目录**
 
-指定配置目录，自动加载其中的 `rules/` 和 `agents/` 子目录。
+指定配置目录，自动加载其中的 `rules/` 和 `agents/` 子目录，以及 `.argusignore` 文件。
 
 ```bash
 argus review /repo feature main --config-dir=./.ai-review
@@ -230,6 +264,7 @@ argus review /repo feature main --config-dir=./.ai-review
 
 ```
 .ai-review/
+├── .argusignore        # 文件忽略规则（gitignore 语法）
 ├── rules/              # 补充内置 Agent 的规则
 │   ├── global.md       # 全局规则（应用于所有 Agent）
 │   ├── security.md     # 安全审查规则
@@ -330,6 +365,52 @@ output:
 ```bash
 argus review /repo feature main --verbose
 ```
+
+---
+
+### `.argusignore`
+
+**文件忽略规则**
+
+在配置目录中放置 `.argusignore` 文件，可排除不需要审查的文件。使用 gitignore 风格的语法。
+
+```bash
+# 使用 --config-dir 时自动加载
+argus review /repo feature main --config-dir=./.ai-review
+```
+
+**`.argusignore` 文件示例：**
+
+```gitignore
+# 测试文件
+*.test.ts
+*.spec.ts
+**/__tests__/**
+
+# 文档
+docs/**
+*.md
+
+# 构建产物
+dist/**
+build/**
+
+# 生成的文件
+**/*.generated.ts
+
+# 但保留关键测试
+!critical.test.ts
+```
+
+**支持的模式：**
+
+- `*.ext` — 按文件扩展名匹配
+- `**/__tests__/**` — 匹配任意深度的目录
+- `docs/**` — 匹配目录前缀
+- `!pattern` — 取反（取消忽略之前被忽略的文件）
+- `# comment` — 注释（以 `#` 开头的行）
+
+被忽略的文件会在审查前从 diff 中移除，节省 LLM token 并减少噪音。
 
 ---
 
@@ -578,6 +659,8 @@ src/
 ├── llm/
 │   ├── factory.ts        # LLM 提供者工厂
 │   └── providers/        # Claude/OpenAI 实现
+├── config/
+│   └── reviewignore.ts   # .argusignore 模式加载与匹配
 └── analyzer/
     ├── local-analyzer.ts # 本地快速分析
     └── diff-analyzer.ts  # LLM 语义分析

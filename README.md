@@ -9,9 +9,11 @@ English | [中文](./README.zh-CN.md)
 - **Multi-Agent Parallel Review** - 4 specialized agents run concurrently: security, logic, performance, style
 - **Smart Agent Selection** - Automatically selects agents based on file characteristics
 - **Issue Validation** - Challenge-mode multi-round validation significantly reduces false positives
+- **Fast Review Mode** - 2-round compressed validation for quicker feedback
 - **Realtime Deduplication** - Two-layer dedup: fast rule-based check + LLM semantic verification
 - **Project Standards Aware** - Auto-extracts ESLint/TypeScript/Prettier configs
 - **Custom Rules** - Team-specific review rules and checklists
+- **File Ignore Patterns** - `.argusignore` support with gitignore-style syntax
 - **Incremental Review** - Only review new commits for better efficiency
 - **Service Integration** - JSON event stream output for CI/CD and external service integration
 
@@ -216,11 +218,43 @@ argus review /repo feature main --skip-validation
 
 ---
 
+### `--review-mode=<mode>`
+
+**Review mode**
+
+Control the depth of issue validation.
+
+| Value    | Description                                                        |
+| -------- | ------------------------------------------------------------------ |
+| `normal` | Standard mode (default) - 5-round progressive challenge validation |
+| `fast`   | Fast mode - 2-round compressed validation for quicker results      |
+
+```bash
+# Fast review (2-round validation)
+argus review /repo feature main --review-mode=fast
+
+# Standard review (default, 5-round validation)
+argus review /repo feature main --review-mode=normal
+```
+
+**Differences:**
+
+- **Normal mode**: 5-round progressive challenge validation with thorough investigation
+- **Fast mode**: 2-round compressed validation that internalizes self-challenge logic into a single round, followed by final confirmation. Also filters out issues outside the diff scope more aggressively.
+
+**Use cases:**
+
+- Quick feedback during development iterations
+- CI/CD pipelines where speed matters more than exhaustive validation
+- Preliminary review before a thorough normal-mode pass
+
+---
+
 ### `--config-dir=<path>`
 
 **Configuration directory**
 
-Specify a config directory that auto-loads `rules/` and `agents/` subdirectories.
+Specify a config directory that auto-loads `rules/` and `agents/` subdirectories, and `.argusignore` file.
 
 ```bash
 argus review /repo feature main --config-dir=./.ai-review
@@ -230,6 +264,7 @@ argus review /repo feature main --config-dir=./.ai-review
 
 ```
 .ai-review/
+├── .argusignore        # File ignore patterns (gitignore syntax)
 ├── rules/              # Supplement built-in agent rules
 │   ├── global.md       # Global rules (apply to all agents)
 │   ├── security.md     # Security review rules
@@ -330,6 +365,52 @@ Output more debug information, including agent selection reasons, tool call deta
 ```bash
 argus review /repo feature main --verbose
 ```
+
+---
+
+### `.argusignore`
+
+**File ignore patterns**
+
+Place a `.argusignore` file in your config directory to exclude files from review. Uses gitignore-style syntax.
+
+```bash
+# Automatically loaded when using --config-dir
+argus review /repo feature main --config-dir=./.ai-review
+```
+
+**Example `.argusignore` file:**
+
+```gitignore
+# Test files
+*.test.ts
+*.spec.ts
+**/__tests__/**
+
+# Documentation
+docs/**
+*.md
+
+# Build artifacts
+dist/**
+build/**
+
+# Generated files
+**/*.generated.ts
+
+# But keep critical tests
+!critical.test.ts
+```
+
+**Supported patterns:**
+
+- `*.ext` — Match by file extension
+- `**/__tests__/**` — Match directories at any depth
+- `docs/**` — Match directory prefix
+- `!pattern` — Negation (un-ignore a previously ignored pattern)
+- `# comment` — Comments (lines starting with `#`)
+
+Ignored files are stripped from the diff before review, saving LLM tokens and reducing noise.
 
 ---
 
@@ -578,6 +659,8 @@ src/
 ├── llm/
 │   ├── factory.ts        # LLM provider factory
 │   └── providers/        # Claude/OpenAI implementations
+├── config/
+│   └── reviewignore.ts   # .argusignore pattern loading & matching
 └── analyzer/
     ├── local-analyzer.ts # Local fast analysis
     └── diff-analyzer.ts  # LLM semantic analysis
