@@ -119,6 +119,7 @@ const DEFAULT_OPTIONS: Required<
   customAgentsDirs: [],
   disableCustomAgentLLM: false,
   progressMode: 'auto',
+  language: 'zh',
   onEvent: undefined,
   previousReviewData: undefined,
   verifyFixes: undefined,
@@ -412,6 +413,7 @@ export class StreamingReviewOrchestrator {
             maxConcurrentSessions: 5,
             projectRules: projectRulesText || undefined,
             fastMode: this.options.reviewMode === 'fast',
+            language: this.options.language,
             callbacks: {
               onIssueDiscovered: (issue) => {
                 this.progress.issueDiscovered(
@@ -506,6 +508,7 @@ export class StreamingReviewOrchestrator {
                 diffContent: context.diff.diff,
                 fileAnalysesSummary,
                 standardsText: standardsToText(context.standards),
+                language: this.options.language,
               },
               {
                 onAgentStart: () => {
@@ -556,6 +559,7 @@ export class StreamingReviewOrchestrator {
               fileChangesSummary: fileAnalysesSummary,
               verbose: this.options.verbose,
               progress: this.progress,
+              language: this.options.language,
             })
           : Promise.resolve(undefined as FixVerificationSummary | undefined),
       ]);
@@ -722,7 +726,7 @@ export class StreamingReviewOrchestrator {
         metrics,
         context,
         metadata,
-        'zh',
+        this.options.language,
         this.fixVerificationResults
       );
 
@@ -1032,6 +1036,7 @@ export class StreamingReviewOrchestrator {
             maxConcurrentSessions: 5,
             projectRules: projectRulesText || undefined,
             fastMode: this.options.reviewMode === 'fast',
+            language: this.options.language,
             callbacks: {
               onIssueDiscovered: (issue) => {
                 this.progress.issueDiscovered(
@@ -1183,6 +1188,7 @@ export class StreamingReviewOrchestrator {
                 diffContent: context.diff.diff,
                 fileAnalysesSummary,
                 standardsText: standardsToText(context.standards),
+                language: this.options.language,
               },
               {
                 onAgentStart: () => {
@@ -1233,6 +1239,7 @@ export class StreamingReviewOrchestrator {
               fileChangesSummary: fileAnalysesSummary,
               verbose: this.options.verbose,
               progress: this.progress,
+              language: this.options.language,
             })
           : Promise.resolve(undefined as FixVerificationSummary | undefined),
       ]);
@@ -1399,7 +1406,7 @@ export class StreamingReviewOrchestrator {
         metrics,
         context,
         metadata,
-        'zh',
+        this.options.language,
         this.fixVerificationResults
       );
 
@@ -2129,6 +2136,7 @@ export class StreamingReviewOrchestrator {
     const verbose = this.options.verbose;
     const skipValidation = this.options.skipValidation;
     const progress = this.progress;
+    const langLabel = this.options.language === 'en' ? 'English' : 'Chinese';
 
     // We need to track which agent is calling, so we'll create per-agent servers
     return (agentType: AgentType) =>
@@ -2140,7 +2148,7 @@ export class StreamingReviewOrchestrator {
             'report_issue',
             `Report a discovered code issue. Call this for EACH issue found during review.
 The issue will be checked for duplicates and validated automatically.
-Write all text (title, description, suggestion) in Chinese.`,
+Write all text (title, description, suggestion) in ${langLabel}.`,
             {
               file: z.string().describe('File path where the issue is located'),
               line_start: z.number().describe('Starting line number'),
@@ -2151,9 +2159,9 @@ Write all text (title, description, suggestion) in Chinese.`,
               category: z
                 .enum(['security', 'logic', 'performance', 'style', 'maintainability'])
                 .describe('Issue category'),
-              title: z.string().describe('Short title in Chinese'),
-              description: z.string().describe('Detailed description in Chinese'),
-              suggestion: z.string().optional().describe('Fix suggestion in Chinese'),
+              title: z.string().describe(`Short title in ${langLabel}`),
+              description: z.string().describe(`Detailed description in ${langLabel}`),
+              suggestion: z.string().optional().describe(`Fix suggestion in ${langLabel}`),
               code_snippet: z.string().optional().describe('Relevant code snippet'),
               confidence: z.number().min(0).max(1).describe('Confidence level (0-1)'),
             },
@@ -2331,7 +2339,7 @@ Write all text (title, description, suggestion) in Chinese.`,
         : undefined;
 
     // Build prompts
-    const systemPrompt = buildStreamingSystemPrompt(agentType);
+    const systemPrompt = buildStreamingSystemPrompt(agentType, this.options.language);
 
     // Only add deleted files context for logic-reviewer (to understand code removal context)
     const deletedFilesContext =

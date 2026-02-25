@@ -2,8 +2,8 @@
 
 **IMPORTANT - Language Requirement**:
 
-- All issue descriptions, suggestions, and explanations MUST be written in Chinese.
-- Use clear, professional Chinese to describe problems and provide suggestions.
+- All issue descriptions, suggestions, and explanations MUST be written in {{COMMENT_LANGUAGE}}.
+- Use clear, professional language to describe problems and provide suggestions.
 
 You must output your findings as valid JSON with this structure:
 
@@ -84,5 +84,5 @@ You must output your findings as valid JSON with this structure:
   - `error`: Bugs that will cause incorrect behavior
   - `warning`: Potential issues, code smells, minor bugs
   - `suggestion`: Improvements, style issues, best practices
-- Always provide actionable suggestions for fixes in Chinese
-- Write all descriptions and suggestions in Chinese
+- Always provide actionable suggestions for fixes in {{COMMENT_LANGUAGE}}
+- Write all descriptions and suggestions in {{COMMENT_LANGUAGE}}

@@ -108,6 +108,8 @@ export interface ValidationPromptOptions {
   projectRules?: string;
   /** Use fast mode template (self-challenge in single round) */
   fastMode?: boolean;
+  /** Output language for review comments */
+  language?: 'en' | 'zh';
 }
 
 /**
@@ -118,8 +120,12 @@ export function buildValidationSystemPrompt(
   category: IssueCategory,
   options?: ValidationPromptOptions
 ): string {
-  const baseTemplate = loadBaseValidationTemplate(options?.fastMode);
+  let baseTemplate = loadBaseValidationTemplate(options?.fastMode);
   const categoryConfig = VALIDATION_PROMPT_CONFIGS[category];
+
+  // Replace language placeholder
+  const langText = (options?.language ?? 'zh') === 'en' ? 'English' : 'Chinese (中文)';
+  baseTemplate = baseTemplate.replace('{{COMMENT_LANGUAGE}}', langText);
 
   // Build project rules section if provided
   const projectRulesSection = options?.projectRules

@@ -36,7 +36,7 @@ When validating issues, follow this priority order:
 
 **CRITICAL RULES**:
 
-1. All explanations must be in Chinese (中文)
+1. All explanations must be in {{COMMENT_LANGUAGE}}
 2. Keep "related_context" VERY SHORT (1 sentence, max 50 chars)
 3. Keep "reasoning" concise but include your self-challenge conclusion (2-3 sentences, max 200 chars)
 4. DO NOT include code snippets or multi-line text in JSON string values

@@ -42,6 +42,8 @@ export interface FixVerifierOptions {
   verbose?: boolean;
   /** Progress printer for status updates */
   progress?: IProgressPrinter;
+  /** Output language for review comments */
+  language?: 'en' | 'zh';
   /** Callbacks for real-time updates */
   callbacks?: {
     onScreeningComplete?: (issueId: string, status: string) => void;
@@ -62,6 +64,7 @@ export async function executeFixVerifier(
   const screeningResults: ScreeningResult[] = [];
   const verificationResults: FixVerificationResult[] = [];
   let tokensUsed = 0;
+  const langLabel = (options.language ?? 'zh') === 'en' ? 'English' : 'Chinese';
 
   const { previousReview, repoPath, verbose, progress, callbacks } = options;
 
@@ -86,7 +89,7 @@ Call this for EACH issue after initial screening.`,
           screening_status: z
             .enum(['resolved', 'unresolved', 'unclear'])
             .describe('Screening status'),
-          quick_reasoning: z.string().describe('Brief explanation in Chinese'),
+          quick_reasoning: z.string().describe(`Brief explanation in ${langLabel}`),
         },
         async (args) => {
           if (verbose) {
@@ -141,7 +144,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
               checked_files: z.array(z.string()).describe('Files that were checked'),
               examined_code: z.array(z.string()).describe('Code snippets examined'),
               related_changes: z.string().describe('Summary of related changes found'),
-              reasoning: z.string().describe('Detailed reasoning in Chinese'),
+              reasoning: z.string().describe(`Detailed reasoning in ${langLabel}`),
             })
             .describe('Evidence collected during verification'),
           updated_issue: z
@@ -227,7 +230,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
   });
 
   // Build prompts
-  const systemPrompt = buildFixVerifierSystemPrompt();
+  const systemPrompt = buildFixVerifierSystemPrompt(options.language);
   const userPrompt = buildFixVerifierUserPrompt(options);
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
@@ -361,7 +364,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
 /**
  * Build system prompt for fix verifier agent
  */
-function buildFixVerifierSystemPrompt(): string {
+function buildFixVerifierSystemPrompt(language: 'en' | 'zh' = 'zh'): string {
   return `You are a Fix Verification Specialist. Your task is to verify whether code issues identified in a previous review have been properly addressed in the current changes.
 
 ## Your Mission
@@ -397,7 +400,7 @@ Use the \`report_verification_result\` tool for each deeply investigated issue.
 1. Complete ALL Phase 1 screenings first, then proceed to Phase 2
 2. Be thorough but efficient - Phase 1 should be quick
 3. Provide evidence for all conclusions
-4. All text output (reasoning, descriptions) must be in Chinese
+4. All text output (reasoning, descriptions) must be in ${language === 'en' ? 'English' : 'Chinese'}
 5. Be fair - some original issues may have been false positives`;
 }
 

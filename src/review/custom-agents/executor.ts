@@ -36,6 +36,8 @@ export interface CustomAgentExecutorOptions {
   standardsText?: string;
   /** Max turns for agent execution */
   maxTurns?: number;
+  /** Output language for review comments */
+  language?: 'en' | 'zh';
 }
 
 /**
@@ -59,8 +61,12 @@ export interface CustomAgentExecutorCallbacks {
 /**
  * Build system prompt for custom agent
  */
-function buildCustomAgentSystemPrompt(agent: LoadedCustomAgent): string {
+function buildCustomAgentSystemPrompt(
+  agent: LoadedCustomAgent,
+  language: 'en' | 'zh' = 'zh'
+): string {
   const category = agent.output?.category || CUSTOM_AGENT_DEFAULTS.output.category;
+  const langLabel = language === 'en' ? 'English' : '中文';
 
   return `# ${agent.name}
 
@@ -79,7 +85,7 @@ ${agent.prompt}
 1. 仔细阅读代码变更（diff）
 2. 根据审查指南识别问题
 3. 对于每个发现的问题，使用 \`report_issue\` 工具进行报告
-4. 所有文本（标题、描述、建议）必须使用中文
+4. 所有文本（标题、描述、建议）必须使用${langLabel}
 5. 默认问题类别为 \`${category}\`，但可根据实际情况调整
 6. 置信度 (confidence) 应反映你对问题真实性的把握程度
 
@@ -135,10 +141,12 @@ function buildCustomAgentUserPrompt(
 function createCustomAgentMcpServer(
   agent: LoadedCustomAgent,
   onIssue: (issue: RawIssue) => void,
+  language: 'en' | 'zh' = 'zh',
   verbose?: boolean
 ) {
   const defaultCategory = agent.output?.category || CUSTOM_AGENT_DEFAULTS.output.category;
   const defaultSeverity = agent.output?.default_severity;
+  const langLabel = language === 'en' ? 'English' : 'Chinese';
 
   return createSdkMcpServer({
     name: 'custom-agent-tools',
@@ -147,7 +155,7 @@ function createCustomAgentMcpServer(
       tool(
         'report_issue',
         `Report a discovered code issue. Call this for EACH issue found during review.
-Write all text (title, description, suggestion) in Chinese.`,
+Write all text (title, description, suggestion) in ${langLabel}.`,
         {
           file: z.string().describe('File path where the issue is located'),
           line_start: z.number().describe('Starting line number'),
@@ -160,9 +168,9 @@ Write all text (title, description, suggestion) in Chinese.`,
             .enum(['security', 'logic', 'performance', 'style', 'maintainability'])
             .optional()
             .describe(`Issue category (default: ${defaultCategory})`),
-          title: z.string().describe('Short title in Chinese'),
-          description: z.string().describe('Detailed description in Chinese'),
-          suggestion: z.string().optional().describe('Fix suggestion in Chinese'),
+          title: z.string().describe(`Short title in ${langLabel}`),
+          description: z.string().describe(`Detailed description in ${langLabel}`),
+          suggestion: z.string().optional().describe(`Fix suggestion in ${langLabel}`),
           code_snippet: z.string().optional().describe('Relevant code snippet'),
           confidence: z.number().min(0).max(1).describe('Confidence level (0-1)'),
         },
@@ -242,10 +250,10 @@ export async function executeCustomAgent(
   };
 
   // Create MCP server
-  const mcpServer = createCustomAgentMcpServer(agent, onIssue, options.verbose);
+  const mcpServer = createCustomAgentMcpServer(agent, onIssue, options.language, options.verbose);
 
   // Build prompts
-  const systemPrompt = buildCustomAgentSystemPrompt(agent);
+  const systemPrompt = buildCustomAgentSystemPrompt(agent, options.language);
   const userPrompt = buildCustomAgentUserPrompt(
     options.diffContent,
     options.fileAnalysesSummary,

@@ -733,6 +733,8 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       abortController: globalAbortController,
       // .argusignore patterns for filtering files from review
       reviewIgnorePatterns: options.reviewIgnorePatterns,
+      // Output language for review comments
+      language: options.language,
     },
   });
 

@@ -608,6 +608,8 @@ export interface OrchestratorOptions {
    * Supports gitignore-style patterns (*, **, directory, negation with !)
    */
   reviewIgnorePatterns?: string[];
+  /** Output language for review comments: 'zh' (default) | 'en' */
+  language?: 'en' | 'zh';
 }
 
 /**

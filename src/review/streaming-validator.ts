@@ -92,6 +92,8 @@ export interface StreamingValidatorOptions {
   maxChallengeRounds?: number;
   /** Use fast mode validation prompt (self-challenge in single round) */
   fastMode?: boolean;
+  /** Output language for review comments */
+  language?: 'en' | 'zh';
 }
 
 /**
@@ -109,6 +111,7 @@ interface ResolvedOptions {
   projectRules?: string;
   maxChallengeRounds: number;
   fastMode: boolean;
+  language: 'en' | 'zh';
 }
 
 /**
@@ -182,6 +185,7 @@ export class StreamingValidator {
         options.maxChallengeRounds ??
         (fastMode ? FAST_MODE_CHALLENGE_ROUNDS : MAX_CHALLENGE_ROUNDS),
       fastMode,
+      language: options.language ?? 'zh',
     };
   }
 
@@ -466,6 +470,7 @@ export class StreamingValidator {
       const systemPrompt = buildValidationSystemPrompt(issue.category, {
         projectRules: this.options.projectRules,
         fastMode: this.options.fastMode,
+        language: this.options.language,
       });
       const userPrompt = this.buildUserPrompt(issue);
 

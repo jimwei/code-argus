@@ -8,9 +8,18 @@ import type { IssueCategory, PRContext } from '../types.js';
 import { DIFF_ANALYSIS_INSTRUCTIONS } from './base.js';
 
 /**
+ * Get language label for prompt instructions
+ */
+function getLangLabel(language: 'en' | 'zh'): string {
+  return language === 'en' ? 'English' : 'Chinese';
+}
+
+/**
  * Instructions for using the report_issue tool
  */
-export const REPORT_ISSUE_TOOL_INSTRUCTIONS = `
+export function getReportIssueToolInstructions(language: 'en' | 'zh' = 'zh'): string {
+  const lang = getLangLabel(language);
+  return `
 ## Issue Reporting (CRITICAL)
 
 You MUST use the **report_issue** tool to report each issue you find.
@@ -29,9 +38,9 @@ You MUST use the **report_issue** tool to report each issue you find.
 - \`line_end\`: Ending line number (number)
 - \`severity\`: "critical" | "error" | "warning" | "suggestion"
 - \`category\`: "security" | "logic" | "performance" | "style" | "maintainability"
-- \`title\`: Short title in Chinese (string)
-- \`description\`: Detailed description in Chinese (string)
-- \`suggestion\`: Fix suggestion in Chinese (optional string)
+- \`title\`: Short title in ${lang} (string)
+- \`description\`: Detailed description in ${lang} (string)
+- \`suggestion\`: Fix suggestion in ${lang} (optional string)
 - \`code_snippet\`: Relevant code (optional string)
 - \`confidence\`: 0.0-1.0 how confident you are (number)
 
@@ -56,13 +65,21 @@ report_issue({
 - Report issues ONE BY ONE as you find them
 - Don't wait until the end to report all issues
 - The system will handle deduplication automatically
-- Write all titles, descriptions, and suggestions in Chinese
+- Write all titles, descriptions, and suggestions in ${lang}
 `;
+}
+
+/** @deprecated Use getReportIssueToolInstructions(language) instead */
+export const REPORT_ISSUE_TOOL_INSTRUCTIONS = getReportIssueToolInstructions('zh');
 
 /**
  * Build streaming system prompt for agents
  */
-export function buildStreamingSystemPrompt(agentRole: string): string {
+export function buildStreamingSystemPrompt(
+  agentRole: string,
+  language: 'en' | 'zh' = 'zh'
+): string {
+  const lang = getLangLabel(language);
   return `You are an expert code reviewer specializing in ${agentRole}.
 
 Your task is to analyze code changes and report issues using the report_issue tool.
@@ -71,7 +88,7 @@ Your task is to analyze code changes and report issues using the report_issue to
 1. **REPORT ISSUES IMMEDIATELY**: Use the report_issue tool as soon as you find an issue
 2. **DO NOT OUTPUT JSON**: Report via tool calls, not JSON output
 3. ONLY review changed code (lines marked with + or -)
-4. All descriptions MUST be in Chinese
+4. All descriptions MUST be in ${lang}
 
 ## Tool Usage
 
@@ -81,7 +98,7 @@ You have access to these tools:
 - **Grep**: Search for patterns in codebase
 - **Glob**: Find files matching a pattern
 
-${REPORT_ISSUE_TOOL_INSTRUCTIONS}
+${getReportIssueToolInstructions(language)}
 
 ${DIFF_ANALYSIS_INSTRUCTIONS}
 
