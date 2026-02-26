@@ -140,6 +140,8 @@ function getLanguageFromPath(path: string): string {
     rb: 'ruby',
     php: 'php',
     cs: 'csharp',
+    vb: 'vb',
+    vbs: 'vb',
     cpp: 'cpp',
     c: 'c',
     h: 'c',
