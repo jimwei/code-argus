@@ -29,15 +29,16 @@ export interface SpecialistContext {
 export function buildSpecialistPrompt(agentType: AgentType, context: SpecialistContext): string {
   const sections: string[] = [];
 
-  // PR Business Context (Jira integration)
-  if (context.prContext && context.prContext.jiraIssues.length > 0) {
+  // PR Business Context (Issue Tracker integration)
+  const prIssues = context.prContext?.issues || context.prContext?.jiraIssues;
+  if (context.prContext && prIssues && prIssues.length > 0) {
     sections.push('## PR Business Context\n');
     sections.push(`**PR Title**: ${context.prContext.prTitle}\n`);
     if (context.prContext.prDescription) {
       sections.push(`**PR Description**: ${context.prContext.prDescription}\n`);
     }
-    sections.push('### Related Jira Issues\n');
-    for (const issue of context.prContext.jiraIssues) {
+    sections.push('### Related Issues\n');
+    for (const issue of prIssues) {
       sections.push(`#### ${issue.key} (${issue.type})`);
       sections.push(`**摘要**: ${issue.summary}\n`);
       if (issue.keyPoints.length > 0) {

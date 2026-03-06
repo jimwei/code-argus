@@ -1515,9 +1515,10 @@ export class StreamingReviewOrchestrator {
     this.progress.success('项目标准提取完成');
 
     // Log PR context if present
-    if (this.options.prContext && this.options.prContext.jiraIssues?.length > 0) {
+    const prIssues = this.options.prContext?.issues || this.options.prContext?.jiraIssues;
+    if (prIssues && prIssues.length > 0) {
       this.progress.info(
-        `PR Context: ${this.options.prContext.jiraIssues.length} Jira issue(s) - ${this.options.prContext.jiraIssues.map((i) => i.key).join(', ')}`
+        `PR Context: ${prIssues.length} issue(s) - ${prIssues.map((i) => i.key).join(', ')}`
       );
     }
 
@@ -2348,9 +2349,10 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         : undefined;
 
     // Log PR context injection for this agent
-    if (context.prContext?.jiraIssues?.length) {
+    const contextIssues = context.prContext?.issues || context.prContext?.jiraIssues;
+    if (contextIssues?.length) {
       this.progress.info(
-        `[${agentType}] 注入 PR Context: ${context.prContext.jiraIssues.length} 个 Jira issue - ${context.prContext.jiraIssues.map((i) => i.key).join(', ')}`
+        `[${agentType}] 注入 PR Context: ${contextIssues.length} 个 issue - ${contextIssues.map((i) => i.key).join(', ')}`
       );
     }
 

@@ -643,8 +643,13 @@ async function runReviewCommand(
     try {
       const content = readFileSync(options.prContext, 'utf-8');
       prContext = JSON.parse(content) as PRContext;
-      if (prContext.jiraIssues && prContext.jiraIssues.length > 0) {
-        console.log(`PR Context: ${prContext.jiraIssues.length} Jira issue(s) loaded`);
+      // 向后兼容：支持旧版 jiraIssues 字段
+      if (!prContext.issues && prContext.jiraIssues) {
+        prContext.issues = prContext.jiraIssues;
+      }
+      const issues = prContext.issues || [];
+      if (issues.length > 0) {
+        console.log(`PR Context: ${issues.length} issue(s) loaded`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

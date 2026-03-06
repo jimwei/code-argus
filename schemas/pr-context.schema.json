@@ -2,13 +2,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://code-argus.dev/schemas/pr-context.json",
   "title": "PR Context",
-  "description": "PR business context for code-argus code review, providing Jira integration and additional context for review agents",
+  "description": "PR business context for code-argus code review, providing issue tracker integration and additional context for review agents",
   "type": "object",
-  "required": ["prTitle", "jiraIssues", "parseStatus"],
+  "required": ["prTitle", "parseStatus"],
   "properties": {
     "prTitle": {
       "type": "string",
-      "description": "Pull request title (often contains Jira issue key)",
+      "description": "Pull request title (often contains issue key)",
       "examples": ["PROJ-123: Fix login validation bug", "[PROJ-456] Add user authentication"]
     },
     "prDescription": {
@@ -16,62 +16,61 @@
       "description": "Pull request description/body text",
       "examples": ["This PR fixes the login validation issue reported in PROJ-123"]
     },
+    "issues": {
+      "type": "array",
+      "description": "Array of issues associated with this PR (can be empty if no issue tracker integration)",
+      "items": {
+        "$ref": "#/definitions/IssueSummary"
+      }
+    },
     "jiraIssues": {
       "type": "array",
-      "description": "Array of Jira issues associated with this PR (can be empty if no Jira integration)",
+      "description": "Deprecated: Use 'issues' instead. Kept for backward compatibility.",
       "items": {
-        "$ref": "#/definitions/JiraIssueSummary"
+        "$ref": "#/definitions/IssueSummary"
       }
     },
     "parseStatus": {
       "type": "string",
       "enum": ["found", "none", "partial_error"],
-      "description": "Status of Jira key parsing: 'found' = issues found and fetched, 'none' = no Jira keys in title, 'partial_error' = some issues failed to fetch"
+      "description": "Status of issue key parsing: 'found' = issues found and fetched, 'none' = no issue keys in title, 'partial_error' = some issues failed to fetch"
     },
     "parseMessage": {
       "type": "string",
-      "description": "Optional status message for debugging (e.g., 'Successfully processed 2 Jira issues')"
+      "description": "Optional status message for debugging (e.g., 'Successfully processed 2 issues')"
     }
   },
   "definitions": {
-    "JiraIssueSummary": {
+    "IssueSummary": {
       "type": "object",
-      "description": "Summary of a Jira issue extracted for code review context",
+      "description": "Summary of an issue extracted for code review context",
       "required": ["key", "type", "summary", "keyPoints", "reviewContext"],
       "properties": {
         "key": {
           "type": "string",
           "pattern": "^[A-Z]{2,10}-\\d{1,6}$",
-          "description": "Jira issue key (e.g., 'PROJ-123', 'MYAPP-4567')",
-          "examples": ["PROJ-123", "FEATURE-42", "BUGFIX-999"]
+          "description": "Issue key (e.g., 'PROJ-123', 'GEDS-15935')",
+          "examples": ["PROJ-123", "FEATURE-42", "GEDS-15935"]
         },
         "type": {
           "type": "string",
-          "description": "Jira issue type",
+          "description": "Issue type",
           "examples": ["Bug", "Story", "Task", "Epic", "Sub-task", "Improvement"]
         },
         "summary": {
           "type": "string",
-          "description": "Concise summary of the issue (100-200 characters recommended)",
-          "examples": ["Login fails when password contains special characters like & or <"]
+          "description": "Concise summary of the issue (100-200 characters recommended)"
         },
         "keyPoints": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Key acceptance criteria or fix points extracted from the issue",
-          "examples": [
-            ["Handle special characters in password input", "Show proper error message for invalid characters", "Add input validation on both client and server"]
-          ]
+          "description": "Key acceptance criteria or fix points extracted from the issue"
         },
         "reviewContext": {
           "type": "string",
-          "description": "Context relevant to code review - what reviewers should focus on",
-          "examples": [
-            "Check input validation and sanitization for XSS prevention",
-            "Verify error handling covers edge cases mentioned in acceptance criteria"
-          ]
+          "description": "Context relevant to code review - what reviewers should focus on"
         }
       }
     }
@@ -79,8 +78,8 @@
   "examples": [
     {
       "prTitle": "PROJ-123: Fix login validation bug",
-      "prDescription": "This PR fixes the login validation issue where special characters in passwords were causing failures.",
-      "jiraIssues": [
+      "prDescription": "This PR fixes the login validation issue.",
+      "issues": [
         {
           "key": "PROJ-123",
           "type": "Bug",
@@ -93,14 +92,14 @@
         }
       ],
       "parseStatus": "found",
-      "parseMessage": "Successfully processed 1 Jira issue"
+      "parseMessage": "Successfully processed 1 issue"
     },
     {
       "prTitle": "Add user profile feature",
       "prDescription": "New feature for user profiles",
-      "jiraIssues": [],
+      "issues": [],
       "parseStatus": "none",
-      "parseMessage": "No Jira keys found in PR title"
+      "parseMessage": "No issue keys found in PR title"
     }
   ]
 }

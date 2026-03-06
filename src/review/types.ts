@@ -384,9 +384,9 @@ export interface PreviousReviewData {
 // ============================================================================
 
 /**
- * Jira issue summary extracted by LLM
+ * Issue summary extracted by LLM (supports Jira, YouTrack, etc.)
  */
-export interface JiraIssueSummary {
+export interface IssueSummary {
   /** Issue key (e.g., "PROJ-123") */
   key: string;
   /** Issue type (Bug, Story, Task, etc.) */
@@ -399,17 +399,22 @@ export interface JiraIssueSummary {
   reviewContext: string;
 }
 
+/** @deprecated Use IssueSummary instead */
+export type JiraIssueSummary = IssueSummary;
+
 /**
  * PR business context passed from bitbucket-pr-manager
- * Contains Jira information to provide context for code review
+ * Contains issue tracker information to provide context for code review
  */
 export interface PRContext {
   /** PR title */
   prTitle: string;
   /** PR description */
   prDescription: string | null;
-  /** Jira issues associated with this PR (may be empty) */
-  jiraIssues: JiraIssueSummary[];
+  /** Issues associated with this PR (may be empty) */
+  issues: IssueSummary[];
+  /** @deprecated Use `issues` instead */
+  jiraIssues?: IssueSummary[];
   /** Parse status */
   parseStatus: 'found' | 'none' | 'partial_error';
   /** Parse message for debugging */

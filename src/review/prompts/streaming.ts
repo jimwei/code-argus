@@ -226,16 +226,17 @@ export function buildStreamingUserPrompt(
 
   sections.push(`# Code Review Task: ${agentType}\n`);
 
-  // PR Business Context (Jira integration) - inject early for context
-  if (params.prContext && params.prContext.jiraIssues && params.prContext.jiraIssues.length > 0) {
+  // PR Business Context (Issue Tracker integration) - inject early for context
+  const prIssues = params.prContext?.issues || params.prContext?.jiraIssues;
+  if (params.prContext && prIssues && prIssues.length > 0) {
     sections.push('## PR Business Context\n');
     sections.push(`**PR Title**: ${params.prContext.prTitle}\n`);
     if (params.prContext.prDescription) {
       sections.push(`**PR Description**: ${params.prContext.prDescription}\n`);
     }
-    sections.push('### Related Jira Issues\n');
-    sections.push('以下是与此 PR 相关的 Jira issue，请在 review 时参考这些业务上下文：\n');
-    for (const issue of params.prContext.jiraIssues) {
+    sections.push('### Related Issues\n');
+    sections.push('以下是与此 PR 相关的 issue，请在 review 时参考这些业务上下文：\n');
+    for (const issue of prIssues) {
       sections.push(`#### ${issue.key} (${issue.type})`);
       sections.push(`**摘要**: ${issue.summary}\n`);
       if (issue.keyPoints.length > 0) {
