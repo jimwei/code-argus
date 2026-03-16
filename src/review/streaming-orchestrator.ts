@@ -2417,8 +2417,23 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
               `[Agent-Detail] ${agentType} FinalResult ` +
                 `Tokens: input=${inputTokens}, output=${outputTokens}, total=${tokensUsed}, turns=${turnCount}`
             );
+          } else if (resultMessage.subtype === 'error_max_turns') {
+            // Agent reached max turns limit - treat as partial success
+            // Issues already reported via MCP report_issue are preserved
+            const issueCount = this.issueCountByAgent.get(agentType) || 0;
+            const inputTokens = resultMessage.usage.input_tokens;
+            const outputTokens = resultMessage.usage.output_tokens;
+            tokensUsed = inputTokens + outputTokens;
+            console.warn(
+              `[StreamingOrchestrator] Agent ${agentType} reached maxTurns limit (${maxTurns} turns). ` +
+                `Treating as partial success with ${issueCount} issues already reported. ` +
+                `Tokens: input=${inputTokens}, output=${outputTokens}, turns=${turnCount}`
+            );
+            this.progress.warn(
+              `Agent ${agentType} 达到最大轮次限制 (${maxTurns} turns)，已收集 ${issueCount} 个问题作为部分结果`
+            );
           } else {
-            // SDK returned non-success result (error, max_turns_reached, etc.)
+            // SDK returned other non-success result (real errors)
             // This must throw so the agent is properly counted as failed
             // and retried by runAgentsWithStreaming
             const errorDetail =
