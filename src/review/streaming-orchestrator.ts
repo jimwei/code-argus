@@ -155,6 +155,7 @@ export class StreamingReviewOrchestrator {
   private fixVerificationResults?: FixVerificationSummary;
   /** Track issue count per agent for progress reporting */
   private issueCountByAgent: Map<string, number> = new Map();
+  private issueCountByInvocation: Map<string, number> = new Map();
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -196,6 +197,38 @@ export class StreamingReviewOrchestrator {
    */
   getEmitter(): ReviewEventEmitter | undefined {
     return this.progress.getEmitter?.();
+  }
+
+  private getReviewerTurnMultiplier(agentType: AgentType): number {
+    switch (agentType) {
+      case 'logic-reviewer':
+      case 'performance-reviewer':
+        return 1.5;
+      case 'security-reviewer':
+        return 1.2;
+      default:
+        return 1.0;
+    }
+  }
+
+  private getAgentMaxTurns(
+    agentType: AgentType,
+    baseTurns: number,
+    attempt: number,
+    zeroIssueMaxTurnsRetry: boolean
+  ): number {
+    const scaledTurns = Math.ceil(baseTurns * this.getReviewerTurnMultiplier(agentType));
+    const retryAdjustedTurns =
+      attempt > 1 && zeroIssueMaxTurnsRetry ? Math.ceil(scaledTurns * 1.25) : scaledTurns;
+
+    return Math.max(24, Math.min(500, retryAdjustedTurns));
+  }
+  private getInvocationIssueCount(invocationKey: string): number {
+    return this.issueCountByInvocation.get(invocationKey) || 0;
+  }
+
+  private createInvocationKey(agentType: AgentType): string {
+    return `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
   /**
@@ -1910,7 +1943,7 @@ export class StreamingReviewOrchestrator {
 
     if (this.options.verbose) {
       console.log(
-        `[StreamingOrchestrator] Dynamic maxTurns: ${dynamicMaxTurns} (${fileCount} files)`
+        `[StreamingOrchestrator] Base dynamic maxTurns: ${dynamicMaxTurns} (${fileCount} files)`
       );
     }
 
@@ -1963,18 +1996,37 @@ export class StreamingReviewOrchestrator {
 
     const agentPromises = agentsToRun.map(async (agentType) => {
       const startTime = Date.now();
+      const invocationKey = this.createInvocationKey(agentType as AgentType);
       let lastError: unknown = null;
+      let zeroIssueMaxTurnsRetry = false;
+      this.issueCountByInvocation.set(invocationKey, 0);
 
       // Retry loop for transient failures
       for (let attempt = 1; attempt <= MAX_AGENT_RETRIES; attempt++) {
+        const agentMaxTurns = this.getAgentMaxTurns(
+          agentType as AgentType,
+          dynamicMaxTurns,
+          attempt,
+          zeroIssueMaxTurnsRetry
+        );
+
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Agent ${agentType} maxTurns: ${agentMaxTurns} ` +
+              `(attempt=${attempt}, zeroIssueMaxTurnsRetry=${zeroIssueMaxTurnsRetry})`
+          );
+        }
+
         try {
+          this.issueCountByInvocation.set(invocationKey, 0);
           const result = await this.runStreamingAgent(
             agentType as AgentType,
             context,
             standardsText,
-            mcpServer,
+            (currentAgentType) => mcpServer(currentAgentType, invocationKey),
             reviewRepoPath,
-            dynamicMaxTurns
+            agentMaxTurns,
+            invocationKey
           );
           const elapsed = Date.now() - startTime;
 
@@ -1988,6 +2040,7 @@ export class StreamingReviewOrchestrator {
           lastError = error;
           const errorMsg = error instanceof Error ? error.message : String(error);
           const errorStack = error instanceof Error ? error.stack : undefined;
+          zeroIssueMaxTurnsRetry = errorMsg.includes('reached maxTurns with 0 reported issues');
 
           // Log error details (will be output as JSON in json-logs mode)
           console.error(
@@ -2140,7 +2193,7 @@ export class StreamingReviewOrchestrator {
     const langLabel = this.options.language === 'en' ? 'English' : 'Chinese';
 
     // We need to track which agent is calling, so we'll create per-agent servers
-    return (agentType: AgentType) =>
+    return (agentType: AgentType, invocationKey: string) =>
       createSdkMcpServer({
         name: 'code-review-tools',
         version: '1.0.0',
@@ -2289,6 +2342,9 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
               const currentCount = this.issueCountByAgent.get(agentType) || 0;
               this.issueCountByAgent.set(agentType, currentCount + 1);
 
+              const currentInvocationCount = this.issueCountByInvocation.get(invocationKey) || 0;
+              this.issueCountByInvocation.set(invocationKey, currentInvocationCount + 1);
+
               // Step 2: Process accepted issue
               if (skipValidation) {
                 // Skip validation mode - just collect issues
@@ -2327,7 +2383,8 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     standardsText: string,
     mcpServerFactory: (agentType: AgentType) => ReturnType<typeof createSdkMcpServer>,
     reviewRepoPath: string,
-    maxTurns: number = 30
+    maxTurns: number = 30,
+    invocationKey: string
   ): Promise<{ tokensUsed: number; checklists: ChecklistItem[] }> {
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Starting agent: ${agentType}`);
@@ -2359,7 +2416,11 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     const userPrompt = buildStreamingUserPrompt(agentType, {
       diff: context.diff.diff,
       fileAnalyses: context.fileAnalyses
-        .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
+        .map((f) =>
+          f.semantic_hints?.summary
+            ? `- ${f.file_path}: ${f.semantic_hints.summary}`
+            : `- ${f.file_path}`
+        )
         .join('\n'),
       standardsText,
       projectRules: projectRules
@@ -2416,6 +2477,27 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
             console.log(
               `[Agent-Detail] ${agentType} FinalResult ` +
                 `Tokens: input=${inputTokens}, output=${outputTokens}, total=${tokensUsed}, turns=${turnCount}`
+            );
+          } else if (resultMessage.subtype === 'error_max_turns') {
+            // Agent reached max turns limit - treat as partial success only if it already emitted issues
+            const issueCount = this.getInvocationIssueCount(invocationKey);
+            const inputTokens = resultMessage.usage.input_tokens;
+            const outputTokens = resultMessage.usage.output_tokens;
+            tokensUsed = inputTokens + outputTokens;
+
+            if (issueCount === 0) {
+              throw new Error(
+                `Agent ${agentType} reached maxTurns with 0 reported issues (maxTurns=${maxTurns}, turns=${turnCount})`
+              );
+            }
+
+            console.warn(
+              `[StreamingOrchestrator] Agent ${agentType} reached maxTurns limit (${maxTurns} turns). ` +
+                `Treating as partial success with ${issueCount} issues already reported. ` +
+                `Tokens: input=${inputTokens}, output=${outputTokens}, turns=${turnCount}`
+            );
+            this.progress.warn(
+              `Agent ${agentType} 达到最大轮次限制 (${maxTurns} turns)，已收集 ${issueCount} 个问题作为部分结果`
             );
           } else {
             // SDK returned non-success result (error, max_turns_reached, etc.)
