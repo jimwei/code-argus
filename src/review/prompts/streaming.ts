@@ -7,11 +7,131 @@
 import type { IssueCategory, PRContext } from '../types.js';
 import { DIFF_ANALYSIS_INSTRUCTIONS } from './base.js';
 
-/**
- * Get language label for prompt instructions
- */
 function getLangLabel(language: 'en' | 'zh'): string {
   return language === 'en' ? 'English' : 'Chinese';
+}
+
+function takeFirstNonEmptyLines(text: string, maxLines: number): string {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+
+  return lines.slice(0, maxLines).join('\n');
+}
+
+function takeFirstFileAnalysisEntries(fileAnalyses: string, maxEntries: number): string {
+  const lines = fileAnalyses
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+
+  return lines.slice(0, maxEntries).join('\n');
+}
+
+function countFileAnalysisEntries(fileAnalyses: string): number {
+  return fileAnalyses
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0).length;
+}
+
+function buildPrContextSection(
+  prContext: PRContext,
+  options: { maxIssues?: number; includeKeyPoints: boolean }
+): string[] {
+  const sections: string[] = [];
+  const prIssues = prContext.issues || prContext.jiraIssues || [];
+  const issuesToRender =
+    typeof options.maxIssues === 'number' ? prIssues.slice(0, options.maxIssues) : prIssues;
+
+  if (issuesToRender.length === 0) {
+    return sections;
+  }
+
+  sections.push('## PR Business Context\n');
+  sections.push(`**PR Title**: ${prContext.prTitle}\n`);
+  if (prContext.prDescription) {
+    sections.push(`**PR Description**: ${prContext.prDescription}\n`);
+  }
+  sections.push('### Related Issues\n');
+  sections.push('以下是与此 PR 相关的 issue，请在 review 时参考这些业务上下文：\n');
+  for (const issue of issuesToRender) {
+    sections.push(`#### ${issue.key} (${issue.type})`);
+    sections.push(`**摘要**: ${issue.summary}\n`);
+    if (options.includeKeyPoints && issue.keyPoints.length > 0) {
+      sections.push('**关键点**:');
+      for (const point of issue.keyPoints) {
+        sections.push(`- ${point}`);
+      }
+      sections.push('');
+    }
+    sections.push(`**Review 重点**: ${issue.reviewContext}\n`);
+  }
+  sections.push('---\n');
+
+  return sections;
+}
+
+function getPromptContextMode(agentType: string): {
+  includePrContext: boolean;
+  prContextMaxIssues?: number;
+  includeDeletedFiles: boolean;
+  includeFileAnalyses: boolean;
+  maxFileAnalyses?: number;
+  skipFileAnalysesWhenOverLimit: boolean;
+  useConciseRules: boolean;
+  conciseChecklist: boolean;
+  includeKeyPointsInPrContext: boolean;
+} {
+  switch (agentType) {
+    case 'style-reviewer':
+      return {
+        includePrContext: false,
+        includeDeletedFiles: false,
+        includeFileAnalyses: true,
+        maxFileAnalyses: 5,
+        skipFileAnalysesWhenOverLimit: true,
+        useConciseRules: true,
+        conciseChecklist: true,
+        includeKeyPointsInPrContext: false,
+      };
+    case 'performance-reviewer':
+      return {
+        includePrContext: true,
+        prContextMaxIssues: 3,
+        includeDeletedFiles: false,
+        includeFileAnalyses: true,
+        maxFileAnalyses: 10,
+        skipFileAnalysesWhenOverLimit: false,
+        useConciseRules: true,
+        conciseChecklist: true,
+        includeKeyPointsInPrContext: false,
+      };
+    case 'security-reviewer':
+      return {
+        includePrContext: true,
+        prContextMaxIssues: 3,
+        includeDeletedFiles: false,
+        includeFileAnalyses: true,
+        maxFileAnalyses: 10,
+        skipFileAnalysesWhenOverLimit: false,
+        useConciseRules: false,
+        conciseChecklist: true,
+        includeKeyPointsInPrContext: false,
+      };
+    case 'logic-reviewer':
+    default:
+      return {
+        includePrContext: true,
+        includeDeletedFiles: true,
+        includeFileAnalyses: true,
+        skipFileAnalysesWhenOverLimit: false,
+        useConciseRules: false,
+        conciseChecklist: true,
+        includeKeyPointsInPrContext: true,
+      };
+  }
 }
 
 /**
@@ -27,10 +147,11 @@ You MUST use the **report_issue** tool to report each issue you find.
 **DO NOT** output JSON at the end. Instead, call the report_issue tool immediately when you find each issue.
 
 **Workflow**:
-1. Analyze the code changes
-2. When you find an issue, IMMEDIATELY call report_issue with the issue details
+1. Start with the highest-risk changed files or changes
+2. When you find a high-confidence issue, IMMEDIATELY call report_issue with the issue details
 3. Continue analyzing and report more issues as you find them
-4. When done, output a brief summary of what you reviewed
+4. Do not wait for complete review coverage before reporting concrete findings
+5. When done, output a brief summary of what you reviewed
 
 **report_issue Parameters**:
 - \`file\`: File path (string)
@@ -64,6 +185,8 @@ report_issue({
 **IMPORTANT**:
 - Report issues ONE BY ONE as you find them
 - Don't wait until the end to report all issues
+- Prefer early reporting of concrete, high-confidence findings over exhaustive exploration
+- If turns are constrained, prioritize the most important 1-3 issues first
 - The system will handle deduplication automatically
 - Write all titles, descriptions, and suggestions in ${lang}
 `;
@@ -89,6 +212,8 @@ Your task is to analyze code changes and report issues using the report_issue to
 2. **DO NOT OUTPUT JSON**: Report via tool calls, not JSON output
 3. ONLY review changed code (lines marked with + or -)
 4. All descriptions MUST be in ${lang}
+5. Prefer early emission of concrete, high-confidence findings over exhaustive exploration
+6. Partial but concrete findings are preferred over zero reported issues
 
 ## Tool Usage
 
@@ -223,32 +348,18 @@ export function buildStreamingUserPrompt(
   }
 ): string {
   const sections: string[] = [];
+  const contextMode = getPromptContextMode(agentType);
 
   sections.push(`# Code Review Task: ${agentType}\n`);
 
-  // PR Business Context (Issue Tracker integration) - inject early for context
   const prIssues = params.prContext?.issues || params.prContext?.jiraIssues;
-  if (params.prContext && prIssues && prIssues.length > 0) {
-    sections.push('## PR Business Context\n');
-    sections.push(`**PR Title**: ${params.prContext.prTitle}\n`);
-    if (params.prContext.prDescription) {
-      sections.push(`**PR Description**: ${params.prContext.prDescription}\n`);
-    }
-    sections.push('### Related Issues\n');
-    sections.push('以下是与此 PR 相关的 issue，请在 review 时参考这些业务上下文：\n');
-    for (const issue of prIssues) {
-      sections.push(`#### ${issue.key} (${issue.type})`);
-      sections.push(`**摘要**: ${issue.summary}\n`);
-      if (issue.keyPoints.length > 0) {
-        sections.push('**关键点**:');
-        for (const point of issue.keyPoints) {
-          sections.push(`- ${point}`);
-        }
-        sections.push('');
-      }
-      sections.push(`**Review 重点**: ${issue.reviewContext}\n`);
-    }
-    sections.push('---\n');
+  if (params.prContext && prIssues && prIssues.length > 0 && contextMode.includePrContext) {
+    sections.push(
+      ...buildPrContextSection(params.prContext, {
+        maxIssues: contextMode.prContextMaxIssues,
+        includeKeyPoints: contextMode.includeKeyPointsInPrContext,
+      })
+    );
   }
 
   if (params.intentSummary) {
@@ -262,37 +373,50 @@ export function buildStreamingUserPrompt(
     sections.push('');
   }
 
-  // Add project-specific rules (from --rules-dir)
   if (params.projectRules) {
-    sections.push(params.projectRules);
+    sections.push(
+      contextMode.useConciseRules
+        ? takeFirstNonEmptyLines(params.projectRules, 10)
+        : params.projectRules
+    );
     sections.push('');
   }
 
-  // Add deleted files context (for logic-reviewer to understand context)
-  if (params.deletedFilesContext) {
+  if (params.deletedFilesContext && contextMode.includeDeletedFiles) {
     sections.push(params.deletedFilesContext);
     sections.push('');
   }
 
-  if (params.fileAnalyses) {
-    sections.push('## File Change Analysis\n');
-    sections.push(params.fileAnalyses);
-    sections.push('');
+  if (params.fileAnalyses && contextMode.includeFileAnalyses) {
+    const fileAnalysisCount = countFileAnalysisEntries(params.fileAnalyses);
+    const shouldSkipFileAnalyses =
+      contextMode.skipFileAnalysesWhenOverLimit &&
+      typeof contextMode.maxFileAnalyses === 'number' &&
+      fileAnalysisCount > contextMode.maxFileAnalyses;
+
+    if (!shouldSkipFileAnalyses) {
+      sections.push('## File Change Analysis\n');
+      sections.push(
+        typeof contextMode.maxFileAnalyses === 'number'
+          ? takeFirstFileAnalysisEntries(params.fileAnalyses, contextMode.maxFileAnalyses)
+          : params.fileAnalyses
+      );
+      sections.push('');
+    }
   }
 
-  // Add specialist-specific instructions
   const specialistInstructions = SPECIALIST_INSTRUCTIONS[agentType];
   if (specialistInstructions) {
     sections.push(specialistInstructions);
     sections.push('');
   }
 
-  // Add checklist
   const checklist = STREAMING_CHECKLISTS[agentType];
   if (checklist) {
     sections.push('## Review Checklist\n');
     sections.push('Consider these items during your review:\n');
-    for (const item of checklist) {
+    const checklistToRender = contextMode.conciseChecklist ? checklist.slice(0, 3) : checklist;
+    for (const item of checklistToRender) {
       sections.push(`- ${item.question}`);
     }
     sections.push('');
@@ -305,9 +429,10 @@ export function buildStreamingUserPrompt(
   sections.push('```');
 
   sections.push('\n## Instructions\n');
-  sections.push('1. Analyze each changed file');
-  sections.push('2. Call report_issue for each issue you find');
-  sections.push('3. Output a brief summary when done');
+  sections.push('1. Start with high-risk changed files or changes');
+  sections.push('2. Report each high-confidence issue immediately with report_issue');
+  sections.push('3. Continue expanding coverage if turns remain');
+  sections.push('4. Output a brief summary when done');
 
   return sections.join('\n');
 }

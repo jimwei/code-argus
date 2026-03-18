@@ -23,6 +23,7 @@ vi.mock('@anthropic-ai/sdk', () => {
 // Mock the config module
 vi.mock('../../src/config/env.js', () => ({
   getApiKey: () => 'test-api-key',
+  getBaseUrl: () => undefined,
 }));
 
 // Setup default mock behavior before each test

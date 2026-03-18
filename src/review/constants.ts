@@ -85,25 +85,25 @@ export const DEFAULT_AGENT_MAX_TURNS = 30;
  * 根据 diff 大小计算推荐的 maxTurns
  *
  * 公式：基础轮数 + (文件数 * 每文件轮数)
- * - 基础轮数：10（初始分析 + 总结）
- * - 每文件轮数：2（读取上下文 + 报告问题）
- * - 最小值：15
+ * - 基础轮数：16（为 reviewer 提供更稳妥的初始分析预算）
+ * - 每文件轮数：3
+ * - 最小值：24
  * - 最大值：500
  *
  * 示例：
- * - 1 文件: 10 + 2 = 15 轮 (最小值)
- * - 10 文件: 10 + 20 = 30 轮
- * - 245+ 文件: 500 轮 (封顶)
+ * - 1 文件: 16 + 3 = 24 轮 (最小值)
+ * - 4 文件: 16 + 12 = 28 轮
+ * - 5 文件: 16 + 15 = 31 轮
+ * - 162+ 文件: 500 轮 (封顶)
  *
- * 优化说明（基于实际数据分析）：
- * - 94% 的有效问题在前 16 turns 内被发现
- * - 每文件实际平均只需 ~2.5 turns
- * - 降低 TURNS_PER_FILE 从 5 到 2 可节省 ~50% 成本
+ * 说明：
+ * - 该值是 reviewer 的基础预算，后续可在 orchestrator 中按 reviewer 类型继续放大
+ * - logic/performance/security reviewer 可能会在此基础上应用额外 multiplier
  */
 export function getRecommendedMaxTurns(fileCount: number): number {
-  const BASE_TURNS = 10;
-  const TURNS_PER_FILE = 2;
-  const MIN_TURNS = 15;
+  const BASE_TURNS = 16;
+  const TURNS_PER_FILE = 3;
+  const MIN_TURNS = 24;
   const MAX_TURNS = 500;
 
   // 验证输入：处理负数、NaN、Infinity 等无效值
