@@ -82,6 +82,15 @@ export function getValidatorMaxTurns(
 export const DEFAULT_AGENT_MAX_TURNS = 30;
 
 /**
+ * Maximum diff size allowed for orchestrated review before skipping to avoid excessive memory use.
+ */
+export const MAX_REVIEW_DIFF_SIZE_BYTES = 5 * 1024 * 1024;
+
+export function shouldSkipReviewForDiffSize(diffSizeBytes: number): boolean {
+  return diffSizeBytes > MAX_REVIEW_DIFF_SIZE_BYTES;
+}
+
+/**
  * 根据 diff 大小计算推荐的 maxTurns
  *
  * 公式：基础轮数 + (文件数 * 每文件轮数)

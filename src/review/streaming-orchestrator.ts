@@ -59,6 +59,8 @@ import {
   getRecommendedMaxTurns,
   MAX_AGENT_RETRIES,
   AGENT_RETRY_DELAY_MS,
+  MAX_REVIEW_DIFF_SIZE_BYTES,
+  shouldSkipReviewForDiffSize,
 } from './constants.js';
 import { createProgressPrinterWithMode, type IProgressPrinter } from '../cli/index.js';
 import type { ReviewEvent, ReviewStateSnapshot, ReviewEventEmitter } from '../cli/events.js';
@@ -1087,12 +1089,13 @@ export class StreamingReviewOrchestrator {
       // Check if diff needs segmentation (large PR handling)
       const diffSize = Buffer.byteLength(context.diff.diff, 'utf8');
       const segmentSizeLimit = 150 * 1024; // 150KB
-      const maxDiffSize = 1 * 1024 * 1024; // 1MB - skip review if diff is too large
+      const maxDiffSize = MAX_REVIEW_DIFF_SIZE_BYTES;
 
       // Skip review if diff is too large (prevent OOM)
-      if (diffSize > maxDiffSize) {
+      if (shouldSkipReviewForDiffSize(diffSize)) {
         const diffSizeMB = (diffSize / 1024 / 1024).toFixed(2);
-        const skipReason = `PR diff 过大 (${diffSizeMB}MB > 1MB 限制)，跳过审核以防止内存溢出`;
+        const maxDiffSizeMB = (maxDiffSize / 1024 / 1024).toFixed(0);
+        const skipReason = `PR diff 过大 (${diffSizeMB}MB > ${maxDiffSizeMB}MB 限制)，跳过审核以防止内存溢出`;
         this.progress.warn(skipReason);
         console.warn(`[StreamingOrchestrator] ${skipReason}`);
 
