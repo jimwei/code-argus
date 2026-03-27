@@ -1,7 +1,7 @@
 /**
  * AI Code Review Module
  *
- * Multi-agent code review system using Claude Agent SDK.
+ * Multi-agent code review system backed by the active runtime provider.
  */
 
 // Main orchestrator (streaming validation)

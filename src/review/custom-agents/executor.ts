@@ -1,19 +1,15 @@
 /**
  * Custom Agent Executor
  *
- * Executes custom agents using Claude Agent SDK with MCP tools for issue reporting.
+ * Executes custom agents through the active runtime with local tool reporting.
  */
 
-import {
-  query,
-  createSdkMcpServer,
-  tool,
-  type SDKResultMessage,
-} from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { LoadedCustomAgent, CustomAgentResult, CustomAgentIssue } from './types.js';
-import type { RawIssue, IssueCategory, Severity } from '../types.js';
-import { DEFAULT_AGENT_MODEL } from '../constants.js';
+
+import { createRuntimeFromEnv } from '../../runtime/factory.js';
+import type { RuntimeExecution, RuntimeToolDefinition } from '../../runtime/types.js';
+import type { IssueCategory, RawIssue, Severity } from '../types.js';
+import type { CustomAgentIssue, CustomAgentResult, LoadedCustomAgent } from './types.js';
 import { CUSTOM_AGENT_DEFAULTS } from './types.js';
 
 // ============================================================================
@@ -55,53 +51,35 @@ export interface CustomAgentExecutorCallbacks {
 }
 
 // ============================================================================
-// System Prompt Builder
+// Prompt Builders
 // ============================================================================
 
-/**
- * Build system prompt for custom agent
- */
 function buildCustomAgentSystemPrompt(
   agent: LoadedCustomAgent,
   language: 'en' | 'zh' = 'zh'
 ): string {
   const category = agent.output?.category || CUSTOM_AGENT_DEFAULTS.output.category;
-  const langLabel = language === 'en' ? 'English' : '中文';
+  const defaultSeverity = agent.output?.default_severity || 'warning';
+  const langLabel = language === 'en' ? 'English' : 'Chinese';
 
   return `# ${agent.name}
 
 ${agent.description}
 
-## 你的角色
+You are a focused code review agent. Review only the provided diff and report concrete, actionable issues.
 
-你是一个专业的代码审查 Agent。你的任务是根据以下指南审查代码变更并报告发现的问题。
+Instructions:
+1. Read the diff carefully and follow the agent-specific prompt below.
+2. Use \`report_issue\` for each issue you find.
+3. Write \`title\`, \`description\`, and \`suggestion\` in ${langLabel}.
+4. Use category \`${category}\` unless you have a better fit.
+5. Default severity is \`${defaultSeverity}\` when the issue does not need escalation.
+6. Confidence must be a number between 0 and 1.
 
-## 审查指南
-
-${agent.prompt}
-
-## 输出要求
-
-1. 仔细阅读代码变更（diff）
-2. 根据审查指南识别问题
-3. 对于每个发现的问题，使用 \`report_issue\` 工具进行报告
-4. 所有文本（标题、描述、建议）必须使用${langLabel}
-5. 默认问题类别为 \`${category}\`，但可根据实际情况调整
-6. 置信度 (confidence) 应反映你对问题真实性的把握程度
-
-## 重要提示
-
-- 只报告真正的问题，避免误报
-- 提供具体的文件路径和行号
-- 描述问题时要具体，说明为什么这是一个问题
-- 如果有修复建议，请提供
-
-开始审查以下代码变更。`;
+Agent-specific review focus:
+${agent.prompt}`;
 }
 
-/**
- * Build user prompt for custom agent
- */
 function buildCustomAgentUserPrompt(
   diffContent: string,
   fileAnalysesSummary?: string,
@@ -110,103 +88,107 @@ function buildCustomAgentUserPrompt(
   const sections: string[] = [];
 
   if (standardsText) {
-    sections.push('## 项目标准\n');
+    sections.push('## Project Standards');
     sections.push(standardsText);
     sections.push('');
   }
 
   if (fileAnalysesSummary) {
-    sections.push('## 变更文件概述\n');
+    sections.push('## File Analysis Summary');
     sections.push(fileAnalysesSummary);
     sections.push('');
   }
 
-  sections.push('## 代码变更 (Diff)\n');
+  sections.push('## Diff');
   sections.push('```diff');
   sections.push(diffContent);
   sections.push('```');
   sections.push('');
-  sections.push('请开始审查以上代码变更，并使用 report_issue 工具报告发现的问题。');
+  sections.push('Report every issue through the `report_issue` tool.');
 
   return sections.join('\n');
 }
 
+interface ReportIssueArgs {
+  file: string;
+  line_start: number;
+  line_end: number;
+  severity?: Severity;
+  category?: IssueCategory;
+  title: string;
+  description: string;
+  suggestion?: string;
+  code_snippet?: string;
+  confidence: number;
+}
+
 // ============================================================================
-// MCP Server Factory
+// Runtime Tool Factory
 // ============================================================================
 
-/**
- * Create MCP server for custom agent issue reporting
- */
-function createCustomAgentMcpServer(
+function createCustomAgentRuntimeTools(
   agent: LoadedCustomAgent,
   onIssue: (issue: RawIssue) => void,
   language: 'en' | 'zh' = 'zh',
   verbose?: boolean
-) {
+): RuntimeToolDefinition<ReportIssueArgs>[] {
   const defaultCategory = agent.output?.category || CUSTOM_AGENT_DEFAULTS.output.category;
   const defaultSeverity = agent.output?.default_severity;
   const langLabel = language === 'en' ? 'English' : 'Chinese';
 
-  return createSdkMcpServer({
-    name: 'custom-agent-tools',
-    version: '1.0.0',
-    tools: [
-      tool(
-        'report_issue',
-        `Report a discovered code issue. Call this for EACH issue found during review.
+  return [
+    {
+      name: 'report_issue',
+      description: `Report a discovered code issue. Call this for EACH issue found during review.
 Write all text (title, description, suggestion) in ${langLabel}.`,
-        {
-          file: z.string().describe('File path where the issue is located'),
-          line_start: z.number().describe('Starting line number'),
-          line_end: z.number().describe('Ending line number'),
-          severity: z
-            .enum(['critical', 'error', 'warning', 'suggestion'])
-            .optional()
-            .describe(`Issue severity level (default: ${defaultSeverity || 'warning'})`),
-          category: z
-            .enum(['security', 'logic', 'performance', 'style', 'maintainability'])
-            .optional()
-            .describe(`Issue category (default: ${defaultCategory})`),
-          title: z.string().describe(`Short title in ${langLabel}`),
-          description: z.string().describe(`Detailed description in ${langLabel}`),
-          suggestion: z.string().optional().describe(`Fix suggestion in ${langLabel}`),
-          code_snippet: z.string().optional().describe('Relevant code snippet'),
-          confidence: z.number().min(0).max(1).describe('Confidence level (0-1)'),
-        },
-        async (args) => {
-          if (verbose) {
-            console.log(`[CustomAgent:${agent.name}] report_issue: ${args.title}`);
-          }
-
-          // Generate unique issue ID
-          const issueId = `${agent.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-
-          const rawIssue: RawIssue = {
-            id: issueId,
-            file: args.file,
-            line_start: args.line_start,
-            line_end: args.line_end,
-            severity: (args.severity || defaultSeverity || 'warning') as Severity,
-            category: (args.category || defaultCategory) as IssueCategory,
-            title: args.title,
-            description: args.description,
-            suggestion: args.suggestion,
-            code_snippet: args.code_snippet,
-            confidence: args.confidence,
-            // Use custom agent ID as source_agent (will be handled specially in aggregation)
-            source_agent: agent.id as RawIssue['source_agent'],
-          };
-
-          onIssue(rawIssue);
-
-          return {
-            content: [{ type: 'text' as const, text: `✓ 问题已记录 (ID: ${issueId})` }],
-          };
+      inputSchema: {
+        file: z.string().describe('File path where the issue is located'),
+        line_start: z.number().describe('Starting line number'),
+        line_end: z.number().describe('Ending line number'),
+        severity: z
+          .enum(['critical', 'error', 'warning', 'suggestion'])
+          .optional()
+          .describe(`Issue severity level (default: ${defaultSeverity || 'warning'})`),
+        category: z
+          .enum(['security', 'logic', 'performance', 'style', 'maintainability'])
+          .optional()
+          .describe(`Issue category (default: ${defaultCategory})`),
+        title: z.string().describe(`Short title in ${langLabel}`),
+        description: z.string().describe(`Detailed description in ${langLabel}`),
+        suggestion: z.string().optional().describe(`Fix suggestion in ${langLabel}`),
+        code_snippet: z.string().optional().describe('Relevant code snippet'),
+        confidence: z.number().min(0).max(1).describe('Confidence level (0-1)'),
+      },
+      async execute(args) {
+        if (verbose) {
+          console.log(`[CustomAgent:${agent.name}] report_issue: ${args.title}`);
         }
-      ),
-    ],
-  });
+
+        const issueId = `${agent.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+        const rawIssue: RawIssue = {
+          id: issueId,
+          file: args.file,
+          line_start: args.line_start,
+          line_end: args.line_end,
+          severity: (args.severity || defaultSeverity || 'warning') as Severity,
+          category: (args.category || defaultCategory) as IssueCategory,
+          title: args.title,
+          description: args.description,
+          suggestion: args.suggestion,
+          code_snippet: args.code_snippet,
+          confidence: args.confidence,
+          source_agent: agent.id as RawIssue['source_agent'],
+        };
+
+        onIssue(rawIssue);
+
+        return {
+          content: [{ type: 'text' as const, text: `Issue recorded (ID: ${issueId})` }],
+        };
+      },
+    },
+  ];
 }
 
 // ============================================================================
@@ -230,7 +212,6 @@ export async function executeCustomAgent(
 
   callbacks?.onAgentStart?.(agent);
 
-  // Collect issues from MCP tool calls
   const onIssue = (rawIssue: RawIssue) => {
     const customIssue: CustomAgentIssue = {
       id: rawIssue.id,
@@ -249,74 +230,64 @@ export async function executeCustomAgent(
     callbacks?.onIssueDiscovered?.(rawIssue);
   };
 
-  // Create MCP server
-  const mcpServer = createCustomAgentMcpServer(agent, onIssue, options.language, options.verbose);
-
-  // Build prompts
+  const runtime = createRuntimeFromEnv();
+  const runtimeTools = createCustomAgentRuntimeTools(
+    agent,
+    onIssue,
+    options.language,
+    options.verbose
+  );
   const systemPrompt = buildCustomAgentSystemPrompt(agent, options.language);
   const userPrompt = buildCustomAgentUserPrompt(
     options.diffContent,
     options.fileAnalysesSummary,
     options.standardsText
   );
-
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
   let tokensUsed = 0;
-
-  // 用于资源清理的变量
-  let queryStream: ReturnType<typeof query> | null = null;
-  // 信号处理器引用（需要在 try 外声明以便 finally 访问）
+  let execution: RuntimeExecution | null = null;
   let sigtermHandler: (() => void) | null = null;
   let sigintHandler: (() => void) | null = null;
 
   try {
-    queryStream = query({
+    execution = runtime.execute({
       prompt: fullPrompt,
-      options: {
-        cwd: options.repoPath,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        maxTurns: options.maxTurns || 20,
-        model: DEFAULT_AGENT_MODEL,
-        mcpServers: {
-          'custom-agent-tools': mcpServer,
-        },
-      },
+      cwd: options.repoPath,
+      maxTurns: options.maxTurns || 20,
+      toolNamespace: 'custom-agent-tools',
+      tools: runtimeTools,
     });
 
-    // 注册信号处理器，确保 SIGTERM/SIGINT 时能正确清理资源
     let isCleaningUp = false;
     const cleanupAndExit = async (signal: string) => {
-      if (isCleaningUp || !queryStream) return;
+      if (isCleaningUp || !execution) return;
       isCleaningUp = true;
       console.log(`[CustomAgentExecutor:${agent.name}] Received ${signal}, cleaning up...`);
       try {
-        await queryStream.return?.(undefined);
+        await execution.close();
       } catch {
-        // 忽略清理错误
+        // Ignore cleanup errors during shutdown.
       }
       process.exit(0);
     };
+
     sigtermHandler = () => cleanupAndExit('SIGTERM');
     sigintHandler = () => cleanupAndExit('SIGINT');
     process.on('SIGTERM', sigtermHandler);
     process.on('SIGINT', sigintHandler);
 
-    // Consume the stream
-    for await (const message of queryStream) {
-      if (message.type === 'result') {
-        const resultMessage = message as SDKResultMessage;
-        if (resultMessage.subtype === 'success') {
-          tokensUsed = resultMessage.usage.input_tokens + resultMessage.usage.output_tokens;
-        } else {
-          if (options.verbose) {
-            console.error(
-              `[CustomAgentExecutor] Agent ${agent.name} error:`,
-              resultMessage.subtype
-            );
-          }
-        }
+    for await (const event of execution) {
+      if (event.type !== 'result') {
+        continue;
+      }
+
+      if (event.usage) {
+        tokensUsed = event.usage.inputTokens + event.usage.outputTokens;
+      }
+
+      if (event.status !== 'success' && options.verbose) {
+        console.error(`[CustomAgentExecutor] Agent ${agent.name} error:`, event.status);
       }
     }
 
@@ -335,7 +306,6 @@ export async function executeCustomAgent(
     }
 
     callbacks?.onAgentComplete?.(agent, result);
-
     return result;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -355,14 +325,12 @@ export async function executeCustomAgent(
       error: errorMessage,
     };
   } finally {
-    // 先移除信号处理器，防止 finally 清理时触发
     if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
     if (sigintHandler) process.off('SIGINT', sigintHandler);
 
-    // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
-    if (queryStream) {
+    if (execution) {
       try {
-        await queryStream.return?.(undefined);
+        await execution.close();
       } catch (cleanupError) {
         if (options.verbose) {
           console.warn(
@@ -394,7 +362,6 @@ export async function executeCustomAgents(
     );
   }
 
-  // Execute with concurrency limit
   const results: CustomAgentResult[] = [];
   const executing: Promise<void>[] = [];
 
@@ -405,13 +372,10 @@ export async function executeCustomAgents(
 
     executing.push(promise);
 
-    // If we've reached max concurrency, wait for one to complete
     if (executing.length >= maxConcurrency) {
       await Promise.race(executing);
-      // Remove completed promises
       const completedIndices: number[] = [];
       for (let i = 0; i < executing.length; i++) {
-        // Check if promise is settled by racing with an immediately resolved promise
         const isSettled = await Promise.race([
           executing[i]!.then(() => true).catch(() => true),
           Promise.resolve(false),
@@ -420,14 +384,12 @@ export async function executeCustomAgents(
           completedIndices.push(i);
         }
       }
-      // Remove from end to beginning to preserve indices
       for (const index of completedIndices.reverse()) {
         executing.splice(index, 1);
       }
     }
   }
 
-  // Wait for remaining
   await Promise.all(executing);
 
   return results;
@@ -441,9 +403,7 @@ export function customIssuesToRawIssues(results: CustomAgentResult[]): RawIssue[
 
   for (const result of results) {
     for (const issue of result.issues) {
-      // Custom agent ID needs to be converted to a valid AgentType for RawIssue
-      // We'll use a special marker that can be handled in aggregation
-      const rawIssue: RawIssue = {
+      rawIssues.push({
         id: issue.id,
         file: issue.file,
         line_start: issue.line_start,
@@ -454,11 +414,8 @@ export function customIssuesToRawIssues(results: CustomAgentResult[]): RawIssue[
         description: issue.description,
         suggestion: issue.suggestion,
         confidence: issue.confidence,
-        // Store custom agent ID in source_agent field
-        // The type assertion is needed because source_agent expects AgentType
         source_agent: issue.source_agent as RawIssue['source_agent'],
-      };
-      rawIssues.push(rawIssue);
+      });
     }
   }
 

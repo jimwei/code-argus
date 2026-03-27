@@ -6,41 +6,31 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RealtimeDeduplicator } from '../../src/review/realtime-deduplicator.js';
 import type { RawIssue, AgentType } from '../../src/review/types.js';
 
-// Create a mock for the Anthropic client
-const mockCreate = vi.fn();
+const generateTextMock = vi.fn();
 
-// Mock the Anthropic client
-vi.mock('@anthropic-ai/sdk', () => {
-  return {
-    default: class MockAnthropic {
-      messages = {
-        create: mockCreate,
-      };
-    },
-  };
-});
+vi.mock('../../src/runtime/factory.js', () => ({
+  createRuntimeFromEnv: () => ({
+    kind: 'openai-responses',
+    generateText: generateTextMock,
+  }),
+}));
 
 // Mock the config module
 vi.mock('../../src/config/env.js', () => ({
-  getApiKey: () => 'test-api-key',
+  getRuntimeModel: () => 'runtime-light-model',
 }));
 
 // Setup default mock behavior before each test
 beforeEach(() => {
-  mockCreate.mockReset();
+  generateTextMock.mockReset();
   // Default: return "not duplicate" for LLM checks
-  mockCreate.mockResolvedValue({
-    usage: { input_tokens: 100, output_tokens: 50 },
-    content: [
-      {
-        type: 'text',
-        text: JSON.stringify({
-          is_duplicate: false,
-          duplicate_of_id: null,
-          reason: 'Different issues',
-        }),
-      },
-    ],
+  generateTextMock.mockResolvedValue({
+    usage: { inputTokens: 100, outputTokens: 50 },
+    text: JSON.stringify({
+      is_duplicate: false,
+      duplicate_of_id: null,
+      reason: 'Different issues',
+    }),
   });
 });
 
@@ -249,18 +239,13 @@ describe('RealtimeDeduplicator', () => {
   describe('callback', () => {
     it('should call onDeduplicated callback when duplicate is found', async () => {
       // Setup mock to return duplicate result
-      mockCreate.mockResolvedValueOnce({
-        usage: { input_tokens: 100, output_tokens: 50 },
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              is_duplicate: true,
-              duplicate_of_id: 'issue-1',
-              reason: 'Same root cause',
-            }),
-          },
-        ],
+      generateTextMock.mockResolvedValueOnce({
+        usage: { inputTokens: 100, outputTokens: 50 },
+        text: JSON.stringify({
+          is_duplicate: true,
+          duplicate_of_id: 'issue-1',
+          reason: 'Same root cause',
+        }),
       });
 
       const onDeduplicated = vi.fn();
@@ -290,6 +275,29 @@ describe('RealtimeDeduplicator', () => {
       await deduplicator.checkAndAdd(issue2);
 
       expect(onDeduplicated).toHaveBeenCalledWith(issue2, issue1, 'Same root cause');
+    });
+  });
+
+  describe('runtime-aware model selection', () => {
+    it('should use the runtime-configured light model for LLM duplicate checks', async () => {
+      const deduplicator = new RealtimeDeduplicator({ verbose: false });
+
+      const issue1 = createTestIssue({
+        file: 'src/test.ts',
+        line_start: 10,
+        line_end: 15,
+      });
+      await deduplicator.checkAndAdd(issue1);
+
+      const issue2 = createTestIssue({
+        file: 'src/test.ts',
+        line_start: 12,
+        line_end: 18,
+      });
+      await deduplicator.checkAndAdd(issue2);
+
+      expect(generateTextMock).toHaveBeenCalled();
+      expect(generateTextMock.mock.calls[0]?.[0]?.model).toBe('runtime-light-model');
     });
   });
 });

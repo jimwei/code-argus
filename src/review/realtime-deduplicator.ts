@@ -7,22 +7,24 @@
  * 2. LLM semantic check: only when rule-based check finds potential duplicates
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { RawIssue } from './types.js';
-import { getApiKey, getBaseUrl } from '../config/env.js';
+import { getRuntimeModel } from '../config/env.js';
+import { createRuntimeFromEnv } from '../runtime/factory.js';
+import type { AgentRuntime } from '../runtime/types.js';
 import { extractJSON } from './utils/json-parser.js';
-import { DEFAULT_REALTIME_DEDUP_MODEL } from './constants.js';
 
 /**
  * Options for the realtime deduplicator
  */
 export interface RealtimeDeduplicatorOptions {
-  /** Anthropic API key */
+  /** Deprecated Claude-specific API key override retained for compatibility */
   apiKey?: string;
   /** Enable verbose logging */
   verbose?: boolean;
   /** Callback when an issue is deduplicated */
   onDeduplicated?: (newIssue: RawIssue, existingIssue: RawIssue, reason: string) => void;
+  /** Optional runtime override for testing */
+  runtime?: Pick<AgentRuntime, 'generateText'>;
 }
 
 /**
@@ -47,10 +49,10 @@ export interface DeduplicationCheckResult {
  * Maintains a list of accepted issues and checks new issues against them.
  */
 export class RealtimeDeduplicator {
-  private client: Anthropic;
-  private options: Required<Omit<RealtimeDeduplicatorOptions, 'onDeduplicated'>> & {
+  private options: Required<Omit<RealtimeDeduplicatorOptions, 'onDeduplicated' | 'runtime'>> & {
     onDeduplicated?: RealtimeDeduplicatorOptions['onDeduplicated'];
   };
+  private runtime?: Pick<AgentRuntime, 'generateText'>;
   private acceptedIssues: RawIssue[] = [];
   private totalTokensUsed = 0;
   private duplicatesFound = 0;
@@ -59,17 +61,13 @@ export class RealtimeDeduplicator {
 
   constructor(options: RealtimeDeduplicatorOptions = {}) {
     this.options = {
-      apiKey: options.apiKey || getApiKey(),
+      apiKey: options.apiKey || '',
       verbose: options.verbose || false,
       onDeduplicated: options.onDeduplicated,
     };
+    this.runtime = options.runtime;
 
     // 使用 baseURL 确保请求通过代理服务器
-    const baseURL = getBaseUrl();
-    this.client = new Anthropic({
-      apiKey: this.options.apiKey,
-      ...(baseURL && { baseURL }),
-    });
   }
 
   /**
@@ -175,6 +173,8 @@ export class RealtimeDeduplicator {
     potentialDuplicates: RawIssue[]
   ): Promise<DeduplicationCheckResult> {
     const prompt = this.buildLLMPrompt(newIssue, potentialDuplicates);
+    const model = getRuntimeModel('light');
+    const DEFAULT_REALTIME_DEDUP_MODEL = model;
     const maxRetries = 3;
     const initialDelayMs = 1000;
     const maxDelayMs = 10000;
@@ -191,19 +191,14 @@ export class RealtimeDeduplicator {
     for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
       const attemptStart = Date.now();
       try {
-        const response = await this.client.messages.create({
-          model: DEFAULT_REALTIME_DEDUP_MODEL,
-          max_tokens: 1024,
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
+        const response = await this.getRuntime().generateText({
+          model,
+          maxOutputTokens: 1024,
+          prompt,
         });
 
-        const tokensUsed = response.usage.input_tokens + response.usage.output_tokens;
-        const resultText = response.content[0]?.type === 'text' ? response.content[0].text : '';
+        const tokensUsed = (response.usage?.inputTokens ?? 0) + (response.usage?.outputTokens ?? 0);
+        const resultText = response.text;
         const duration = Date.now() - attemptStart;
 
         console.log(
@@ -454,6 +449,14 @@ Output JSON only:
       deduplicated: this.duplicatesFound,
       tokensUsed: this.totalTokensUsed,
     };
+  }
+
+  private getRuntime(): Pick<AgentRuntime, 'generateText'> {
+    if (!this.runtime) {
+      this.runtime = createRuntimeFromEnv();
+    }
+
+    return this.runtime;
   }
 
   /**

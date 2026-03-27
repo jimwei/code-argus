@@ -5,8 +5,9 @@
  * Supports rule-based matching, LLM-based matching, and hybrid approaches.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { minimatch } from 'minimatch';
+import { getRuntimeModel } from '../../config/env.js';
+import { createRuntimeFromEnv } from '../../runtime/factory.js';
 import type { DiffFile } from '../../git/parser.js';
 import type { ChangeAnalysis } from '../../analyzer/types.js';
 import type {
@@ -17,7 +18,6 @@ import type {
   RuleTrigger,
 } from './types.js';
 import { CUSTOM_AGENT_DEFAULTS } from './types.js';
-import { DEFAULT_LIGHT_MODEL } from '../constants.js';
 
 // ============================================================================
 // Types
@@ -334,8 +334,6 @@ async function evaluateLLMTrigger(
   agent: LoadedCustomAgent,
   context: TriggerContext
 ): Promise<TriggerResult> {
-  const client = new Anthropic();
-
   // Build file summary
   const fileSummary = context.files
     .slice(0, 20)
@@ -385,19 +383,15 @@ ${context.diff_summary ? `### Diff 摘要\n\`\`\`\n${context.diff_summary}\n\`\`
 只输出 JSON，不要其他内容。`;
 
   try {
-    const response = await client.messages.create({
-      model: DEFAULT_LIGHT_MODEL,
-      max_tokens: 300,
-      messages: [{ role: 'user', content: prompt }],
+    const runtime = createRuntimeFromEnv();
+    const response = await runtime.generateText({
+      model: getRuntimeModel('light'),
+      maxOutputTokens: 300,
+      prompt,
     });
 
-    const content = response.content[0];
-    if (!content || content.type !== 'text') {
-      throw new Error('Unexpected response type');
-    }
-
     // Parse JSON response
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    const jsonMatch = response.text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error('No JSON found in response');
     }

@@ -5,7 +5,8 @@
  * have been properly addressed in the current changes.
  */
 
-import { query, createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { createRuntimeFromEnv } from '../runtime/factory.js';
+import type { RuntimeExecution, RuntimeToolDefinition } from '../runtime/types.js';
 import { z } from 'zod';
 import type {
   PreviousReviewData,
@@ -24,6 +25,28 @@ interface ScreeningResult {
   issue_id: string;
   screening_status: 'resolved' | 'unresolved' | 'unclear';
   quick_reasoning: string;
+}
+
+interface ScreeningResultToolArgs {
+  issue_id: string;
+  screening_status: 'resolved' | 'unresolved' | 'unclear';
+  quick_reasoning: string;
+}
+
+interface UpdatedIssueToolArgs {
+  title: string;
+  description: string;
+  suggestion?: string;
+}
+
+interface VerificationResultToolArgs {
+  issue_id: string;
+  status: VerificationStatus;
+  confidence: number;
+  evidence: FixVerificationEvidence;
+  updated_issue?: UpdatedIssueToolArgs;
+  false_positive_reason?: string;
+  notes?: string;
 }
 
 /**
@@ -72,200 +95,165 @@ export async function executeFixVerifier(
     console.log(`[FixVerifier] Starting verification of ${previousReview.issues.length} issues...`);
   }
 
-  progress?.info(`开始验证 ${previousReview.issues.length} 个上次问题...`);
+  progress?.info(`Starting fix verification for ${previousReview.issues.length} issues...`);
 
-  // Create MCP server with verification tools
-  const mcpServer = createSdkMcpServer({
-    name: 'fix-verifier-tools',
-    version: '1.0.0',
-    tools: [
-      // Phase 1: Quick screening result
-      tool(
-        'report_screening_result',
-        `Report quick screening result for an issue (Phase 1).
+  const runtime = createRuntimeFromEnv();
+  const runtimeTools: RuntimeToolDefinition<any>[] = [
+    {
+      name: 'report_screening_result',
+      description: `Report quick screening result for an issue (Phase 1).
 Call this for EACH issue after initial screening.`,
-        {
-          issue_id: z.string().describe('Original issue ID'),
-          screening_status: z
-            .enum(['resolved', 'unresolved', 'unclear'])
-            .describe('Screening status'),
-          quick_reasoning: z.string().describe(`Brief explanation in ${langLabel}`),
-        },
-        async (args) => {
-          if (verbose) {
-            console.log(`[FixVerifier] Screening: ${args.issue_id} → ${args.screening_status}`);
-          }
-
-          screeningResults.push({
-            issue_id: args.issue_id,
-            screening_status: args.screening_status,
-            quick_reasoning: args.quick_reasoning,
-          });
-
-          callbacks?.onScreeningComplete?.(args.issue_id, args.screening_status);
-
-          // Find original issue for status message
-          const originalIssue = previousReview.issues.find((i) => i.id === args.issue_id);
-          const issueTitle = originalIssue?.title || args.issue_id;
-
-          const statusEmoji =
-            args.screening_status === 'resolved'
-              ? '✅'
-              : args.screening_status === 'unresolved'
-                ? '❓'
-                : '🔍';
-
-          progress?.info(`筛查: ${statusEmoji} ${issueTitle}`);
-
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `✓ 筛查结果已记录: ${args.issue_id} → ${args.screening_status}`,
-              },
-            ],
-          };
+      inputSchema: {
+        issue_id: z.string().describe('Original issue ID'),
+        screening_status: z
+          .enum(['resolved', 'unresolved', 'unclear'])
+          .describe('Screening status'),
+        quick_reasoning: z.string().describe(`Brief explanation in ${langLabel}`),
+      },
+      execute: async (args: ScreeningResultToolArgs) => {
+        if (verbose) {
+          console.log(`[FixVerifier] Screening: ${args.issue_id} -> ${args.screening_status}`);
         }
-      ),
 
-      // Phase 2: Deep verification result
-      tool(
-        'report_verification_result',
-        `Report final verification result for an issue (Phase 2).
+        screeningResults.push({
+          issue_id: args.issue_id,
+          screening_status: args.screening_status,
+          quick_reasoning: args.quick_reasoning,
+        });
+
+        callbacks?.onScreeningComplete?.(args.issue_id, args.screening_status);
+
+        const originalIssue = previousReview.issues.find((issue) => issue.id === args.issue_id);
+        const issueTitle = originalIssue?.title || args.issue_id;
+        progress?.info(`Screening: ${args.screening_status} ${issueTitle}`);
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Screening recorded: ${args.issue_id} -> ${args.screening_status}`,
+            },
+          ],
+        };
+      },
+    },
+    {
+      name: 'report_verification_result',
+      description: `Report final verification result for an issue (Phase 2).
 Call this after deep investigation of unresolved/unclear issues.`,
-        {
-          issue_id: z.string().describe('Original issue ID'),
-          status: z
-            .enum(['fixed', 'missed', 'false_positive', 'obsolete', 'uncertain'])
-            .describe('Final verification status'),
-          confidence: z.number().min(0).max(1).describe('Confidence in the verdict (0-1)'),
-          evidence: z
-            .object({
-              checked_files: z.array(z.string()).describe('Files that were checked'),
-              examined_code: z.array(z.string()).describe('Code snippets examined'),
-              related_changes: z.string().describe('Summary of related changes found'),
-              reasoning: z.string().describe(`Detailed reasoning in ${langLabel}`),
-            })
-            .describe('Evidence collected during verification'),
-          updated_issue: z
-            .object({
-              title: z.string().describe('Updated issue title'),
-              description: z.string().describe('Updated issue description'),
-              suggestion: z.string().optional().describe('Updated fix suggestion'),
-            })
-            .optional()
-            .describe('Updated issue details (only if status is missed)'),
-          false_positive_reason: z
-            .string()
-            .optional()
-            .describe('Explanation (only if status is false_positive)'),
-          notes: z.string().optional().describe('Additional notes'),
-        },
-        async (args) => {
-          // Find original issue
-          const originalIssue = previousReview.issues.find((i) => i.id === args.issue_id);
+      inputSchema: {
+        issue_id: z.string().describe('Original issue ID'),
+        status: z
+          .enum(['fixed', 'missed', 'false_positive', 'obsolete', 'uncertain'])
+          .describe('Final verification status'),
+        confidence: z.number().min(0).max(1).describe('Confidence in the verdict (0-1)'),
+        evidence: z
+          .object({
+            checked_files: z.array(z.string()).describe('Files that were checked'),
+            examined_code: z.array(z.string()).describe('Code snippets examined'),
+            related_changes: z.string().describe('Summary of related changes found'),
+            reasoning: z.string().describe(`Detailed reasoning in ${langLabel}`),
+          })
+          .describe('Evidence collected during verification'),
+        updated_issue: z
+          .object({
+            title: z.string().describe('Updated issue title'),
+            description: z.string().describe('Updated issue description'),
+            suggestion: z.string().optional().describe('Updated fix suggestion'),
+          })
+          .optional()
+          .describe('Updated issue details (only if status is missed)'),
+        false_positive_reason: z
+          .string()
+          .optional()
+          .describe('Explanation (only if status is false_positive)'),
+        notes: z.string().optional().describe('Additional notes'),
+      },
+      execute: async (args: VerificationResultToolArgs) => {
+        const originalIssue = previousReview.issues.find((issue) => issue.id === args.issue_id);
 
-          if (!originalIssue) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `⚠️ 错误: 找不到原始问题 ${args.issue_id}`,
-                },
-              ],
-            };
-          }
-
-          // Build verification result
-          const result: FixVerificationResult = {
-            original_issue_id: args.issue_id,
-            original_issue: originalIssue,
-            status: args.status,
-            confidence: args.confidence,
-            evidence: args.evidence as FixVerificationEvidence,
-            false_positive_reason: args.false_positive_reason,
-            notes: args.notes,
-          };
-
-          // If missed, create updated issue
-          if (args.status === 'missed' && args.updated_issue) {
-            result.updated_issue = {
-              id: `${args.issue_id}-updated`,
-              file: originalIssue.file,
-              line_start: originalIssue.line_start,
-              line_end: originalIssue.line_end,
-              category: originalIssue.category,
-              severity: originalIssue.severity,
-              title: args.updated_issue.title,
-              description: args.updated_issue.description,
-              suggestion: args.updated_issue.suggestion,
-              confidence: args.confidence,
-              source_agent: 'fix-verifier',
-            };
-          }
-
-          verificationResults.push(result);
-          callbacks?.onVerificationComplete?.(result);
-
-          if (verbose) {
-            console.log(`[FixVerifier] Verified: ${args.issue_id} → ${args.status}`);
-          }
-
-          // Status message
-          const statusEmoji = getStatusEmoji(args.status);
-          const statusText = getStatusText(args.status);
-          progress?.success(`验证完成: ${statusEmoji} ${originalIssue.title} → ${statusText}`);
-
+        if (!originalIssue) {
           return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `✓ 验证结果已记录: ${args.issue_id} → ${args.status} (置信度: ${Math.round(args.confidence * 100)}%)`,
-              },
-            ],
+            content: [{ type: 'text' as const, text: `Unknown issue ID: ${args.issue_id}` }],
           };
         }
-      ),
-    ],
-  });
 
-  // Build prompts
+        const result: FixVerificationResult = {
+          original_issue_id: args.issue_id,
+          original_issue: originalIssue,
+          status: args.status,
+          confidence: args.confidence,
+          evidence: args.evidence,
+          false_positive_reason: args.false_positive_reason,
+          notes: args.notes,
+        };
+
+        if (args.status === 'missed' && args.updated_issue) {
+          result.updated_issue = {
+            id: `${args.issue_id}-updated`,
+            file: originalIssue.file,
+            line_start: originalIssue.line_start,
+            line_end: originalIssue.line_end,
+            category: originalIssue.category,
+            severity: originalIssue.severity,
+            title: args.updated_issue.title,
+            description: args.updated_issue.description,
+            suggestion: args.updated_issue.suggestion,
+            confidence: args.confidence,
+            source_agent: 'fix-verifier',
+          };
+        }
+
+        verificationResults.push(result);
+        callbacks?.onVerificationComplete?.(result);
+
+        if (verbose) {
+          console.log(`[FixVerifier] Verified: ${args.issue_id} -> ${args.status}`);
+        }
+
+        progress?.success(
+          `Verification: ${getStatusEmoji(args.status)} ${originalIssue.title} -> ${getStatusText(args.status)}`
+        );
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Verification recorded: ${args.issue_id} -> ${args.status} (${Math.round(args.confidence * 100)}%)`,
+            },
+          ],
+        };
+      },
+    },
+  ];
+
   const systemPrompt = buildFixVerifierSystemPrompt(options.language);
   const userPrompt = buildFixVerifierUserPrompt(options);
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
-  // Execute agent
-  // 用于资源清理的变量
-  let queryStream: ReturnType<typeof query> | null = null;
-  // 信号处理器引用（需要在 try 外声明以便 finally 访问）
+  let execution: RuntimeExecution | null = null;
   let sigtermHandler: (() => void) | null = null;
   let sigintHandler: (() => void) | null = null;
 
   try {
-    queryStream = query({
+    execution = runtime.execute({
       prompt: fullPrompt,
-      options: {
-        cwd: repoPath,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        maxTurns: Math.max(30, previousReview.issues.length * 5), // Scale with issue count
-        model: DEFAULT_AGENT_MODEL,
-        mcpServers: {
-          'fix-verifier-tools': mcpServer,
-        },
-      },
+      cwd: repoPath,
+      maxTurns: Math.max(30, previousReview.issues.length * 5),
+      model: DEFAULT_AGENT_MODEL,
+      tools: runtimeTools,
+      toolNamespace: 'fix-verifier-tools',
     });
 
-    // 注册信号处理器，确保 SIGTERM/SIGINT 时能正确清理资源
     let isCleaningUp = false;
     const cleanupAndExit = async (signal: string) => {
-      if (isCleaningUp || !queryStream) return;
+      if (isCleaningUp || !execution) return;
       isCleaningUp = true;
       console.log(`[FixVerifier] Received ${signal}, cleaning up...`);
       try {
-        await queryStream.return?.(undefined);
+        await execution.close();
       } catch {
-        // 忽略清理错误
+        // Ignore shutdown cleanup errors.
       }
       process.exit(0);
     };
@@ -274,25 +262,30 @@ Call this after deep investigation of unresolved/unclear issues.`,
     process.on('SIGTERM', sigtermHandler);
     process.on('SIGINT', sigintHandler);
 
-    // Consume the stream
-    for await (const message of queryStream) {
-      if (message.type === 'result' && message.usage) {
-        tokensUsed = message.usage.input_tokens + message.usage.output_tokens;
+    for await (const event of execution) {
+      if (event.type !== 'result') {
+        continue;
+      }
+
+      if (event.usage) {
+        tokensUsed = event.usage.inputTokens + event.usage.outputTokens;
+      }
+
+      if (event.status !== 'success' && verbose) {
+        console.error(`[FixVerifier] Runtime result status: ${event.status}`, event.error);
       }
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[FixVerifier] Error during verification: ${errorMessage}`);
-    progress?.error(`修复验证失败: ${errorMessage}`);
+    progress?.error(`Fix verification failed: ${errorMessage}`);
   } finally {
-    // 先移除信号处理器，防止 finally 清理时触发
     if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
     if (sigintHandler) process.off('SIGINT', sigintHandler);
 
-    // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
-    if (queryStream) {
+    if (execution) {
       try {
-        await queryStream.return?.(undefined);
+        await execution.close();
       } catch (cleanupError) {
         if (verbose) {
           console.warn(`[FixVerifier] Cleanup warning:`, cleanupError);
@@ -301,24 +294,24 @@ Call this after deep investigation of unresolved/unclear issues.`,
     }
   }
 
-  // Process issues that were only screened (resolved in Phase 1)
-  // Convert screening results to verification results for resolved issues
   for (const screening of screeningResults) {
-    // Skip if already has a deep verification result
-    if (verificationResults.some((v) => v.original_issue_id === screening.issue_id)) {
+    if (
+      verificationResults.some(
+        (verification) => verification.original_issue_id === screening.issue_id
+      )
+    ) {
       continue;
     }
 
-    const originalIssue = previousReview.issues.find((i) => i.id === screening.issue_id);
+    const originalIssue = previousReview.issues.find((issue) => issue.id === screening.issue_id);
     if (!originalIssue) continue;
 
     if (screening.screening_status === 'resolved') {
-      // Treat as fixed based on Phase 1 screening
       verificationResults.push({
         original_issue_id: screening.issue_id,
         original_issue: originalIssue,
         status: 'fixed',
-        confidence: 0.8, // Lower confidence since no deep verification
+        confidence: 0.8,
         evidence: {
           checked_files: [],
           examined_code: [],
@@ -329,7 +322,6 @@ Call this after deep investigation of unresolved/unclear issues.`,
     }
   }
 
-  // Calculate summary
   const byStatus: Record<VerificationStatus, number> = {
     fixed: 0,
     missed: 0,
@@ -355,7 +347,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
   }
 
   progress?.success(
-    `修复验证完成: ${byStatus.fixed} 已修复, ${byStatus.missed} 未修复, ${byStatus.false_positive} 误报`
+    `Fix verification complete: ${byStatus.fixed} fixed, ${byStatus.missed} missed, ${byStatus.false_positive} false positive`
   );
 
   return summary;
