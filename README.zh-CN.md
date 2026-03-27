@@ -1,31 +1,42 @@
 # code-argus
 
-自动化 AI 代码审查 CLI 工具 - 基于多智能体架构的 Git Diff 分析与问题检测
+AI 驱动的自动化代码审查 CLI，提供多 Agent 编排，并同时支持 Claude 与 OpenAI 两套运行时。
 
-[English](./README.md) | 中文
+[English](./README.md) | 简体中文
 
-## 功能特性
+## 项目概览
 
-- **多智能体并行审查** - 4 个专业 Agent 并发运行：安全、逻辑、性能、风格
-- **智能 Agent 选择** - 根据文件特征自动选择需要运行的 Agent
-- **问题验证** - 挑战模式多轮验证，显著降低误报率
-- **快速审核模式** - 2 轮压缩验证，更快获得反馈
-- **实时去重** - 两层去重机制：快速规则检查 + LLM 语义验证
-- **项目标准感知** - 自动提取 ESLint/TypeScript/Prettier 配置
-- **自定义规则** - 支持团队级审查规则和检查清单
-- **文件忽略规则** - `.argusignore` 支持，按 gitignore 语法过滤文件
-- **增量审查** - 只审查新增的提交，提升效率
-- **服务集成** - JSON 事件流输出，便于 CI/CD 和外部服务集成
+`code-argus` 面向 Git diff 做自动化审查，核心目标是把“发现问题、验证问题、去重、生成报告”这条链路做成可集成的 CLI。
+
+当前版本的运行时设计重点：
+
+- 支持双运行时：`claude-agent` 和 `openai-responses`
+- 运行时切换仅通过全局环境变量 `ARGUS_RUNTIME` 控制
+- OpenAI 路径基于官方 `openai` SDK 和 Responses API
+- Claude 路径继续基于 `@anthropic-ai/claude-agent-sdk`
+- 审查层不再直接依赖具体 Provider SDK，而是统一走运行时抽象
+
+## 核心能力
+
+- 多 Agent 并行审查：安全、逻辑、性能、风格等角色并发执行
+- 智能 Agent 选择：根据变更文件特征自动挑选需要的 Agent
+- 问题验证：通过多轮 challenge 模式降低误报
+- 修复回归验证：加载历史审查结果，检查问题是否已被修复
+- 实时去重：规则层快速去重 + LLM 语义去重
+- 增量审查：支持按分支或按 commit 范围审查
+- 项目约定感知：自动读取 ESLint / TypeScript / Prettier 等项目标准
+- 自定义规则与 Agent：支持 `rules/`、`agents/`、`.argusignore`
+- 服务集成：支持 JSON 事件流，便于接入 CI/CD 或外部平台
 
 ## 安装
 
-### 全局安装（推荐）
+### 全局安装
 
 ```bash
 npm install -g code-argus
 ```
 
-### 使用 npx
+### 使用 `npx`
 
 ```bash
 npx code-argus review /path/to/repo feature-branch main
@@ -34,352 +45,335 @@ npx code-argus review /path/to/repo feature-branch main
 ### 从源码安装
 
 ```bash
-git clone https://github.com/anthropics/code-argus.git
+git clone https://github.com/Edric-Li/code-argus.git
 cd code-argus/core
 npm install
 npm run build
 npm link
 ```
 
-## 配置
+## 快速开始
 
-### API 密钥
-
-设置 Anthropic API 密钥：
+### 使用 Claude 运行时
 
 ```bash
-# 方式一：环境变量
+export ARGUS_RUNTIME=claude-agent
 export ANTHROPIC_API_KEY=your-api-key
 
-# 方式二：.env 文件
+argus review /path/to/repo feature-branch main
+```
+
+### 使用 OpenAI 运行时
+
+```bash
+export ARGUS_RUNTIME=openai-responses
+export OPENAI_API_KEY=your-api-key
+export ARGUS_MODEL=gpt-5
+
+argus review /path/to/repo feature-branch main
+```
+
+## 运行时与鉴权
+
+### 运行时切换
+
+运行时只通过全局环境变量控制：
+
+```bash
+# 默认值
+export ARGUS_RUNTIME=claude-agent
+
+# 切换到 OpenAI Responses
+export ARGUS_RUNTIME=openai-responses
+```
+
+注意：
+
+- `ARGUS_RUNTIME` 不写入配置文件
+- CLI 的 `config` 子命令不会保存当前运行时
+- 同一台机器上切换 Provider 时，直接改环境变量即可
+
+### Claude 鉴权
+
+Claude 运行时支持以下来源，优先级从高到低：
+
+1. `ARGUS_ANTHROPIC_API_KEY`
+2. `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`
+3. `ANTHROPIC_API_KEY`
+4. `argus config set api-key ...` 保存到本地配置文件
+
+常见写法：
+
+```bash
+# 方式 1：环境变量
+export ANTHROPIC_API_KEY=your-api-key
+
+# 方式 2：.env 文件
 echo "ANTHROPIC_API_KEY=your-api-key" > .env
 
-# 方式三：使用 config 命令（推荐）
+# 方式 3：保存到 Argus 配置（Claude 回退路径）
 argus config set api-key sk-ant-xxx
 ```
 
-### 配置管理
+可选的 Claude Base URL：
 
 ```bash
-# 设置配置
-argus config set api-key sk-ant-xxx      # API 密钥
-argus config set base-url https://proxy  # 自定义代理 URL
-argus config set model claude-sonnet-4-5-20250929  # 模型
+export ARGUS_ANTHROPIC_BASE_URL=https://your-proxy.example.com
+```
 
-# 查看配置
-argus config list                         # 列出所有配置
-argus config get api-key                  # 获取单个配置
-argus config path                         # 显示配置文件路径
+如果使用 `ANTHROPIC_AUTH_TOKEN` 模式，则应配合：
 
-# 删除配置
+```bash
+export ANTHROPIC_BASE_URL=https://your-claude-compatible-endpoint
+export ANTHROPIC_AUTH_TOKEN=your-token
+```
+
+### OpenAI 鉴权
+
+OpenAI 运行时是 env-only，不落配置文件。支持以下来源，优先级从高到低：
+
+1. `ARGUS_OPENAI_API_KEY`
+2. `OPENAI_API_KEY`
+
+常见写法：
+
+```bash
+# 方式 1：标准 OpenAI 环境变量
+export OPENAI_API_KEY=your-api-key
+
+# 方式 2：Argus 专用环境变量
+export ARGUS_OPENAI_API_KEY=your-api-key
+```
+
+可选的 OpenAI Base URL：
+
+```bash
+export ARGUS_OPENAI_BASE_URL=https://your-openai-compatible-endpoint
+```
+
+或者：
+
+```bash
+export OPENAI_BASE_URL=https://your-openai-compatible-endpoint
+```
+
+### 模型配置
+
+共享模型相关环境变量：
+
+```bash
+export ARGUS_MODEL=gpt-5
+export ARGUS_LIGHT_MODEL=gpt-5-mini
+export ARGUS_VALIDATOR_MODEL=gpt-5
+```
+
+也可以把主模型保存到配置文件：
+
+```bash
+argus config set model gpt-5
+```
+
+说明：
+
+- `model` 是共享回退项，不区分 Claude / OpenAI
+- `api-key` 和 `base-url` 目前仍是 Claude 兼容字段
+- 使用 `openai-responses` 时，建议显式设置 `ARGUS_MODEL` 或 `argus config set model ...`
+- 如果 OpenAI 运行时没有显式模型，当前实现会继续回退到项目默认主模型常量；为了避免 Provider 与模型不匹配，实际使用时应始终设置模型
+
+### 环境变量总表
+
+| 目的                    | 环境变量                                        |
+| ----------------------- | ----------------------------------------------- |
+| 运行时切换              | `ARGUS_RUNTIME`                                 |
+| 主模型                  | `ARGUS_MODEL`                                   |
+| 轻量模型                | `ARGUS_LIGHT_MODEL`                             |
+| 验证模型                | `ARGUS_VALIDATOR_MODEL`                         |
+| Claude API Key          | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
+| Claude OAuth / 兼容代理 | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
+| Claude Base URL         | `ARGUS_ANTHROPIC_BASE_URL`                      |
+| OpenAI API Key          | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
+| OpenAI Base URL         | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
+
+## 配置管理
+
+配置文件位于：
+
+```bash
+~/.argus/config.json
+```
+
+常用命令：
+
+```bash
+argus config set api-key sk-ant-xxx
+argus config set base-url https://proxy.example.com
+argus config set model claude-sonnet-4-5-20250929
+
+argus config list
+argus config get api-key
+argus config path
 argus config delete base-url
 ```
 
-## 使用方法
+当前配置语义：
+
+- `api-key`：Claude 运行时回退 API Key
+- `base-url`：Claude 兼容 Base URL
+- `model`：共享默认主模型回退值
+
+环境变量优先级高于配置文件。
+
+## 命令与基本用法
 
 ### 命令格式
 
 ```bash
-argus <command> <repoPath> <sourceBranch> <targetBranch> [options]
+argus <command> [options]
 ```
 
-### 命令
+### 主要命令
 
-| 命令     | 说明                                  |
-| -------- | ------------------------------------- |
-| `review` | 完整 AI 代码审查（多 Agent 并行审查） |
-| `config` | 配置管理                              |
+| 命令      | 说明                   |
+| --------- | ---------------------- |
+| `review`  | 对仓库执行 AI 代码审查 |
+| `config`  | 管理本地配置           |
+| `upgrade` | 升级到最新版本         |
 
-### 参数
-
-| 参数       | 说明                                |
-| ---------- | ----------------------------------- |
-| `repoPath` | Git 仓库路径                        |
-| `source`   | 源分支名或 commit SHA（自动检测）   |
-| `target`   | 目标分支名或 commit SHA（自动检测） |
-
-**自动检测：**
-
-- 分支名：使用三点式 diff（`origin/target...origin/source`）
-- Commit SHA：使用两点式 diff（`target..source`）用于增量审查
-
----
-
-## 选项详解
-
-### `--json-logs`
-
-**输出 JSON 事件流，用于服务集成**
-
-启用后，所有进度和最终报告都以 JSON Lines (NDJSON) 格式输出到 stderr，便于外部程序解析。
+### `review` 命令格式
 
 ```bash
-argus review /repo feature main --json-logs
+argus review <repoPath> <source> <target> [options]
 ```
 
-**输出示例：**
+参数说明：
 
-```jsonl
-{"type":"review:start","data":{"repoPath":"/repo","sourceBranch":"feature","targetBranch":"main","agents":["security-reviewer","logic-reviewer"],"timestamp":"2025-01-15T10:00:00.000Z"}}
-{"type":"phase:start","data":{"phase":1,"totalPhases":4,"name":"构建审查上下文...","timestamp":"..."}}
-{"type":"agent:start","data":{"agent":"security-reviewer","timestamp":"..."}}
-{"type":"agent:progress","data":{"agent":"security-reviewer","activity":"Reading file: src/auth.ts","timestamp":"..."}}
-{"type":"agent:complete","data":{"agent":"security-reviewer","status":"completed","issuesFound":3,"elapsedMs":5000,"timestamp":"..."}}
-{"type":"validation:issue","data":{"issueId":"sql-injection-auth.ts","title":"SQL 注入漏洞","file":"src/auth.ts","line":42,"severity":"error","status":"confirmed","description":"用户输入直接拼接到 SQL 查询中","suggestion":"使用参数化查询替代字符串拼接","timestamp":"..."}}
-{"type":"review:complete","data":{"totalIssues":5,"elapsedMs":30000,"timestamp":"..."}}
-{"type":"report","data":{"report":{"issues":[...],"metrics":{...},"metadata":{...}},"timestamp":"..."}}
-```
+| 参数       | 说明                    |
+| ---------- | ----------------------- |
+| `repoPath` | Git 仓库路径            |
+| `source`   | 源分支名或 commit SHA   |
+| `target`   | 目标分支名或 commit SHA |
 
-**事件类型说明：**
+自动识别规则：
 
-| 事件类型              | 说明                                              |
-| --------------------- | ------------------------------------------------- |
-| `review:start`        | 审查开始，包含仓库、分支、Agent 列表              |
-| `review:complete`     | 审查完成，包含问题总数和耗时                      |
-| `review:error`        | 审查失败，包含错误信息                            |
-| `phase:start`         | 阶段开始（构建上下文、运行Agent、验证、生成报告） |
-| `phase:complete`      | 阶段完成                                          |
-| `agent:start`         | Agent 开始运行                                    |
-| `agent:progress`      | Agent 活动（读取文件、搜索代码等）                |
-| `agent:complete`      | Agent 完成，包含发现的问题数                      |
-| `validation:start`    | 验证开始                                          |
-| `validation:progress` | 验证进度                                          |
-| `validation:issue`    | 问题验证结果（confirmed/rejected/uncertain）      |
-| `validation:complete` | 验证完成统计                                      |
-| `log`                 | 日志消息                                          |
-| `report`              | **最终报告**（包含完整的审查结果）                |
+- 当 `source` / `target` 是分支名时，使用 three-dot diff：`origin/target...origin/source`
+- 当 `source` / `target` 是 commit SHA 时，使用 two-dot diff：`target..source`
 
-**服务集成示例：**
+## 常用选项
 
-```typescript
-import { spawn } from 'child_process';
+以下是最常用的一组选项。完整参数以 `argus --help` 输出为准。
 
-const child = spawn('argus', ['review', repo, source, target, '--json-logs']);
+| 选项                       | 说明                                              |
+| -------------------------- | ------------------------------------------------- | ------------ |
+| `--json-logs`              | 输出 JSON 事件流，适合服务集成                    |
+| `--language=<zh            | en>`                                              | 设置输出语言 |
+| `--review-mode=<normal     | fast>`                                            | 控制验证深度 |
+| `--skip-validation`        | 跳过问题验证，换取更快速度                        |
+| `--verbose`                | 输出更详细的调试信息                              |
+| `--config-dir=<path>`      | 自动加载配置目录内的规则、Agent 与 `.argusignore` |
+| `--rules-dir=<path>`       | 单独指定规则目录，可重复传入                      |
+| `--agents-dir=<path>`      | 单独指定自定义 Agent 目录，可重复传入             |
+| `--previous-review=<file>` | 加载历史审查结果并验证修复情况                    |
+| `--no-verify-fixes`        | 关闭修复验证                                      |
+| `--pr-context=<file>`      | 注入 PR 业务上下文，例如 Jira 信息                |
+| `--local`                  | 使用本地分支，不执行 `git fetch`                  |
+| `--require-worktree`       | 强制要求创建 worktree，失败则终止                 |
+| `--diff-file=<path>`       | 从 diff 文件读取变更，而不是实时计算 git diff     |
+| `--diff-stdin`             | 从标准输入读取 diff                               |
+| `--commits=<sha1,sha2>`    | 仅审查指定 commit 列表                            |
+| `--no-smart-merge-filter`  | 关闭增量模式下的智能 merge 过滤                   |
 
-child.stderr.on('data', (chunk) => {
-  for (const line of chunk.toString().split('\n').filter(Boolean)) {
-    const event = JSON.parse(line);
+### 审查模式
 
-    switch (event.type) {
-      case 'agent:start':
-        updateUI(`Agent ${event.data.agent} 开始运行...`);
-        break;
-      case 'agent:complete':
-        updateUI(`Agent ${event.data.agent} 完成，发现 ${event.data.issuesFound} 个问题`);
-        break;
-      case 'validation:issue':
-        if (event.data.status === 'confirmed') {
-          addIssue(event.data);
-        }
-        break;
-      case 'report':
-        // 最终报告 - 审查完成
-        saveReport(event.data.report);
-        break;
-    }
-  }
-});
-```
+| 模式     | 说明                                 |
+| -------- | ------------------------------------ |
+| `normal` | 默认模式，5 轮渐进式 challenge 验证  |
+| `fast`   | 快速模式，2 轮压缩验证，适合更快反馈 |
 
----
+## 常见示例
 
-### `--language=<lang>`
-
-**输出语言**
-
-| 值   | 说明         |
-| ---- | ------------ |
-| `zh` | 中文（默认） |
-| `en` | 英文         |
+### 按分支审查
 
 ```bash
-argus review /repo feature main --language=en
+argus review /path/to/repo feature-branch main
 ```
 
----
-
-### `--skip-validation`
-
-**跳过问题验证**
-
-跳过挑战模式验证，加快审查速度，但可能增加误报。
+### 按 commit 范围做增量审查
 
 ```bash
-argus review /repo feature main --skip-validation
+argus review /path/to/repo abc1234 def5678
 ```
 
-**适用场景：**
-
-- 快速预览审查结果
-- CI/CD 中的快速检查
-- 对误报容忍度较高的场景
-
-**注意：** 不推荐在正式审查中使用，验证可以过滤约 30-50% 的误报。
-
----
-
-### `--review-mode=<mode>`
-
-**审核模式**
-
-控制问题验证的深度。
-
-| 值       | 说明                                  |
-| -------- | ------------------------------------- |
-| `normal` | 标准模式（默认）- 5 轮渐进式挑战验证  |
-| `fast`   | 快速模式 - 2 轮压缩验证，更快获得结果 |
+### OpenAI 运行时 + 英文输出
 
 ```bash
-# 快速审核（2 轮验证）
-argus review /repo feature main --review-mode=fast
+export ARGUS_RUNTIME=openai-responses
+export OPENAI_API_KEY=your-api-key
+export ARGUS_MODEL=gpt-5
 
-# 标准审核（默认，5 轮验证）
-argus review /repo feature main --review-mode=normal
+argus review /path/to/repo feature-branch main --language=en
 ```
 
-**区别：**
-
-- **标准模式**：5 轮渐进式挑战验证，逐步深入调查
-- **快速模式**：2 轮压缩验证，第一轮将自我挑战逻辑内化为单轮执行，第二轮为最终确认。同时更积极地过滤 diff 范围外的问题
-
-**适用场景：**
-
-- 开发迭代中快速获取反馈
-- CI/CD 流水线中速度优先于详尽验证
-- 在正式标准模式审查前的初步审查
-
----
-
-### `--config-dir=<path>`
-
-**配置目录**
-
-指定配置目录，自动加载其中的 `rules/` 和 `agents/` 子目录，以及 `.argusignore` 文件。
+### 快速模式 + JSON 日志
 
 ```bash
-argus review /repo feature main --config-dir=./.ai-review
+argus review /repo feature main --review-mode=fast --json-logs
 ```
 
-**目录结构：**
+### 跳过验证，加快 CI 检查
 
+```bash
+argus review /repo feature main --skip-validation --json-logs
 ```
+
+### 验证历史问题是否已修复
+
+```bash
+argus review /repo feature main --previous-review=./review-1.json
+```
+
+### 注入 PR 业务上下文
+
+```bash
+argus review /repo feature main --pr-context=./pr-context.json
+```
+
+### 使用外部 diff
+
+```bash
+argus review /repo --diff-file=./pr.diff
+```
+
+```bash
+curl -s "https://bitbucket.example.com/api/..." | argus review /repo --diff-stdin
+```
+
+## 配置目录约定
+
+当使用 `--config-dir` 时，Argus 会自动加载：
+
+- `rules/`
+- `agents/`
+- `.argusignore`
+
+示例目录：
+
+```text
 .ai-review/
-├── .argusignore        # 文件忽略规则（gitignore 语法）
-├── rules/              # 补充内置 Agent 的规则
-│   ├── global.md       # 全局规则（应用于所有 Agent）
-│   ├── security.md     # 安全审查规则
-│   ├── logic.md        # 逻辑审查规则
-│   ├── style.md        # 风格审查规则
-│   ├── performance.md  # 性能审查规则
-│   └── checklist.yaml  # 自定义检查清单
-└── agents/             # 自定义 Agent（领域专项审查）
-    ├── component-plugin.yaml
-    └── api-security.yaml
+├─ .argusignore
+├─ rules/
+│  ├─ global.md
+│  ├─ security.md
+│  ├─ logic.md
+│  └─ checklist.yaml
+└─ agents/
+   └─ api-security.yaml
 ```
-
----
-
-### `--rules-dir=<path>`
-
-**自定义规则目录**
-
-单独指定规则目录，可多次使用。
-
-```bash
-# 单个规则目录
-argus review /repo feature main --rules-dir=./team-rules
-
-# 多个规则目录（按顺序合并）
-argus review /repo feature main --rules-dir=./base-rules --rules-dir=./team-rules
-```
-
-**规则文件格式（Markdown）：**
-
-```markdown
-# 安全审查规则
-
-## 必须检查
-
-- 所有用户输入必须进行验证和转义
-- 禁止使用 eval() 和 new Function()
-- SQL 查询必须使用参数化查询
-
-## 推荐做法
-
-- 使用 Content-Security-Policy 头
-- 敏感数据使用加密存储
-```
-
----
-
-### `--agents-dir=<path>`
-
-**自定义 Agent 目录**
-
-指定自定义 Agent 定义目录，可多次使用。
-
-```bash
-argus review /repo feature main --agents-dir=./custom-agents
-```
-
-**Agent 定义文件格式（YAML）：**
-
-```yaml
-name: api-security
-description: API 安全专项审查
-trigger_mode: rule # rule | llm | hybrid
-triggers:
-  files:
-    - '**/api/**/*.ts'
-    - '**/routes/**/*.ts'
-  exclude_files:
-    - '**/*.test.ts'
-    - '**/*.spec.ts'
-prompt: |
-  你是 API 安全审查专家，请检查以下问题：
-
-  1. 认证和授权
-     - 是否正确验证用户身份
-     - 是否检查用户权限
-
-  2. 输入验证
-     - 请求参数是否进行类型和范围验证
-     - 是否防止注入攻击
-
-  3. 响应安全
-     - 是否泄露敏感信息
-     - 错误消息是否过于详细
-output:
-  category: security
-  default_severity: error
-```
-
----
-
-### `--verbose`
-
-**详细输出模式**
-
-输出更多调试信息，包括 Agent 选择原因、工具调用详情等。
-
-```bash
-argus review /repo feature main --verbose
-```
-
----
 
 ### `.argusignore`
 
-**文件忽略规则**
+`.argusignore` 采用接近 gitignore 的语法，用于在审查前先过滤文件。
 
-在配置目录中放置 `.argusignore` 文件，可排除不需要审查的文件。使用 gitignore 风格的语法。
-
-```bash
-# 使用 --config-dir 时自动加载
-argus review /repo feature main --config-dir=./.ai-review
-```
-
-**`.argusignore` 文件示例：**
+示例：
 
 ```gitignore
 # 测试文件
@@ -395,387 +389,132 @@ docs/**
 dist/**
 build/**
 
-# 生成的文件
+# 生成代码
 **/*.generated.ts
 
 # 但保留关键测试
 !critical.test.ts
 ```
 
-**支持的模式：**
+## JSON 事件流
 
-- `*.ext` — 按文件扩展名匹配
-- `**/__tests__/**` — 匹配任意深度的目录
-- `docs/**` — 匹配目录前缀
-- `!pattern` — 取反（取消忽略之前被忽略的文件）
-- `# comment` — 注释（以 `#` 开头的行）
-
-被忽略的文件会在审查前从 diff 中移除，节省 LLM token 并减少噪音。
-
----
-
-### `--local`
-
-**本地分支模式**
-
-审查本地分支，无需推送到远程。启用后：
-
-- 跳过 `git fetch` 操作
-- 直接解析本地分支（如 `feature` 而不是 `origin/feature`）
-- 适用于审查进行中的工作分支
+启用 `--json-logs` 后，Argus 会把进度和最终报告以 NDJSON 形式输出到 `stderr`，方便 CI/CD 或平台侧消费。
 
 ```bash
-# 审查尚未推送的本地分支
-argus review /repo feature main --local
+argus review /repo feature main --json-logs
 ```
 
----
+典型事件类型：
 
-### `--previous-review=<file>`
+- `review:start`
+- `phase:start`
+- `agent:start`
+- `agent:progress`
+- `agent:complete`
+- `validation:issue`
+- `review:complete`
+- `report`
 
-**修复验证模式**
+输出示例：
 
-加载上次审查的 JSON 文件，验证已报告的问题是否已修复。
-
-```bash
-# 验证上次审查中的问题是否已修复
-argus review /repo feature main --previous-review=./review-result.json
+```jsonl
+{"type":"review:start","data":{"repoPath":"/repo","sourceBranch":"feature","targetBranch":"main","timestamp":"2025-01-15T10:00:00.000Z"}}
+{"type":"agent:complete","data":{"agent":"security-reviewer","issuesFound":3,"timestamp":"..."}}
+{"type":"report","data":{"report":{"issues":[...],"metrics":{...},"metadata":{...}},"timestamp":"..."}}
 ```
 
-**工作原理：**
+## PR Context 文件
 
-1. 从上次审查 JSON 文件中加载问题列表
-2. 运行 `fix-verifier` Agent 检查每个问题
-3. 报告验证状态：`fixed`（已修复）、`missed`（未修复）、`false_positive`（误报）、`obsolete`（已过时）或 `uncertain`（不确定）
-4. 未修复的问题会包含在最终报告中，并更新描述
+`--pr-context` 用于给审查过程注入业务上下文，常见来源是 Jira、Bitbucket PR 元数据或内部平台聚合信息。
 
-**上次审查文件格式：**
-
-文件应为包含 `issues` 数组的上次审查 JSON 导出：
+基本结构：
 
 ```json
 {
-  "issues": [
-    {
-      "id": "sql-injection-auth-42",
-      "file": "src/auth.ts",
-      "line_start": 42,
-      "line_end": 45,
-      "category": "security",
-      "severity": "error",
-      "title": "SQL 注入漏洞",
-      "description": "用户输入直接拼接到 SQL 查询中"
-    }
-  ]
-}
-```
-
----
-
-### `--no-verify-fixes`
-
-**禁用修复验证**
-
-当设置了 `--previous-review` 时，修复验证默认启用。使用此标志可禁用它。
-
-```bash
-# 加载上次审查但跳过修复验证
-argus review /repo feature main --previous-review=./review.json --no-verify-fixes
-```
-
----
-
-### `--pr-context=<file>`
-
-**PR 业务上下文（Jira 集成）**
-
-提供 PR 的业务上下文（如 Jira Issue 信息），帮助审查 Agent 更好地理解代码变更的目的。
-
-```bash
-argus review /repo feature main --pr-context=./pr-context.json
-```
-
-**JSON 文件结构：**
-
-```json
-{
-  "prTitle": "PROJ-123: 修复登录验证问题",
-  "prDescription": "修复用户登录时特殊字符导致的验证失败问题",
+  "prTitle": "PROJ-123: Fix login validation",
+  "prDescription": "Fixes the login bug...",
   "jiraIssues": [
     {
       "key": "PROJ-123",
       "type": "Bug",
-      "summary": "登录时特殊字符导致验证失败",
-      "keyPoints": ["处理密码中的特殊字符", "显示正确的错误提示"],
-      "reviewContext": "检查输入验证和字符编码处理"
+      "summary": "Login fails with special chars",
+      "keyPoints": ["Handle special characters in password"],
+      "reviewContext": "Check input validation"
     }
   ],
   "parseStatus": "found",
-  "parseMessage": "成功处理 1 个 Jira Issue"
+  "parseMessage": "Successfully processed 1 issue"
 }
 ```
 
-**字段说明：**
+完整 schema 见：
 
-| 字段            | 类型           | 必填 | 说明                                         |
-| --------------- | -------------- | ---- | -------------------------------------------- |
-| `prTitle`       | string         | ✅   | PR 标题                                      |
-| `prDescription` | string \| null | ❌   | PR 描述                                      |
-| `jiraIssues`    | array          | ✅   | Jira Issue 数组（可为空）                    |
-| `parseStatus`   | string         | ✅   | 解析状态：`found` / `none` / `partial_error` |
-| `parseMessage`  | string         | ❌   | 调试信息                                     |
-
-**JiraIssueSummary 结构：**
-
-| 字段            | 类型     | 说明                              |
-| --------------- | -------- | --------------------------------- |
-| `key`           | string   | Jira Issue Key（如 `PROJ-123`）   |
-| `type`          | string   | Issue 类型（Bug/Story/Task/Epic） |
-| `summary`       | string   | 简要摘要（100-200 字符）          |
-| `keyPoints`     | string[] | 验收标准或修复要点                |
-| `reviewContext` | string   | 代码审查关注点                    |
-
-**JSON Schema：**
-
-完整的 JSON Schema 定义位于 `schemas/pr-context.schema.json`，可用于 IDE 自动补全和验证。
-
-**使用场景：**
-
-- 与 Jira 系统集成，自动获取 Issue 信息
-- 帮助审查 Agent 理解代码变更的业务背景
-- 验证代码是否满足验收标准
-
----
-
-## 使用示例
-
-### 基础用法
-
-```bash
-# 完整 AI 代码审查（基于分支）
-argus review /path/to/repo feature-branch main
-
-# 英文输出
-argus review /path/to/repo feature-branch main --language=en
+```text
+schemas/pr-context.schema.json
 ```
 
-### 增量审查（基于 Commit）
+## 工作机制概览
 
-使用 commit SHA 代替分支名来只审查特定的 commit 范围：
+一次标准审查通常包含以下阶段：
 
-```bash
-# 审查两个 commit 之间的变更
-argus review /repo abc1234 def5678
-
-# 示例：只审查 feature 分支上的新 commit
-# 首先获取 commit SHA
-git log --oneline feature-branch
-
-# 然后审查特定范围
-argus review /repo <新commit-sha> <旧commit-sha>
-```
-
-工具会自动检测传入的是分支名还是 commit SHA，并相应调整 diff 策略。
-
-### 修复验证
-
-验证上次审查中的问题是否已修复：
-
-```bash
-# 保存首次审查结果
-argus review /repo feature main --json-logs 2>&1 | jq 'select(.type=="report") | .data.report' > review-1.json
-
-# 修复后，验证修复情况
-argus review /repo feature main --previous-review=./review-1.json
-```
-
-### 自定义配置
-
-```bash
-# 使用配置目录
-argus review /repo feature main --config-dir=./.ai-review
-
-# 分别指定规则和 Agent
-argus review /repo feature main \
-  --rules-dir=./company-rules \
-  --agents-dir=./domain-agents
-
-# 多层配置合并
-argus review /repo feature main \
-  --config-dir=./base-config \
-  --rules-dir=./team-overrides
-```
-
-### CI/CD 集成
-
-```bash
-# JSON 事件流输出
-argus review /repo feature main --json-logs 2>events.jsonl
-
-# 快速检查（跳过验证）
-argus review /repo feature main --skip-validation --json-logs
-
-# 基于 commit 的增量 CI 检查
-argus review /repo $NEW_COMMIT $OLD_COMMIT --json-logs
-
-# 带 Jira 上下文的审查
-argus review /repo feature main --pr-context=./pr-context.json --json-logs
-```
-
----
+1. 获取 diff，解析文件，提取项目约定
+2. 根据变更特征选择需要的 Agent
+3. 多 Agent 并行执行审查
+4. 对候选问题做多轮验证
+5. 按需验证历史问题是否已修复
+6. 聚合、去重并输出最终报告
 
 ## 项目结构
 
-```
+这里保留一个精简版目录视图，只展示稳定的主模块，减少 README 与实现细节的耦合。
+
+```text
 src/
-├── index.ts              # CLI 入口，命令解析
-├── cli/
-│   ├── progress.ts       # 交互式进度输出
-│   ├── events.ts         # 事件类型定义
-│   └── structured-progress.ts  # JSON 事件流输出
-├── review/
-│   ├── orchestrator.ts   # 主审查协调器
-│   ├── streaming-orchestrator.ts  # 流式审查模式
-│   ├── streaming-validator.ts    # 流式问题验证
-│   ├── agent-selector.ts # 智能 Agent 选择
-│   ├── validator.ts      # 问题验证（挑战模式）
-│   ├── fix-verifier.ts   # 修复验证 Agent 执行器
-│   ├── previous-review-loader.ts # 加载上次审查数据
-│   ├── realtime-deduplicator.ts  # 实时去重
-│   ├── deduplicator.ts   # 批量语义去重
-│   ├── aggregator.ts     # 问题聚合
-│   ├── report.ts         # 报告生成
-│   ├── prompts/          # Agent Prompt 构建
-│   ├── standards/        # 项目标准提取
-│   ├── rules/            # 自定义规则加载
-│   ├── custom-agents/    # 自定义 Agent 加载
-│   └── types.ts          # 类型定义
-├── git/
-│   ├── diff.ts           # Git Diff 操作
-│   ├── parser.ts         # Diff 解析
-│   ├── ref.ts            # Ref 类型检测（分支/commit）
-│   ├── worktree-manager.ts # Git Worktree 管理
-│   └── commits.ts        # 提交历史
-├── llm/
-│   ├── factory.ts        # LLM 提供者工厂
-│   └── providers/        # Claude/OpenAI 实现
-├── config/
-│   └── reviewignore.ts   # .argusignore 模式加载与匹配
-└── analyzer/
-    ├── local-analyzer.ts # 本地快速分析
-    └── diff-analyzer.ts  # LLM 语义分析
+├─ index.ts                 # CLI 入口
+├─ runtime/                 # 运行时抽象与 Provider 实现
+│  ├─ factory.ts
+│  ├─ types.ts
+│  ├─ claude-agent.ts
+│  └─ openai-responses.ts
+├─ review/                  # 审查编排、验证、去重、报告
+├─ git/                     # git ref / diff / worktree 处理
+├─ diff/                    # 外部 diff 与增量 diff 分析
+├─ config/                  # 环境变量与本地配置
+├─ cli/                     # CLI 输出与事件
+├─ analyzer/                # 本地/语义分析辅助模块
+├─ types/
+└─ utils/
 
-schemas/                  # JSON Schema 定义
-└── pr-context.schema.json # PR Context 结构验证
-
-.claude/agents/           # 内置 Agent Prompt 定义
-├── security-reviewer.md  # 安全审查
-├── logic-reviewer.md     # 逻辑审查
-├── style-reviewer.md     # 风格审查
-├── performance-reviewer.md # 性能审查
-├── validator.md          # 问题验证
-└── fix-verifier.md       # 修复验证
+schemas/
+└─ pr-context.schema.json
 ```
-
-## 工作原理
-
-### 审查流程
-
-```
-┌─────────────────┐
-│  1. 上下文构建   │  获取 Diff → 解析文件 → 提取项目标准
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  2. 智能选择    │  根据文件特征选择需要的 Agent
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  3. 并行审查    │  4 个 Agent 并发执行 + 实时去重
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  4. 问题验证    │  挑战模式多轮验证，过滤误报
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  5. 修复验证    │  （可选）验证上次问题是否已修复
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  6. 生成报告    │  聚合问题，生成结构化报告
-└─────────────────┘
-```
-
-### 三点式 Diff
-
-使用 `git diff origin/target...origin/source`：
-
-```
-main:     A --- B --- C
-                \
-feature:         D --- E
-```
-
-- 只显示 D 和 E 的变更（源分支实际改动）
-- 排除 target 分支上的其他提交
-
-### 实时去重
-
-两层去重机制：
-
-1. **规则层** - 同文件 + 行号重叠 → 快速判断
-2. **LLM 层** - 语义相似度 → 精确去重
-
-### 问题验证
-
-挑战模式：验证 Agent 尝试"挑战"发现的问题
-
-- 验证代码位置是否正确
-- 验证问题描述是否准确
-- 验证是否为真实问题而非误报
-
-### 修复验证
-
-当提供 `--previous-review` 时，fix-verifier Agent 会检查每个上次的问题：
-
-1. **第一阶段：批量筛查** - 快速扫描，将问题分类为已解决/未解决/不明确
-2. **第二阶段：深入调查** - 对未解决的问题进行多轮深入调查
-
-验证状态：
-
-- **fixed** - 问题已正确修复
-- **missed** - 问题仍然存在（开发者遗漏）
-- **false_positive** - 原始检测是误报
-- **obsolete** - 代码变更较大，问题不再相关
-- **uncertain** - 无法确定状态
 
 ## 开发命令
 
 ```bash
 # 开发
-npm run dev -- <command> ...   # 运行 CLI
-npm run exec src/file.ts       # 运行任意 TS 文件
+npm run dev -- <command> ...
+npm run exec src/file.ts
 
 # 构建
-npm run build                  # 编译到 dist/
-npm run type-check             # 类型检查
+npm run build
+npm run type-check
 
 # 代码质量
-npm run lint                   # ESLint 检查
-npm run lint:fix               # 自动修复
-npm run format                 # Prettier 格式化
-npm run format:check           # 检查格式
+npm run lint
+npm run lint:fix
+npm run format
+npm run format:check
 
 # 测试
-npm run test                   # 监听模式
-npm run test:run               # 运行一次
-npm run test:coverage          # 覆盖率报告
+npm run test
+npm run test:run
+npm run test:coverage
 ```
 
 ## Commit 规范
 
-使用 Conventional Commits：
+建议使用 Conventional Commits：
 
 ```bash
 git commit -m "feat: add new feature"
@@ -783,7 +522,7 @@ git commit -m "fix: resolve bug"
 git commit -m "docs: update documentation"
 ```
 
-类型：`feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`chore`
+常见类型：`feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`chore`
 
 ## License
 

@@ -1,385 +1,374 @@
 # code-argus
 
-AI-powered automated code review CLI tool using Claude Agent SDK with multi-agent orchestration.
+AI-powered automated code review CLI with multi-agent orchestration and dual Claude/OpenAI runtime support.
 
-English | [中文](./README.zh-CN.md)
+English | [README.zh-CN](./README.zh-CN.md)
+
+## Overview
+
+`code-argus` reviews Git diffs with an agent-based pipeline that finds issues, validates them, deduplicates overlaps, and emits a structured report.
+
+This branch adds the first production-ready dual runtime foundation:
+
+- Two runtime families are supported: `claude-agent` and `openai-responses`
+- Runtime selection is controlled only through the global `ARGUS_RUNTIME` environment variable
+- The OpenAI path uses the official `openai` SDK and the Responses API
+- The Claude path continues to use `@anthropic-ai/claude-agent-sdk`
+- Provider-specific SDK usage is isolated under `src/runtime/*`
 
 ## Features
 
-- **Multi-Agent Parallel Review** - 4 specialized agents run concurrently: security, logic, performance, style
-- **Smart Agent Selection** - Automatically selects agents based on file characteristics
-- **Issue Validation** - Challenge-mode multi-round validation significantly reduces false positives
-- **Fast Review Mode** - 2-round compressed validation for quicker feedback
-- **Realtime Deduplication** - Two-layer dedup: fast rule-based check + LLM semantic verification
-- **Project Standards Aware** - Auto-extracts ESLint/TypeScript/Prettier configs
-- **Custom Rules** - Team-specific review rules and checklists
-- **File Ignore Patterns** - `.argusignore` support with gitignore-style syntax
-- **Incremental Review** - Only review new commits for better efficiency
-- **Service Integration** - JSON event stream output for CI/CD and external service integration
+- Multi-agent parallel review for security, logic, performance, and style
+- Smart agent selection based on the changed file set
+- Multi-round validation to reduce false positives
+- Fast review mode for lower-latency feedback
+- Realtime deduplication with rule-based filtering plus semantic verification
+- Incremental review by branch or commit range
+- Project standards extraction from ESLint, TypeScript, and Prettier config
+- Custom rules, custom agents, and `.argusignore`
+- JSON event stream output for CI/CD and external integrations
 
 ## Installation
 
-### Global Install (Recommended)
+### Global install
 
 ```bash
 npm install -g code-argus
 ```
 
-### Using npx
+### Using `npx`
 
 ```bash
 npx code-argus review /path/to/repo feature-branch main
 ```
 
-### From Source
+### From source
 
 ```bash
-git clone https://github.com/anthropics/code-argus.git
+git clone https://github.com/Edric-Li/code-argus.git
 cd code-argus/core
 npm install
 npm run build
 npm link
 ```
 
-## Configuration
+## Quick Start
 
-### API Key
-
-Set your Anthropic API key:
+### Claude runtime
 
 ```bash
-# Option 1: Environment variable
+export ARGUS_RUNTIME=claude-agent
 export ANTHROPIC_API_KEY=your-api-key
 
-# Option 2: .env file
+argus review /path/to/repo feature-branch main
+```
+
+### OpenAI runtime
+
+```bash
+export ARGUS_RUNTIME=openai-responses
+export OPENAI_API_KEY=your-api-key
+export ARGUS_MODEL=gpt-5
+
+argus review /path/to/repo feature-branch main
+```
+
+## Runtime and Authentication
+
+### Runtime selection
+
+The active runtime is selected globally through environment variables:
+
+```bash
+# Default
+export ARGUS_RUNTIME=claude-agent
+
+# Switch to OpenAI Responses
+export ARGUS_RUNTIME=openai-responses
+```
+
+Operational rules:
+
+- `ARGUS_RUNTIME` is env-only
+- The `argus config` command does not persist the runtime
+- Provider switching on the same machine is done by changing environment variables
+
+### Claude credentials
+
+Claude runtime credentials are resolved in this order:
+
+1. `ARGUS_ANTHROPIC_API_KEY`
+2. `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`
+3. `ANTHROPIC_API_KEY`
+4. `argus config set api-key ...`
+
+Examples:
+
+```bash
+# Environment variable
+export ANTHROPIC_API_KEY=your-api-key
+
+# .env file
 echo "ANTHROPIC_API_KEY=your-api-key" > .env
 
-# Option 3: Using config command (recommended)
+# Argus config fallback
 argus config set api-key sk-ant-xxx
 ```
 
-### Configuration Management
+Optional Claude base URL:
 
 ```bash
-# Set configuration
-argus config set api-key sk-ant-xxx      # API key
-argus config set base-url https://proxy  # Custom proxy URL
-argus config set model claude-sonnet-4-5-20250929  # Model
+export ARGUS_ANTHROPIC_BASE_URL=https://your-proxy.example.com
+```
 
-# View configuration
-argus config list                         # List all config
-argus config get api-key                  # Get single config
-argus config path                         # Show config file path
+OAuth-style Claude-compatible setup:
 
-# Delete configuration
+```bash
+export ANTHROPIC_BASE_URL=https://your-claude-compatible-endpoint
+export ANTHROPIC_AUTH_TOKEN=your-token
+```
+
+### OpenAI credentials
+
+OpenAI runtime credentials are env-only and resolved in this order:
+
+1. `ARGUS_OPENAI_API_KEY`
+2. `OPENAI_API_KEY`
+
+Examples:
+
+```bash
+# Standard OpenAI env var
+export OPENAI_API_KEY=your-api-key
+
+# Argus-specific env var
+export ARGUS_OPENAI_API_KEY=your-api-key
+```
+
+Optional OpenAI base URL:
+
+```bash
+export ARGUS_OPENAI_BASE_URL=https://your-openai-compatible-endpoint
+```
+
+or:
+
+```bash
+export OPENAI_BASE_URL=https://your-openai-compatible-endpoint
+```
+
+### Model configuration
+
+Shared model-related environment variables:
+
+```bash
+export ARGUS_MODEL=gpt-5
+export ARGUS_LIGHT_MODEL=gpt-5-mini
+export ARGUS_VALIDATOR_MODEL=gpt-5
+```
+
+You can also persist the default main model:
+
+```bash
+argus config set model gpt-5
+```
+
+Notes:
+
+- `model` is a shared fallback and is not provider-specific
+- `api-key` and `base-url` in config remain Claude-compatible fields
+- When using `openai-responses`, explicitly setting `ARGUS_MODEL` is recommended
+
+### Environment variable summary
+
+| Purpose               | Variables                                       |
+| --------------------- | ----------------------------------------------- |
+| Runtime selection     | `ARGUS_RUNTIME`                                 |
+| Main model            | `ARGUS_MODEL`                                   |
+| Light model           | `ARGUS_LIGHT_MODEL`                             |
+| Validator model       | `ARGUS_VALIDATOR_MODEL`                         |
+| Claude API key        | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
+| Claude OAuth or proxy | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
+| Claude base URL       | `ARGUS_ANTHROPIC_BASE_URL`                      |
+| OpenAI API key        | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
+| OpenAI base URL       | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
+
+## Configuration Management
+
+Config is stored at:
+
+```bash
+~/.argus/config.json
+```
+
+Common commands:
+
+```bash
+argus config set api-key sk-ant-xxx
+argus config set base-url https://proxy.example.com
+argus config set model claude-sonnet-4-5-20250929
+
+argus config list
+argus config get api-key
+argus config path
 argus config delete base-url
 ```
 
-## Usage
+Current config semantics:
 
-### Command Format
+- `api-key`: Claude runtime fallback API key
+- `base-url`: Claude-compatible base URL
+- `model`: shared main-model fallback
+
+Environment variables take precedence over config values.
+
+## Commands and Usage
+
+### Command format
 
 ```bash
-argus <command> <repoPath> <sourceBranch> <targetBranch> [options]
+argus <command> [options]
 ```
 
-### Commands
+### Main commands
 
-| Command  | Description                                       |
+| Command   | Description                        |
+| --------- | ---------------------------------- |
+| `review`  | Run AI code review on a repository |
+| `config`  | Manage local configuration         |
+| `upgrade` | Upgrade to the latest release      |
+
+### `review` command format
+
+```bash
+argus review <repoPath> <source> <target> [options]
+```
+
+Arguments:
+
+| Argument   | Description                      |
+| ---------- | -------------------------------- |
+| `repoPath` | Path to the Git repository       |
+| `source`   | Source branch name or commit SHA |
+| `target`   | Target branch name or commit SHA |
+
+Reference auto-detection:
+
+- Branch names use three-dot diff: `origin/target...origin/source`
+- Commit SHAs use two-dot diff: `target..source`
+
+## Common Options
+
+| Option                     | Description                                       |
+| -------------------------- | ------------------------------------------------- | ------------------------ |
+| `--json-logs`              | Emit NDJSON events for service integration        |
+| `--language=<zh            | en>`                                              | Set output language      |
+| `--review-mode=<normal     | fast>`                                            | Control validation depth |
+| `--skip-validation`        | Skip validation for faster output                 |
+| `--verbose`                | Emit extra debug information                      |
+| `--config-dir=<path>`      | Auto-load rules, agents, and `.argusignore`       |
+| `--rules-dir=<path>`       | Add a custom rules directory                      |
+| `--agents-dir=<path>`      | Add a custom agents directory                     |
+| `--previous-review=<file>` | Load a previous review and verify fixes           |
+| `--no-verify-fixes`        | Disable fix verification                          |
+| `--pr-context=<file>`      | Inject PR business context, for example Jira data |
+| `--local`                  | Use local branches and skip `git fetch`           |
+| `--require-worktree`       | Require worktree creation or fail                 |
+| `--diff-file=<path>`       | Read diff input from a file                       |
+| `--diff-stdin`             | Read diff input from stdin                        |
+| `--commits=<sha1,sha2>`    | Review only the specified commits                 |
+| `--no-smart-merge-filter`  | Disable smart merge filtering                     |
+
+### Review modes
+
+| Mode     | Description                                       |
 | -------- | ------------------------------------------------- |
-| `review` | Full AI code review (multi-agent parallel review) |
-| `config` | Configuration management                          |
+| `normal` | Default mode with 5 progressive validation rounds |
+| `fast`   | Faster mode with 2 compressed validation rounds   |
 
-### Arguments
+## Examples
 
-| Argument   | Description                                      |
-| ---------- | ------------------------------------------------ |
-| `repoPath` | Path to Git repository                           |
-| `source`   | Source branch name or commit SHA (auto-detected) |
-| `target`   | Target branch name or commit SHA (auto-detected) |
-
-**Auto-detection:**
-
-- Branch names: Uses three-dot diff (`origin/target...origin/source`)
-- Commit SHAs: Uses two-dot diff (`target..source`) for incremental review
-
----
-
-## Options Reference
-
-### `--json-logs`
-
-**Output JSON event stream for service integration**
-
-When enabled, all progress and final report are output as JSON Lines (NDJSON) to stderr, making it easy for external programs to parse.
+### Branch-based review
 
 ```bash
-argus review /repo feature main --json-logs
+argus review /path/to/repo feature-branch main
 ```
 
-**Output Example:**
-
-```jsonl
-{"type":"review:start","data":{"repoPath":"/repo","sourceBranch":"feature","targetBranch":"main","agents":["security-reviewer","logic-reviewer"],"timestamp":"2025-01-15T10:00:00.000Z"}}
-{"type":"phase:start","data":{"phase":1,"totalPhases":4,"name":"Building review context...","timestamp":"..."}}
-{"type":"agent:start","data":{"agent":"security-reviewer","timestamp":"..."}}
-{"type":"agent:progress","data":{"agent":"security-reviewer","activity":"Reading file: src/auth.ts","timestamp":"..."}}
-{"type":"agent:complete","data":{"agent":"security-reviewer","status":"completed","issuesFound":3,"elapsedMs":5000,"timestamp":"..."}}
-{"type":"validation:issue","data":{"issueId":"sql-injection-auth.ts","title":"SQL Injection","file":"src/auth.ts","line":42,"severity":"error","status":"confirmed","description":"User input directly concatenated into SQL query","suggestion":"Use parameterized queries instead","timestamp":"..."}}
-{"type":"review:complete","data":{"totalIssues":5,"elapsedMs":30000,"timestamp":"..."}}
-{"type":"report","data":{"report":{"issues":[...],"metrics":{...},"metadata":{...}},"timestamp":"..."}}
-```
-
-**Event Types:**
-
-| Event Type            | Description                                                          |
-| --------------------- | -------------------------------------------------------------------- |
-| `review:start`        | Review started, includes repo, branches, agent list                  |
-| `review:complete`     | Review completed, includes total issues and elapsed time             |
-| `review:error`        | Review failed, includes error message                                |
-| `phase:start`         | Phase started (build context, run agents, validate, generate report) |
-| `phase:complete`      | Phase completed                                                      |
-| `agent:start`         | Agent started running                                                |
-| `agent:progress`      | Agent activity (reading files, searching code, etc.)                 |
-| `agent:complete`      | Agent completed, includes issues found count                         |
-| `validation:start`    | Validation started                                                   |
-| `validation:progress` | Validation progress                                                  |
-| `validation:issue`    | Issue validation result (confirmed/rejected/uncertain)               |
-| `validation:complete` | Validation completion statistics                                     |
-| `log`                 | Log message                                                          |
-| `report`              | **Final report** (includes complete review results)                  |
-
-**Service Integration Example:**
-
-```typescript
-import { spawn } from 'child_process';
-
-const child = spawn('argus', ['review', repo, source, target, '--json-logs']);
-
-child.stderr.on('data', (chunk) => {
-  for (const line of chunk.toString().split('\n').filter(Boolean)) {
-    const event = JSON.parse(line);
-
-    switch (event.type) {
-      case 'agent:start':
-        updateUI(`Agent ${event.data.agent} started...`);
-        break;
-      case 'agent:complete':
-        updateUI(`Agent ${event.data.agent} completed, found ${event.data.issuesFound} issues`);
-        break;
-      case 'validation:issue':
-        if (event.data.status === 'confirmed') {
-          addIssue(event.data);
-        }
-        break;
-      case 'report':
-        // Final report - review completed
-        saveReport(event.data.report);
-        break;
-    }
-  }
-});
-```
-
----
-
-### `--language=<lang>`
-
-**Output language**
-
-| Value | Description       |
-| ----- | ----------------- |
-| `zh`  | Chinese (default) |
-| `en`  | English           |
+### Commit-based incremental review
 
 ```bash
-argus review /repo feature main --language=en
+argus review /path/to/repo abc1234 def5678
 ```
 
----
-
-### `--skip-validation`
-
-**Skip issue validation**
-
-Skip challenge-mode validation to speed up review, but may increase false positives.
+### OpenAI runtime with English output
 
 ```bash
-argus review /repo feature main --skip-validation
+export ARGUS_RUNTIME=openai-responses
+export OPENAI_API_KEY=your-api-key
+export ARGUS_MODEL=gpt-5
+
+argus review /path/to/repo feature-branch main --language=en
 ```
 
-**Use cases:**
-
-- Quick preview of review results
-- Fast checks in CI/CD
-- Scenarios with higher tolerance for false positives
-
-**Note:** Not recommended for formal reviews. Validation filters approximately 30-50% of false positives.
-
----
-
-### `--review-mode=<mode>`
-
-**Review mode**
-
-Control the depth of issue validation.
-
-| Value    | Description                                                        |
-| -------- | ------------------------------------------------------------------ |
-| `normal` | Standard mode (default) - 5-round progressive challenge validation |
-| `fast`   | Fast mode - 2-round compressed validation for quicker results      |
+### Fast mode with JSON logs
 
 ```bash
-# Fast review (2-round validation)
-argus review /repo feature main --review-mode=fast
-
-# Standard review (default, 5-round validation)
-argus review /repo feature main --review-mode=normal
+argus review /repo feature main --review-mode=fast --json-logs
 ```
 
-**Differences:**
-
-- **Normal mode**: 5-round progressive challenge validation with thorough investigation
-- **Fast mode**: 2-round compressed validation that internalizes self-challenge logic into a single round, followed by final confirmation. Also filters out issues outside the diff scope more aggressively.
-
-**Use cases:**
-
-- Quick feedback during development iterations
-- CI/CD pipelines where speed matters more than exhaustive validation
-- Preliminary review before a thorough normal-mode pass
-
----
-
-### `--config-dir=<path>`
-
-**Configuration directory**
-
-Specify a config directory that auto-loads `rules/` and `agents/` subdirectories, and `.argusignore` file.
+### CI-oriented quick check
 
 ```bash
-argus review /repo feature main --config-dir=./.ai-review
+argus review /repo feature main --skip-validation --json-logs
 ```
 
-**Directory structure:**
+### Fix verification
 
+```bash
+argus review /repo feature main --previous-review=./review-1.json
 ```
+
+### PR context
+
+```bash
+argus review /repo feature main --pr-context=./pr-context.json
+```
+
+### External diff input
+
+```bash
+argus review /repo --diff-file=./pr.diff
+```
+
+```bash
+curl -s "https://bitbucket.example.com/api/..." | argus review /repo --diff-stdin
+```
+
+## Configuration Directory Convention
+
+When `--config-dir` is used, Argus auto-loads:
+
+- `rules/`
+- `agents/`
+- `.argusignore`
+
+Example:
+
+```text
 .ai-review/
-├── .argusignore        # File ignore patterns (gitignore syntax)
-├── rules/              # Supplement built-in agent rules
-│   ├── global.md       # Global rules (apply to all agents)
-│   ├── security.md     # Security review rules
-│   ├── logic.md        # Logic review rules
-│   ├── style.md        # Style review rules
-│   ├── performance.md  # Performance review rules
-│   └── checklist.yaml  # Custom checklist
-└── agents/             # Custom agents (domain-specific review)
-    ├── component-plugin.yaml
-    └── api-security.yaml
+|- .argusignore
+|- rules/
+|  |- global.md
+|  |- security.md
+|  |- logic.md
+|  `- checklist.yaml
+`- agents/
+   `- api-security.yaml
 ```
-
----
-
-### `--rules-dir=<path>`
-
-**Custom rules directory**
-
-Specify a rules directory separately. Can be used multiple times.
-
-```bash
-# Single rules directory
-argus review /repo feature main --rules-dir=./team-rules
-
-# Multiple rules directories (merged in order)
-argus review /repo feature main --rules-dir=./base-rules --rules-dir=./team-rules
-```
-
-**Rules file format (Markdown):**
-
-```markdown
-# Security Review Rules
-
-## Must Check
-
-- All user input must be validated and escaped
-- Prohibit use of eval() and new Function()
-- SQL queries must use parameterized queries
-
-## Best Practices
-
-- Use Content-Security-Policy headers
-- Store sensitive data with encryption
-```
-
----
-
-### `--agents-dir=<path>`
-
-**Custom agents directory**
-
-Specify a custom agent definitions directory. Can be used multiple times.
-
-```bash
-argus review /repo feature main --agents-dir=./custom-agents
-```
-
-**Agent definition file format (YAML):**
-
-```yaml
-name: api-security
-description: API security review specialist
-trigger_mode: rule # rule | llm | hybrid
-triggers:
-  files:
-    - '**/api/**/*.ts'
-    - '**/routes/**/*.ts'
-  exclude_files:
-    - '**/*.test.ts'
-    - '**/*.spec.ts'
-prompt: |
-  You are an API security review expert. Check for:
-
-  1. Authentication and Authorization
-     - Is user identity properly verified
-     - Are user permissions checked
-
-  2. Input Validation
-     - Are request parameters validated for type and range
-     - Is injection attack prevention in place
-
-  3. Response Security
-     - Is sensitive information leaked
-     - Are error messages too detailed
-output:
-  category: security
-  default_severity: error
-```
-
----
-
-### `--verbose`
-
-**Verbose output mode**
-
-Output more debug information, including agent selection reasons, tool call details, etc.
-
-```bash
-argus review /repo feature main --verbose
-```
-
----
 
 ### `.argusignore`
 
-**File ignore patterns**
-
-Place a `.argusignore` file in your config directory to exclude files from review. Uses gitignore-style syntax.
-
-```bash
-# Automatically loaded when using --config-dir
-argus review /repo feature main --config-dir=./.ai-review
-```
-
-**Example `.argusignore` file:**
+`.argusignore` uses gitignore-like syntax to filter files before review.
 
 ```gitignore
 # Test files
@@ -395,387 +384,130 @@ docs/**
 dist/**
 build/**
 
-# Generated files
+# Generated code
 **/*.generated.ts
 
-# But keep critical tests
+# Keep critical tests
 !critical.test.ts
 ```
 
-**Supported patterns:**
+## JSON Event Stream
 
-- `*.ext` — Match by file extension
-- `**/__tests__/**` — Match directories at any depth
-- `docs/**` — Match directory prefix
-- `!pattern` — Negation (un-ignore a previously ignored pattern)
-- `# comment` — Comments (lines starting with `#`)
-
-Ignored files are stripped from the diff before review, saving LLM tokens and reducing noise.
-
----
-
-### `--local`
-
-**Local branch mode**
-
-Review local branches without requiring them to be pushed to remote. When enabled:
-
-- Skips `git fetch` operations
-- Resolves branches directly (e.g., `feature` instead of `origin/feature`)
-- Useful for reviewing work-in-progress branches
+With `--json-logs`, progress and the final report are emitted to `stderr` as NDJSON:
 
 ```bash
-# Review a local branch that hasn't been pushed
-argus review /repo feature main --local
+argus review /repo feature main --json-logs
 ```
 
----
+Common event types:
 
-### `--previous-review=<file>`
+- `review:start`
+- `phase:start`
+- `agent:start`
+- `agent:progress`
+- `agent:complete`
+- `validation:issue`
+- `review:complete`
+- `report`
 
-**Fix verification mode**
+Example:
 
-Load a previous review JSON file to verify if reported issues have been fixed.
-
-```bash
-# Verify fixes from a previous review
-argus review /repo feature main --previous-review=./review-result.json
+```jsonl
+{"type":"review:start","data":{"repoPath":"/repo","sourceBranch":"feature","targetBranch":"main","timestamp":"2025-01-15T10:00:00.000Z"}}
+{"type":"agent:complete","data":{"agent":"security-reviewer","issuesFound":3,"timestamp":"..."}}
+{"type":"report","data":{"report":{"issues":[...],"metrics":{...},"metadata":{...}},"timestamp":"..."}}
 ```
 
-**How it works:**
+## PR Context File
 
-1. Loads issues from the previous review JSON file
-2. Runs the `fix-verifier` agent to check each issue
-3. Reports verification status: `fixed`, `missed`, `false_positive`, `obsolete`, or `uncertain`
-4. Missed issues are included in the final report with updated descriptions
-
-**Previous review file format:**
-
-The file should be a JSON export from a previous review containing an `issues` array:
+`--pr-context` injects business context into the review flow. Typical sources are Jira, Bitbucket PR metadata, or an internal aggregation service.
 
 ```json
 {
-  "issues": [
-    {
-      "id": "sql-injection-auth-42",
-      "file": "src/auth.ts",
-      "line_start": 42,
-      "line_end": 45,
-      "category": "security",
-      "severity": "error",
-      "title": "SQL Injection vulnerability",
-      "description": "User input directly concatenated into SQL query"
-    }
-  ]
-}
-```
-
----
-
-### `--no-verify-fixes`
-
-**Disable fix verification**
-
-When `--previous-review` is set, fix verification is enabled by default. Use this flag to disable it.
-
-```bash
-# Load previous review but skip fix verification
-argus review /repo feature main --previous-review=./review.json --no-verify-fixes
-```
-
----
-
-### `--pr-context=<file>`
-
-**PR business context (Jira integration)**
-
-Provide business context for the PR (e.g., Jira issue information) to help review agents better understand the purpose of code changes.
-
-```bash
-argus review /repo feature main --pr-context=./pr-context.json
-```
-
-**JSON file structure:**
-
-```json
-{
-  "prTitle": "PROJ-123: Fix login validation bug",
-  "prDescription": "Fixes the login validation issue with special characters",
+  "prTitle": "PROJ-123: Fix login validation",
+  "prDescription": "Fixes the login bug...",
   "jiraIssues": [
     {
       "key": "PROJ-123",
       "type": "Bug",
-      "summary": "Login fails with special characters in password",
-      "keyPoints": ["Handle special characters in password input", "Show proper error message"],
-      "reviewContext": "Check input validation and character encoding"
+      "summary": "Login fails with special chars",
+      "keyPoints": ["Handle special characters in password"],
+      "reviewContext": "Check input validation"
     }
   ],
   "parseStatus": "found",
-  "parseMessage": "Successfully processed 1 Jira issue"
+  "parseMessage": "Successfully processed 1 issue"
 }
 ```
 
-**Field descriptions:**
+Schema:
 
-| Field           | Type           | Required | Description                                      |
-| --------------- | -------------- | -------- | ------------------------------------------------ |
-| `prTitle`       | string         | ✅       | PR title                                         |
-| `prDescription` | string \| null | ❌       | PR description                                   |
-| `jiraIssues`    | array          | ✅       | Jira issues array (can be empty)                 |
-| `parseStatus`   | string         | ✅       | Parse status: `found` / `none` / `partial_error` |
-| `parseMessage`  | string         | ❌       | Debug message                                    |
-
-**JiraIssueSummary structure:**
-
-| Field           | Type     | Description                       |
-| --------------- | -------- | --------------------------------- |
-| `key`           | string   | Jira issue key (e.g., `PROJ-123`) |
-| `type`          | string   | Issue type (Bug/Story/Task/Epic)  |
-| `summary`       | string   | Brief summary (100-200 chars)     |
-| `keyPoints`     | string[] | Acceptance criteria or fix points |
-| `reviewContext` | string   | Code review focus hints           |
-
-**JSON Schema:**
-
-A complete JSON Schema is available at `schemas/pr-context.schema.json` for IDE auto-completion and validation.
-
-**Use cases:**
-
-- Integration with Jira to automatically fetch issue information
-- Help review agents understand business context of code changes
-- Verify if code satisfies acceptance criteria
-
----
-
-## Examples
-
-### Basic Usage
-
-```bash
-# Full AI code review (branch-based)
-argus review /path/to/repo feature-branch main
-
-# English output
-argus review /path/to/repo feature-branch main --language=en
-```
-
-### Incremental Review (Commit-based)
-
-Use commit SHAs instead of branch names to review only specific commit ranges:
-
-```bash
-# Review changes between two commits
-argus review /repo abc1234 def5678
-
-# Example: Review only new commits on a feature branch
-# First, get the commit SHAs
-git log --oneline feature-branch
-
-# Then review the specific range
-argus review /repo <new-commit-sha> <old-commit-sha>
-```
-
-The tool auto-detects whether you're passing branch names or commit SHAs and adjusts the diff strategy accordingly.
-
-### Fix Verification
-
-Verify if issues from a previous review have been addressed:
-
-```bash
-# Save the first review result
-argus review /repo feature main --json-logs 2>&1 | jq 'select(.type=="report") | .data.report' > review-1.json
-
-# After fixes are made, verify them
-argus review /repo feature main --previous-review=./review-1.json
-```
-
-### Custom Configuration
-
-```bash
-# Using config directory
-argus review /repo feature main --config-dir=./.ai-review
-
-# Specify rules and agents separately
-argus review /repo feature main \
-  --rules-dir=./company-rules \
-  --agents-dir=./domain-agents
-
-# Multi-layer config merge
-argus review /repo feature main \
-  --config-dir=./base-config \
-  --rules-dir=./team-overrides
-```
-
-### CI/CD Integration
-
-```bash
-# JSON event stream output
-argus review /repo feature main --json-logs 2>events.jsonl
-
-# Fast check (skip validation)
-argus review /repo feature main --skip-validation --json-logs
-
-# Commit-based incremental CI check
-argus review /repo $NEW_COMMIT $OLD_COMMIT --json-logs
-
-# Review with Jira context
-argus review /repo feature main --pr-context=./pr-context.json --json-logs
-```
-
----
-
-## Project Structure
-
-```
-src/
-├── index.ts              # CLI entry, command parsing
-├── cli/
-│   ├── progress.ts       # Interactive progress output
-│   ├── events.ts         # Event type definitions
-│   └── structured-progress.ts  # JSON event stream output
-├── review/
-│   ├── orchestrator.ts   # Main review orchestrator
-│   ├── streaming-orchestrator.ts  # Streaming review mode
-│   ├── streaming-validator.ts    # Streaming issue validation
-│   ├── agent-selector.ts # Smart agent selection
-│   ├── validator.ts      # Issue validation (challenge mode)
-│   ├── fix-verifier.ts   # Fix verification agent executor
-│   ├── previous-review-loader.ts # Load previous review data
-│   ├── realtime-deduplicator.ts  # Realtime deduplication
-│   ├── deduplicator.ts   # Batch semantic dedup
-│   ├── aggregator.ts     # Issue aggregation
-│   ├── report.ts         # Report generation
-│   ├── prompts/          # Agent prompt building
-│   ├── standards/        # Project standards extraction
-│   ├── rules/            # Custom rules loading
-│   ├── custom-agents/    # Custom agent loading
-│   └── types.ts          # Type definitions
-├── git/
-│   ├── diff.ts           # Git diff operations
-│   ├── parser.ts         # Diff parsing
-│   ├── ref.ts            # Ref type detection (branch/commit)
-│   ├── worktree-manager.ts # Git worktree management
-│   └── commits.ts        # Commit history
-├── llm/
-│   ├── factory.ts        # LLM provider factory
-│   └── providers/        # Claude/OpenAI implementations
-├── config/
-│   └── reviewignore.ts   # .argusignore pattern loading & matching
-└── analyzer/
-    ├── local-analyzer.ts # Local fast analysis
-    └── diff-analyzer.ts  # LLM semantic analysis
-
-schemas/                  # JSON Schema definitions
-└── pr-context.schema.json # PR Context structure validation
-
-.claude/agents/           # Built-in agent prompt definitions
-├── security-reviewer.md  # Security review
-├── logic-reviewer.md     # Logic review
-├── style-reviewer.md     # Style review
-├── performance-reviewer.md # Performance review
-├── validator.md          # Issue validation
-└── fix-verifier.md       # Fix verification
+```text
+schemas/pr-context.schema.json
 ```
 
 ## How It Works
 
-### Review Flow
+The standard review flow is:
 
+1. Build context from the diff and project standards
+2. Select the necessary agents
+3. Execute agents in parallel
+4. Validate candidate issues
+5. Optionally verify previously reported issues
+6. Aggregate, deduplicate, and emit the final report
+
+## Project Structure
+
+This is a deliberately compact structure view that tracks the stable module boundaries:
+
+```text
+src/
+|- index.ts                 # CLI entry
+|- runtime/                 # Runtime abstraction and provider adapters
+|  |- factory.ts
+|  |- types.ts
+|  |- claude-agent.ts
+|  `- openai-responses.ts
+|- review/                  # Orchestration, validation, dedup, reporting
+|- git/                     # Git refs, diff, worktree management
+|- diff/                    # External diff and incremental diff support
+|- config/                  # Environment and local config
+|- cli/                     # CLI output and event formatting
+|- analyzer/                # Local and semantic analysis helpers
+|- types/
+`- utils/
+
+schemas/
+`- pr-context.schema.json
 ```
-┌─────────────────┐
-│  1. Build Context │  Get Diff → Parse Files → Extract Project Standards
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  2. Smart Select │  Select needed agents based on file characteristics
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  3. Parallel Review │  4 agents run concurrently + realtime dedup
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  4. Validation  │  Challenge-mode multi-round validation, filter false positives
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  5. Fix Verify  │  (Optional) Verify if previous issues are fixed
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  6. Generate Report │  Aggregate issues, generate structured report
-└─────────────────┘
-```
-
-### Three-Dot Diff
-
-Uses `git diff origin/target...origin/source`:
-
-```
-main:     A --- B --- C
-                \
-feature:         D --- E
-```
-
-- Only shows changes in D and E (actual source branch changes)
-- Excludes other commits on target branch
-
-### Realtime Deduplication
-
-Two-layer deduplication mechanism:
-
-1. **Rule Layer** - Same file + overlapping lines → fast check
-2. **LLM Layer** - Semantic similarity → precise dedup
-
-### Issue Validation
-
-Challenge mode: Validator agent attempts to "challenge" discovered issues
-
-- Verify if code location is correct
-- Verify if issue description is accurate
-- Verify if it's a real issue vs false positive
-
-### Fix Verification
-
-When `--previous-review` is provided, the fix-verifier agent checks each previous issue:
-
-1. **Phase 1: Batch Screening** - Quick scan to categorize issues as resolved/unresolved/unclear
-2. **Phase 2: Deep Investigation** - Thorough multi-round investigation for unresolved issues
-
-Verification statuses:
-
-- **fixed** - Issue properly addressed
-- **missed** - Issue still exists (developer oversight)
-- **false_positive** - Original detection was incorrect
-- **obsolete** - Code changed significantly, issue no longer relevant
-- **uncertain** - Cannot determine status
 
 ## Development Commands
 
 ```bash
 # Development
-npm run dev -- <command> ...   # Run CLI
-npm run exec src/file.ts       # Run any TS file
+npm run dev -- <command> ...
+npm run exec src/file.ts
 
 # Build
-npm run build                  # Compile to dist/
-npm run type-check             # Type checking
+npm run build
+npm run type-check
 
-# Code Quality
-npm run lint                   # ESLint check
-npm run lint:fix               # Auto-fix
-npm run format                 # Prettier format
-npm run format:check           # Check format
+# Code quality
+npm run lint
+npm run lint:fix
+npm run format
+npm run format:check
 
-# Testing
-npm run test                   # Watch mode
-npm run test:run               # Run once
-npm run test:coverage          # Coverage report
+# Tests
+npm run test
+npm run test:run
+npm run test:coverage
 ```
 
 ## Commit Convention
 
-Using Conventional Commits:
+Conventional Commits are recommended:
 
 ```bash
 git commit -m "feat: add new feature"
@@ -783,7 +515,7 @@ git commit -m "fix: resolve bug"
 git commit -m "docs: update documentation"
 ```
 
-Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`
+Common types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`
 
 ## License
 

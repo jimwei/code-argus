@@ -1,346 +1,177 @@
-# AI Code Review Agent 设计文档
+# Review Agent Runtime Design
 
-## 概述
+## Summary
 
-基于 Claude Agent SDK 构建的智能代码审查系统，通过多 Agent 协作和验证机制，解决 AI 代码审查中的三个核心问题：
+`code-argus` now runs review workflows through a provider-neutral runtime abstraction. The review layer no longer calls provider SDKs directly. Claude and OpenAI integrations are isolated under `src/runtime/*`.
 
-| 问题     | 解决方案                                                  |
-| -------- | --------------------------------------------------------- |
-| **幻觉** | Validator Agent + Grounding（必须使用工具获取真实上下文） |
-| **漏检** | 多 Agent 并行扫描 + Checklist 强制覆盖                    |
-| **规范** | 自动从配置文件提取规范注入 Prompt                         |
+Supported runtimes:
 
-## 架构总览
+- `claude-agent`
+- `openai-responses`
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  Code Review Agent System                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌─────────────┐    ┌──────────────────────────────────────────────┐   │
-│  │   已有模块   │    │              新增模块                        │   │
-│  │             │    │                                              │   │
-│  │ • Git Diff  │    │  ┌────────────────────────────────────────┐  │   │
-│  │ • Analyzer  │───▶│  │         Review Orchestrator           │  │   │
-│  │ • Intent    │    │  │                                        │  │   │
-│  │             │    │  │  协调多个子 Agent，聚合结果，生成报告    │  │   │
-│  └─────────────┘    │  └───────────────────┬────────────────────┘  │   │
-│                     │                      │                       │   │
-│                     │                      │ Task (并行)           │   │
-│                     │                      ▼                       │   │
-│                     │  ┌────────────────────────────────────────┐  │   │
-│                     │  │         Specialist Agents              │  │   │
-│                     │  │                                        │  │   │
-│                     │  │  ┌──────────┐ ┌──────────┐ ┌────────┐ │  │   │
-│                     │  │  │ Security │ │  Logic   │ │ Style  │ │  │   │
-│                     │  │  └──────────┘ └──────────┘ └────────┘ │  │   │
-│                     │  │                                        │  │   │
-│                     │  └───────────────────┬────────────────────┘  │   │
-│                     │                      │                       │   │
-│                     │                      ▼ RawIssue[]            │   │
-│                     │  ┌────────────────────────────────────────┐  │   │
-│                     │  │         Validator Agent                │  │   │
-│                     │  │                                        │  │   │
-│                     │  │  使用 Read/Grep/Glob 验证每个问题       │  │   │
-│                     │  │  消除幻觉，输出 ValidatedIssue[]        │  │   │
-│                     │  └───────────────────┬────────────────────┘  │   │
-│                     │                      │                       │   │
-│                     │                      ▼                       │   │
-│                     │  ┌────────────────────────────────────────┐  │   │
-│                     │  │    Aggregator + Report Generator       │  │   │
-│                     │  └────────────────────────────────────────┘  │   │
-│                     │                                              │   │
-│                     └──────────────────────────────────────────────┘   │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+Runtime selection is global and env-only through `ARGUS_RUNTIME`.
+
+## Goals
+
+- Support both Claude and OpenAI without forking the review pipeline
+- Keep the existing Claude path working
+- Add OpenAI via the official SDK and the Responses API
+- Make provider switching operationally simple
+- Keep provider-specific complexity out of `src/review/*`
+
+## Non-goals
+
+- Per-command runtime switching
+- Provider selection stored in the local config file
+- Multiple providers active in the same review run
+
+## Layered Architecture
+
+```text
+CLI / config / env
+        |
+        v
+runtime factory
+        |
+        +--> ClaudeAgentRuntime
+        |
+        +--> OpenAIResponsesRuntime
+                |
+                v
+review pipeline
+  - streaming orchestrator
+  - streaming validator
+  - fix verifier
+  - custom agent executor
+  - agent selector
+  - matcher
+  - realtime deduplicator
 ```
 
-## 技术选型
+## Runtime Contract
 
-- **Agent 框架**: `@anthropic-ai/claude-agent-sdk`
-- **内置工具**: Read, Grep, Glob, Bash, Task
-- **子 Agent 定义**: Markdown 文件 (`.claude/agents/*.md`)
+The runtime boundary exposes two capabilities:
 
-### 为什么选择 Claude Agent SDK
+### `execute()`
 
-| 方面       | 自己实现          | 使用 SDK                 |
-| ---------- | ----------------- | ------------------------ |
-| MCP Tools  | 需实现 5+ 工具    | 内置 Read/Grep/Glob/Bash |
-| Agent 执行 | 需管理对话循环    | SDK 自动处理             |
-| 并发控制   | 需自己实现        | Task 原生支持            |
-| 上下文管理 | 需处理 token 限制 | SDK 自动压缩             |
-| 代码量     | ~2000+ 行         | ~500 行                  |
+Used for agent-like multi-turn execution.
 
-## 模块设计
+Responsibilities:
 
-### 目录结构
+- accept prompt input
+- run the provider loop
+- expose normalized runtime events
+- bridge tool calls
+- stop cleanly through `close()`
 
-```
-src/
-├── review/
-│   ├── types.ts              # Review 类型定义
-│   ├── orchestrator.ts       # 主控逻辑
-│   ├── prompts/              # Prompt 模板
-│   │   ├── base.ts
-│   │   ├── security.ts
-│   │   ├── logic.ts
-│   │   ├── style.ts
-│   │   └── validator.ts
-│   ├── standards/            # 规范提取
-│   │   ├── types.ts
-│   │   ├── extractor.ts
-│   │   └── parsers/
-│   │       ├── eslint.ts
-│   │       ├── typescript.ts
-│   │       └── prettier.ts
-│   ├── aggregator.ts         # 结果聚合
-│   └── index.ts
+### `generateText()`
 
-.claude/
-└── agents/                   # Agent 定义
-    ├── security-reviewer.md
-    ├── logic-reviewer.md
-    ├── style-reviewer.md
-    ├── performance-reviewer.md
-    └── validator.md
-```
+Used for lightweight single-turn judgments.
 
-### 核心类型
+Current consumers:
 
-```typescript
-/** 问题严重级别 */
-type Severity = 'critical' | 'error' | 'warning' | 'suggestion';
+- agent selector
+- custom-agent matcher
+- realtime deduplicator
 
-/** 问题类别 */
-type IssueCategory = 'security' | 'logic' | 'performance' | 'style' | 'maintainability';
+## Event Model
 
-/** 验证状态 */
-type ValidationStatus = 'pending' | 'confirmed' | 'rejected' | 'uncertain';
+Runtime events are normalized to a common shape:
 
-/** 原始问题 (Agent 初次扫描输出) */
-interface RawIssue {
-  id: string;
-  file: string;
-  line_start: number;
-  line_end: number;
-  category: IssueCategory;
-  severity: Severity;
-  title: string;
-  description: string;
-  suggestion?: string;
-  code_snippet?: string;
-  confidence: number; // 0-1
-  source_agent: string;
-}
+- `assistant.text`
+- `activity`
+- `result`
 
-/** 验证证据 */
-interface GroundingEvidence {
-  checked_files: string[];
-  checked_symbols: {
-    name: string;
-    type: 'definition' | 'reference';
-    locations: string[];
-  }[];
-  related_context: string;
-  reasoning: string;
-}
+This keeps orchestration and validation logic independent from provider-specific streaming formats.
 
-/** 已验证的问题 */
-interface ValidatedIssue extends RawIssue {
-  validation_status: ValidationStatus;
-  grounding_evidence: GroundingEvidence;
-  final_confidence: number;
-  rejection_reason?: string;
-}
+## Provider Implementations
 
-/** 项目规范 */
-interface ProjectStandards {
-  source: string[];
-  eslint?: ESLintStandards;
-  typescript?: TypeScriptStandards;
-  prettier?: PrettierStandards;
-  naming?: NamingConventions;
-}
+### Claude runtime
 
-/** Review 上下文 */
-interface ReviewContext {
-  repoPath: string;
-  diff: DiffResult;
-  intent: IntentAnalysis;
-  fileAnalyses: ChangeAnalysis[];
-  standards: ProjectStandards;
-}
+File:
 
-/** 最终报告 */
-interface ReviewReport {
-  summary: string;
-  risk_level: 'high' | 'medium' | 'low';
-  issues: ValidatedIssue[];
-  checklist: ChecklistItem[];
-  metrics: {
-    total_scanned: number;
-    confirmed: number;
-    rejected: number;
-    uncertain: number;
-    by_severity: Record<Severity, number>;
-    by_category: Record<IssueCategory, number>;
-  };
-  metadata: {
-    review_time_ms: number;
-    tokens_used: number;
-    agents_used: string[];
-  };
-}
-```
+- `src/runtime/claude-agent.ts`
 
-## Agent 设计
+Implementation notes:
 
-### 1. Orchestrator Agent (主控)
+- uses `@anthropic-ai/claude-agent-sdk` for multi-turn execution
+- uses `@anthropic-ai/sdk` for lightweight single-turn text generation
+- preserves Claude tool execution semantics through the runtime bridge
 
-**职责**：
+### OpenAI runtime
 
-- 接收 ReviewContext
-- 分发任务给子 Agent (并行)
-- 收集原始问题
-- 调用 Validator 验证
-- 聚合结果生成报告
+File:
 
-**工具**: `Task`
+- `src/runtime/openai-responses.ts`
 
-### 2. Specialist Agents (专业审查)
+Implementation notes:
 
-| Agent       | 专注领域 | 检查项                                         |
-| ----------- | -------- | ---------------------------------------------- |
-| Security    | 安全漏洞 | 注入攻击、认证问题、敏感信息、输入验证         |
-| Logic       | 逻辑错误 | 空指针、边界条件、竞态条件、错误处理、资源泄漏 |
-| Style       | 代码风格 | 命名规范、代码风格、注释质量、一致性           |
-| Performance | 性能问题 | N+1查询、内存泄漏、不必要循环、缓存问题        |
+- uses the official `openai` SDK
+- uses the Responses API for both single-turn text generation and tool-capable execution
+- resolves tool calls in a runtime-managed loop until completion or `maxTurns` exhaustion
 
-**工具**: `Read`, `Grep`, `Glob`
+## Tool Bridge
 
-### 3. Validator Agent (验证)
+The review pipeline defines tools in a provider-neutral way and passes them into the runtime. Each runtime is responsible for exposing those tools in the provider-specific format.
 
-**职责**: 验证所有发现的问题，消除幻觉
+This is the key mechanism that allows:
 
-**核心原则**:
+- built-in review agents
+- validator
+- fix verifier
+- custom agents
 
-1. **必须获取真实上下文** - 不仅凭 diff 片段判断
-2. **果断拒绝虚假问题** - 如果问题在完整上下文中不成立
-3. **详细记录推理过程** - 每个决策都有清晰推理
+to stay on the same pipeline while using different providers underneath.
 
-**验证流程**:
+## Review Pipeline Integration
 
-```
-1. 读取完整文件 (Read)
-2. 查找相关上下文 (Grep)
-3. 检查是否已处理
-4. 做出判断: confirmed / rejected / uncertain
-```
+The following modules now consume the runtime abstraction instead of provider SDKs directly:
 
-**常见幻觉模式**:
+- `src/review/streaming-orchestrator.ts`
+- `src/review/streaming-validator.ts`
+- `src/review/fix-verifier.ts`
+- `src/review/custom-agents/executor.ts`
+- `src/review/agent-selector.ts`
+- `src/review/custom-agents/matcher.ts`
+- `src/review/realtime-deduplicator.ts`
 
-- 只看 diff 片段，忽略完整函数上下文
-- 忽略类型系统保护
-- 不了解项目约定
-- 忽略框架保护 (如 ORM 防注入)
+Provider-specific code should remain confined to:
 
-**工具**: `Read`, `Grep`, `Glob`, `Bash`
+- `src/runtime/claude-agent.ts`
+- `src/runtime/openai-responses.ts`
 
-## 规范提取
+## Config and Operational Contract
 
-自动从项目配置文件提取编码规范：
+Runtime and credential rules:
 
-```
-配置文件                    提取内容
-─────────────────────────────────────────
-eslint.config.{js,mjs}  →  规则配置
-.eslintrc.*             →  extends, plugins
-tsconfig.json           →  严格模式、类型检查选项
-.prettierrc.*           →  格式化规则
-.editorconfig           →  基础编辑器配置
-```
+- `ARGUS_RUNTIME` is env-only
+- OpenAI credentials are env-only
+- Claude credentials can come from env or the existing Argus config fallback
+- the local config file still stores Claude-compatible `api-key` and `base-url`
+- `model` remains a shared fallback field
 
-提取后转换为 Prompt 文本：
+Recommended operational contract:
 
-```
-## 项目编码规范 (自动提取)
+- set `ARGUS_RUNTIME` explicitly in every automation environment
+- set `ARGUS_MODEL` explicitly when `ARGUS_RUNTIME=openai-responses`
+- do not rely on config-file provider switching
 
-### TypeScript 规范
-- 启用严格模式 (strict: true)
-- 禁止使用 any 类型
-- 禁止未使用的变量和参数
+## Testing Strategy
 
-### 代码风格
-- 缩进: 2 空格
-- 不使用分号
-- 使用单引号
-- 最大行宽: 100
+Coverage in this branch focuses on:
 
-### 命名规范
-- 文件: kebab-case.ts
-- 函数/变量: camelCase
-- 类/接口: PascalCase
-```
+- runtime config loading
+- runtime factory selection
+- execution event normalization
+- runtime bridges for orchestrator, validator, fix verifier, selector, matcher, and deduplicator
 
-## 数据流
+Still required outside unit tests:
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Complete Data Flow                             │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Input: PR/Branch + Repo Path                                           │
-│                │                                                        │
-│                ▼                                                        │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  已有模块                                                        │   │
-│  │  Git Diff → Analyzer → Intent                                   │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                │                                                        │
-│                ▼                                                        │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Standards Extractor                                             │   │
-│  │  eslint + tsconfig + prettier → ProjectStandards                │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                │                                                        │
-│                ▼                                                        │
-│       ReviewContext 组装完成                                            │
-│                │                                                        │
-│                ▼                                                        │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Claude Agent SDK                                                │   │
-│  │                                                                  │   │
-│  │  Orchestrator                                                    │   │
-│  │       │                                                          │   │
-│  │       │ Task (并行)                                              │   │
-│  │       ▼                                                          │   │
-│  │  Security + Logic + Style + Perf Agents                         │   │
-│  │       │                                                          │   │
-│  │       ▼ RawIssue[]                                               │   │
-│  │  Validator Agent                                                 │   │
-│  │       │                                                          │   │
-│  │       ▼ ValidatedIssue[]                                         │   │
-│  │                                                                  │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                │                                                        │
-│                ▼                                                        │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Aggregator                                                      │   │
-│  │  去重 + 过滤 rejected + 排序                                     │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                │                                                        │
-│                ▼                                                        │
-│           ReviewReport                                                  │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+- manual Claude end-to-end smoke test
+- manual OpenAI end-to-end smoke test
 
-## 设计决策
+## Remaining Risks
 
-| 决策点     | 选择                | 理由                   |
-| ---------- | ------------------- | ---------------------- |
-| Agent 数量 | 4 个专业 + 1 个验证 | 专业化更好，预算充足   |
-| 验证策略   | 全量验证            | 确保质量，预算充足     |
-| 规范来源   | 自动提取配置文件    | 减少手动维护，保持一致 |
-| 人工介入   | 无                  | 全自动化               |
-| 静态分析   | 通过 Bash 调用      | 复用现有工具           |
+- OpenAI end-to-end behavior still requires verification with real credentials
+- provider defaults should be kept explicit to avoid model/runtime mismatch
+- documentation must continue to treat `src/runtime/*` as the provider boundary
