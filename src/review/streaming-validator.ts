@@ -21,7 +21,6 @@ import {
   MAX_CHALLENGE_ROUNDS,
   FAST_MODE_CHALLENGE_ROUNDS,
   MIN_CONFIDENCE_FOR_VALIDATION,
-  DEFAULT_AGENT_MODEL,
   getValidatorMaxTurns,
 } from './constants.js';
 import { extractJSON } from './utils/json-parser.js';
@@ -411,7 +410,7 @@ export class StreamingValidator {
     }
 
     const runtime = createRuntimeFromEnv();
-    const messageQueue: RuntimePromptMessage[] = [];
+    const messageQueue: Array<RuntimePromptMessage | null> = [];
     let resolveNextMessage: ((msg: RuntimePromptMessage | null) => void) | null = null;
 
     let currentIssue: RawIssue | null = null;
@@ -481,7 +480,7 @@ export class StreamingValidator {
       while (true) {
         const msg = await new Promise<RuntimePromptMessage | null>((resolve) => {
           if (messageQueue.length > 0) {
-            resolve(messageQueue.shift()!);
+            resolve(messageQueue.shift() ?? null);
           } else {
             resolveNextMessage = resolve;
           }
@@ -496,6 +495,10 @@ export class StreamingValidator {
     }
 
     const sendMessage = (content: string) => {
+      if (session.isClosed) {
+        return;
+      }
+
       const msg: RuntimePromptMessage = {
         type: 'user',
         message: {
@@ -516,12 +519,19 @@ export class StreamingValidator {
     };
 
     const endSession = () => {
+      if (session.isClosed) {
+        return;
+      }
+
+      session.isClosed = true;
+
       if (resolveNextMessage) {
         const resolve = resolveNextMessage;
         resolveNextMessage = null;
         resolve(null);
+      } else {
+        messageQueue.push(null);
       }
-      session.isClosed = true;
     };
 
     const completeCurrentIssue = (validatedIssue: ValidatedIssue) => {
@@ -596,7 +606,7 @@ export class StreamingValidator {
         prompt: messageGenerator(),
         cwd: this.options.repoPath,
         maxTurns,
-        model: DEFAULT_AGENT_MODEL,
+        model: runtime.config.models.validator,
         settingSources: ['project'],
       });
 

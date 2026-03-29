@@ -51,7 +51,6 @@ import { createStreamingValidator, type StreamingValidator } from './streaming-v
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
 import { standardsToText } from './prompts/specialist.js';
 import {
-  DEFAULT_AGENT_MODEL,
   getRecommendedMaxTurns,
   MAX_AGENT_RETRIES,
   AGENT_RETRY_DELAY_MS,
@@ -2363,7 +2362,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         prompt: fullPrompt,
         cwd: reviewRepoPath,
         maxTurns,
-        model: DEFAULT_AGENT_MODEL,
+        model: runtime.config.models.main,
         settingSources: ['project'],
         abortController: this.options.abortController,
         tools: runtimeTools,

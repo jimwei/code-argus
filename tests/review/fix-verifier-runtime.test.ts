@@ -124,6 +124,7 @@ describe('fix verifier runtime bridge', () => {
     expect(executeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         cwd: 'C:\\repo',
+        model: 'gpt-5.3-codex',
         toolNamespace: 'fix-verifier-tools',
         tools: expect.any(Array),
       })

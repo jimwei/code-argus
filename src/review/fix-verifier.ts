@@ -15,7 +15,6 @@ import type {
   VerificationStatus,
   FixVerificationEvidence,
 } from './types.js';
-import { DEFAULT_AGENT_MODEL } from './constants.js';
 import type { IProgressPrinter } from '../cli/index.js';
 
 /**
@@ -240,7 +239,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
       prompt: fullPrompt,
       cwd: repoPath,
       maxTurns: Math.max(30, previousReview.issues.length * 5),
-      model: DEFAULT_AGENT_MODEL,
+      model: runtime.config.models.validator,
       tools: runtimeTools,
       toolNamespace: 'fix-verifier-tools',
     });

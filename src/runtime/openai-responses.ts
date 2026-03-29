@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import type { ResponseInputItem } from 'openai/resources/responses/responses';
 import { z, toJSONSchema } from 'zod';
 
 import type { ArgusRuntimeConfig } from '../config/env.js';
@@ -33,14 +34,201 @@ type OpenAIFunctionCallItem = {
   arguments: string;
 };
 
-type OpenAIResponseInput =
-  | string
-  | Array<{ type: 'function_call_output'; call_id: string; output: string }>;
+type OpenAIFunctionCallOutputItem = {
+  type: 'function_call_output';
+  call_id: string;
+  output: string;
+};
+
+type OpenAIResponseInputItem = ResponseInputItem;
+
+type OpenAIResponseInput = string | OpenAIResponseInputItem[];
+
+type JsonSchema = Record<string, unknown>;
+
+function isPlainObject(value: unknown): value is JsonSchema {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function makeSchemaNullable(schema: unknown): unknown {
+  if (!isPlainObject(schema)) {
+    return schema;
+  }
+
+  if (Array.isArray(schema.anyOf)) {
+    const hasNullVariant = schema.anyOf.some(
+      (variant) => isPlainObject(variant) && variant.type === 'null'
+    );
+    if (hasNullVariant) {
+      return schema;
+    }
+
+    return {
+      ...schema,
+      anyOf: [...schema.anyOf, { type: 'null' }],
+    };
+  }
+
+  const nullableSchema: JsonSchema = { ...schema };
+
+  if (Array.isArray(nullableSchema.enum) && !nullableSchema.enum.includes(null)) {
+    nullableSchema.enum = [...nullableSchema.enum, null];
+  }
+
+  const schemaType = nullableSchema.type;
+  if (typeof schemaType === 'string') {
+    nullableSchema.type = [schemaType, 'null'];
+    return nullableSchema;
+  }
+
+  if (Array.isArray(schemaType)) {
+    nullableSchema.type = schemaType.includes('null') ? schemaType : [...schemaType, 'null'];
+    return nullableSchema;
+  }
+
+  return {
+    anyOf: [nullableSchema, { type: 'null' }],
+  };
+}
+
+function normalizeToolSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map((entry) => normalizeToolSchema(entry));
+  }
+
+  if (!isPlainObject(schema)) {
+    return schema;
+  }
+
+  const normalized: JsonSchema = {};
+
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === '$schema') {
+      continue;
+    }
+
+    if (key === 'properties') {
+      continue;
+    }
+
+    if (key === 'items') {
+      normalized.items = normalizeToolSchema(value);
+      continue;
+    }
+
+    if ((key === 'anyOf' || key === 'oneOf' || key === 'allOf') && Array.isArray(value)) {
+      normalized[key] = value.map((entry) => normalizeToolSchema(entry));
+      continue;
+    }
+
+    normalized[key] = value;
+  }
+
+  const schemaType = normalized.type;
+  const isObjectSchema =
+    schemaType === 'object' || (Array.isArray(schemaType) && schemaType.includes('object'));
+
+  if (isObjectSchema) {
+    const rawProperties = isPlainObject(schema.properties) ? schema.properties : {};
+    const required = new Set(
+      Array.isArray(schema.required)
+        ? schema.required.filter((entry): entry is string => typeof entry === 'string')
+        : []
+    );
+    const properties: JsonSchema = {};
+
+    for (const [name, propertySchema] of Object.entries(rawProperties)) {
+      const normalizedProperty = normalizeToolSchema(propertySchema);
+      properties[name] = required.has(name)
+        ? normalizedProperty
+        : makeSchemaNullable(normalizedProperty);
+      required.add(name);
+    }
+
+    normalized.properties = properties;
+    normalized.required = Array.from(required);
+    normalized.additionalProperties = false;
+  }
+
+  return normalized;
+}
 
 function buildToolParameters(tool: RuntimeToolDefinition): Record<string, unknown> {
-  return toJSONSchema(z.object(tool.inputSchema), {
-    io: 'input',
-  }) as Record<string, unknown>;
+  return normalizeToolSchema(
+    toJSONSchema(z.object(tool.inputSchema), {
+      io: 'input',
+    })
+  ) as Record<string, unknown>;
+}
+
+function normalizeToolArguments<T>(value: T): T {
+  if (value === null) {
+    return undefined as T;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeToolArguments(entry)) as T;
+  }
+
+  if (isPlainObject(value)) {
+    const normalizedEntries = Object.entries(value).map(([key, entryValue]) => [
+      key,
+      normalizeToolArguments(entryValue),
+    ]);
+    return Object.fromEntries(normalizedEntries) as T;
+  }
+
+  return value;
+}
+
+function createUserMessageInput(prompt: string): OpenAIResponseInputItem {
+  return {
+    type: 'message',
+    role: 'user',
+    content: [
+      {
+        type: 'input_text',
+        text: prompt,
+      },
+    ],
+  };
+}
+
+function isFunctionCallOutputItem(item: unknown): item is OpenAIFunctionCallOutputItem {
+  return Boolean(
+    item &&
+      typeof item === 'object' &&
+      'type' in item &&
+      item.type === 'function_call_output' &&
+      'call_id' in item &&
+      typeof item.call_id === 'string' &&
+      'output' in item &&
+      typeof item.output === 'string'
+  );
+}
+
+function isFunctionCallOutputInput(
+  input: OpenAIResponseInput
+): input is OpenAIFunctionCallOutputItem[] {
+  return Array.isArray(input) && input.length > 0 && input.every(isFunctionCallOutputItem);
+}
+
+function isToolContinuationGatewayFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const status = 'status' in error ? error.status : undefined;
+  const message = 'message' in error ? error.message : undefined;
+  const upstreamError = 'error' in error && isPlainObject(error.error) ? error.error : undefined;
+  const errorType = upstreamError?.type;
+  const errorMessage = upstreamError?.message;
+
+  return (
+    status === 502 &&
+    errorType === 'upstream_error' &&
+    (message === '502 Upstream request failed' || errorMessage === 'Upstream request failed')
+  );
 }
 
 function normalizeUsage(usage: OpenAIResponse['usage'] | undefined): RuntimeUsage | undefined {
@@ -232,6 +420,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     const client = this.client;
     const defaultModel = this.config.models.main;
     const abortController = options.abortController ?? new AbortController();
+    const ownsAbortController = !options.abortController;
     const runtimeTools = options.tools ?? [];
     const toolsByName = new Map(runtimeTools.map((tool) => [tool.name, tool]));
     const openAITools =
@@ -249,7 +438,9 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
 
     return {
       async *[Symbol.asyncIterator]() {
+        const conversationItems: OpenAIResponseInputItem[] = [];
         let previousResponseId: string | undefined;
+        let statelessMode = false;
         let remainingTurns = Math.max(options.maxTurns, 1);
 
         for await (const promptInput of iteratePromptInputs(options.prompt)) {
@@ -257,33 +448,74 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             return;
           }
 
-          let input: OpenAIResponseInput = promptInput;
+          conversationItems.push(createUserMessageInput(promptInput));
+          let input: OpenAIResponseInput = statelessMode ? [...conversationItems] : promptInput;
           let lastText: string | undefined;
           let lastUsage: RuntimeUsage | undefined;
 
           while (remainingTurns > 0 && !closed) {
             remainingTurns--;
 
-            const response = (await client.responses.create(
-              {
-                model: options.model || defaultModel,
-                input,
-                ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
-                ...(openAITools
-                  ? {
-                      tools: openAITools,
-                      parallel_tool_calls: false,
-                    }
-                  : {}),
-              },
-              {
-                signal: abortController.signal,
-              }
-            )) as OpenAIResponse;
+            const request = {
+              model: options.model || defaultModel,
+              input,
+              ...(!statelessMode && previousResponseId
+                ? { previous_response_id: previousResponseId }
+                : {}),
+              ...(openAITools
+                ? {
+                    tools: openAITools,
+                    parallel_tool_calls: false,
+                  }
+                : {}),
+            };
 
-            previousResponseId = response.id;
+            let response: OpenAIResponse;
+            try {
+              response = (await client.responses.create(request, {
+                signal: abortController.signal,
+              })) as OpenAIResponse;
+            } catch (error) {
+              const shouldFallbackToStatelessReplay =
+                !statelessMode &&
+                previousResponseId &&
+                isFunctionCallOutputInput(input) &&
+                isToolContinuationGatewayFailure(error);
+
+              if (!shouldFallbackToStatelessReplay) {
+                throw error;
+              }
+
+              statelessMode = true;
+              previousResponseId = undefined;
+              input = [...conversationItems];
+              response = (await client.responses.create(
+                {
+                  input,
+                  model: options.model || defaultModel,
+                  ...(openAITools
+                    ? {
+                        tools: openAITools,
+                        parallel_tool_calls: false,
+                      }
+                    : {}),
+                },
+                {
+                  signal: abortController.signal,
+                }
+              )) as OpenAIResponse;
+            }
+
+            if (!statelessMode) {
+              previousResponseId = response.id;
+            }
             lastUsage = normalizeUsage(response.usage);
             const responseText = getResponseText(response);
+            const responseOutputItems = Array.isArray(response.output)
+              ? (response.output as OpenAIResponseInputItem[])
+              : [];
+            conversationItems.push(...responseOutputItems);
+
             if (responseText) {
               lastText = responseText;
               yield {
@@ -292,7 +524,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               };
             }
 
-            const functionCalls = (response.output || []).filter(isFunctionCallItem);
+            const functionCalls = responseOutputItems.filter(isFunctionCallItem);
             if (functionCalls.length === 0) {
               const error = getResponseError(response);
               yield {
@@ -305,11 +537,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               break;
             }
 
-            const toolOutputs: Array<{
-              type: 'function_call_output';
-              call_id: string;
-              output: string;
-            }> = [];
+            const toolOutputs: OpenAIFunctionCallOutputItem[] = [];
 
             for (const functionCall of functionCalls) {
               yield {
@@ -328,7 +556,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               }
 
               try {
-                const args = JSON.parse(functionCall.arguments);
+                const args = normalizeToolArguments(JSON.parse(functionCall.arguments));
                 const result = await runtimeTool.execute(args);
                 toolOutputs.push({
                   type: 'function_call_output',
@@ -345,7 +573,8 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               }
             }
 
-            input = toolOutputs;
+            conversationItems.push(...toolOutputs);
+            input = statelessMode ? [...conversationItems] : toolOutputs;
           }
 
           if (!closed && remainingTurns === 0) {
@@ -366,7 +595,9 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
         }
 
         closed = true;
-        abortController.abort();
+        if (ownsAbortController) {
+          abortController.abort();
+        }
       },
     };
   }

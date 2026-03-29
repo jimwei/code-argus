@@ -120,6 +120,7 @@ describe('streaming orchestrator runtime bridge', () => {
     expect(executeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         cwd: 'C:\\repo',
+        model: 'gpt-5.3-codex',
         toolNamespace: 'code-review-tools',
         tools: expect.any(Array),
       })

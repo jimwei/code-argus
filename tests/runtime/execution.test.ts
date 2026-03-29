@@ -461,6 +461,179 @@ describe('runtime execution', () => {
     ]);
   });
 
+  it('falls back to stateless tool-loop replay when previous_response_id tool follow-ups fail upstream', async () => {
+    const upstreamError = Object.assign(new Error('502 Upstream request failed'), {
+      status: 502,
+      error: {
+        message: 'Upstream request failed',
+        type: 'upstream_error',
+      },
+    });
+
+    const createMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 'resp_1',
+        status: 'completed',
+        output_text: '',
+        output: [
+          {
+            id: 'fc_1',
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'report_issue',
+            arguments: JSON.stringify({
+              file: 'src/api/service.ts',
+              line_start: 18,
+              line_end: 21,
+              title: 'Missing error handling',
+            }),
+            status: 'completed',
+          },
+        ],
+        usage: {
+          input_tokens: 8,
+          output_tokens: 3,
+        },
+      })
+      .mockRejectedValueOnce(upstreamError)
+      .mockResolvedValueOnce({
+        id: 'resp_2',
+        status: 'completed',
+        output_text: 'Done',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Done',
+                annotations: [],
+              },
+            ],
+          },
+        ],
+        usage: {
+          input_tokens: 11,
+          output_tokens: 7,
+        },
+      });
+
+    const executeTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text' as const, text: 'Issue recorded' }],
+    });
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const execution = runtime.execute({
+      prompt: 'Review this diff',
+      cwd: 'C:\\repo',
+      maxTurns: 6,
+      tools: [
+        {
+          name: 'report_issue',
+          description: 'Capture an issue',
+          inputSchema: {
+            file: z.string(),
+            line_start: z.number(),
+            line_end: z.number(),
+            title: z.string(),
+          },
+          execute: executeTool,
+        },
+      ],
+    });
+
+    const events = [];
+    for await (const event of execution) {
+      events.push(event);
+    }
+
+    expect(createMock).toHaveBeenCalledTimes(3);
+    expect(createMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        model: 'gpt-5.3-codex',
+        previous_response_id: 'resp_1',
+        input: [
+          {
+            type: 'function_call_output',
+            call_id: 'call_1',
+            output: 'Issue recorded',
+          },
+        ],
+      }),
+      expect.any(Object)
+    );
+    expect(createMock).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        model: 'gpt-5.3-codex',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Review this diff' }],
+          },
+          expect.objectContaining({
+            id: 'fc_1',
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'report_issue',
+          }),
+          {
+            type: 'function_call_output',
+            call_id: 'call_1',
+            output: 'Issue recorded',
+          },
+        ],
+      }),
+      expect.any(Object)
+    );
+    expect(createMock.mock.calls[2]?.[0]?.previous_response_id).toBeUndefined();
+
+    expect(events).toEqual([
+      {
+        type: 'activity',
+        event: 'function_call:report_issue',
+      },
+      {
+        type: 'assistant.text',
+        text: 'Done',
+      },
+      {
+        type: 'result',
+        status: 'success',
+        text: 'Done',
+        usage: {
+          inputTokens: 11,
+          outputTokens: 7,
+        },
+      },
+    ]);
+  });
+
   it('supports async prompt streams for multi-turn OpenAI Responses sessions', async () => {
     const createMock = vi
       .fn()
@@ -620,6 +793,177 @@ describe('runtime execution', () => {
     ]);
   });
 
+  it('normalizes OpenAI tool schemas for strict mode and converts null tool args to undefined', async () => {
+    const createMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 'resp_schema_1',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            name: 'report_issue',
+            call_id: 'call_schema_1',
+            arguments: JSON.stringify({
+              file: 'src/api/service.ts',
+              line_start: 18,
+              line_end: 21,
+              title: 'Missing error handling',
+              suggestion: null,
+              updated_issue: {
+                title: 'Updated title',
+                suggestion: null,
+              },
+            }),
+          },
+        ],
+        usage: {
+          input_tokens: 9,
+          output_tokens: 3,
+        },
+      })
+      .mockResolvedValueOnce({
+        id: 'resp_schema_2',
+        status: 'completed',
+        output_text: 'Done',
+        output: [
+          {
+            id: 'msg_schema_2',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Done',
+                annotations: [],
+              },
+            ],
+          },
+        ],
+        usage: {
+          input_tokens: 11,
+          output_tokens: 4,
+        },
+      });
+
+    const executeTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text' as const, text: 'Issue recorded' }],
+    });
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const execution = runtime.execute({
+      prompt: 'Review this diff',
+      cwd: 'C:\\repo',
+      maxTurns: 6,
+      tools: [
+        {
+          name: 'report_issue',
+          description: 'Capture an issue',
+          inputSchema: {
+            file: z.string(),
+            line_start: z.number(),
+            line_end: z.number(),
+            title: z.string(),
+            suggestion: z.string().optional(),
+            updated_issue: z
+              .object({
+                title: z.string(),
+                suggestion: z.string().optional(),
+              })
+              .optional(),
+          },
+          execute: executeTool,
+        },
+      ],
+    });
+
+    const events = [];
+    for await (const event of execution) {
+      events.push(event);
+    }
+
+    const firstCall = createMock.mock.calls[0]?.[0];
+    const toolParameters = firstCall?.tools?.[0]?.parameters as {
+      additionalProperties?: boolean;
+      required?: string[];
+      properties?: Record<string, any>;
+    };
+
+    expect(toolParameters.additionalProperties).toBe(false);
+    expect(toolParameters.required).toEqual(
+      expect.arrayContaining([
+        'file',
+        'line_start',
+        'line_end',
+        'title',
+        'suggestion',
+        'updated_issue',
+      ])
+    );
+    expect(toolParameters.properties?.suggestion?.type).toEqual(['string', 'null']);
+    expect(toolParameters.properties?.updated_issue?.type).toEqual(['object', 'null']);
+    expect(toolParameters.properties?.updated_issue?.additionalProperties).toBe(false);
+    expect(toolParameters.properties?.updated_issue?.required).toEqual(
+      expect.arrayContaining(['title', 'suggestion'])
+    );
+    expect(toolParameters.properties?.updated_issue?.properties?.suggestion?.type).toEqual([
+      'string',
+      'null',
+    ]);
+
+    expect(executeTool).toHaveBeenCalledWith({
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      title: 'Missing error handling',
+      suggestion: undefined,
+      updated_issue: {
+        title: 'Updated title',
+        suggestion: undefined,
+      },
+    });
+
+    expect(events).toEqual([
+      {
+        type: 'activity',
+        event: 'function_call:report_issue',
+      },
+      {
+        type: 'assistant.text',
+        text: 'Done',
+      },
+      {
+        type: 'result',
+        status: 'success',
+        text: 'Done',
+        usage: {
+          inputTokens: 11,
+          outputTokens: 4,
+        },
+      },
+    ]);
+  });
+
   it('generates plain text through the OpenAI Responses runtime abstraction', async () => {
     const createMock = vi.fn().mockResolvedValue({
       id: 'resp_text_1',
@@ -682,5 +1026,42 @@ describe('runtime execution', () => {
         outputTokens: 4,
       },
     });
+  });
+
+  it('does not abort an externally managed AbortController when execution is closed', async () => {
+    const createMock = vi.fn();
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const externalAbortController = new AbortController();
+    const execution = runtime.execute({
+      prompt: 'Review this diff',
+      cwd: 'C:\\repo',
+      maxTurns: 6,
+      abortController: externalAbortController,
+    });
+
+    await execution.close();
+
+    expect(externalAbortController.signal.aborted).toBe(false);
+    expect(createMock).not.toHaveBeenCalled();
   });
 });
