@@ -152,4 +152,20 @@ describe('Validation Prompts', () => {
       expect(config.rejectionCriteria.some((r) => r.includes('validated/sanitized'))).toBe(true);
     });
   });
+
+  describe('High-signal validation rules', () => {
+    it('should reject maintainability suggestions that are optional simplifications', () => {
+      const config = getValidationPromptConfig('maintainability');
+      expect(
+        config.rejectionCriteria.some((criterion) => criterion.includes('optional simplification'))
+      ).toBe(true);
+    });
+
+    it('should require performance findings to show real bottleneck evidence', () => {
+      const config = getValidationPromptConfig('performance');
+      expect(
+        config.rejectionCriteria.some((criterion) => criterion.includes('bottleneck evidence'))
+      ).toBe(true);
+    });
+  });
 });

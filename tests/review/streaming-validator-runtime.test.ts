@@ -228,4 +228,137 @@ describe('streaming validator runtime bridge', () => {
     expect(secondPromptResult).toEqual({ done: true, value: undefined });
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
+
+  it('auto-rejects low-signal soft suggestions before opening a runtime session', async () => {
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: true,
+      maxChallengeRounds: 5,
+      language: 'en',
+    });
+
+    const autoRejected = validator.enqueue({
+      id: 'issue-soft-style',
+      file: 'src/ui/card.tsx',
+      line_start: 12,
+      line_end: 14,
+      category: 'style',
+      severity: 'suggestion',
+      title: 'Rename helper for readability',
+      description: 'The helper name could be clearer to future readers.',
+      suggestion: 'Use a more expressive helper name.',
+      confidence: 0.98,
+      source_agent: 'style-reviewer',
+    });
+
+    expect(autoRejected).toMatchObject({
+      id: 'issue-soft-style',
+      validation_status: 'rejected',
+      rejection_reason: expect.stringContaining('低信号'),
+    });
+
+    const result = await validator.flush();
+
+    expect(result.issues).toHaveLength(0);
+    expect(result.tokensUsed).toBe(0);
+    expect(createRuntimeFromEnvMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it('uses a stricter validation threshold for style warnings than for logic warnings', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          const responseText = JSON.stringify({
+            validation_status: 'confirmed',
+            final_confidence: 0.82,
+            grounding_evidence: {
+              checked_files: ['src/core/handler.ts'],
+              checked_symbols: [],
+              related_context: 'Observed the missing null guard in the changed logic path.',
+              reasoning: 'The payload is dereferenced before the null branch is handled.',
+            },
+          });
+
+          yield {
+            type: 'assistant.text',
+            text: responseText,
+          };
+
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: {
+              inputTokens: 8,
+              outputTokens: 5,
+            },
+            text: responseText,
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: false,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+
+    const styleRejected = validator.enqueue({
+      id: 'issue-style-warning',
+      file: 'src/ui/card.tsx',
+      line_start: 20,
+      line_end: 24,
+      category: 'style',
+      severity: 'warning',
+      title: 'Extract nested condition for readability',
+      description: 'The nested condition is harder to scan quickly.',
+      suggestion: 'Extract the condition into a named helper.',
+      confidence: 0.7,
+      source_agent: 'style-reviewer',
+    });
+
+    const logicAccepted = validator.enqueue({
+      id: 'issue-logic-warning',
+      file: 'src/core/handler.ts',
+      line_start: 40,
+      line_end: 45,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The handler dereferences an optional payload.',
+      suggestion: 'Guard the null path before reading payload fields.',
+      confidence: 0.7,
+      source_agent: 'logic-reviewer',
+    });
+
+    expect(styleRejected).toMatchObject({
+      id: 'issue-style-warning',
+      validation_status: 'rejected',
+    });
+    expect(logicAccepted).toBeNull();
+
+    const result = await validator.flush();
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({
+      id: 'issue-logic-warning',
+      validation_status: 'confirmed',
+    });
+    expect(createRuntimeFromEnvMock).toHaveBeenCalledTimes(1);
+  });
 });

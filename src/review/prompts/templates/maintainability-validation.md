@@ -14,9 +14,10 @@ Maintainability issue validation requires balancing code complexity with actual 
 - Code complexity matches domain complexity → **REJECT**
 - Similar patterns already exist in the project → **REJECT**
 - Refactoring suggestion doesn't match existing project architecture → **REJECT**
+- The suggestion is only an optional simplification without concrete maintenance risk → **REJECT**
 
 **Confirmation criteria for maintainability issues**:
 
-- Code is overly complex and can be simplified
-- Duplicate code exists that can be extracted
-- Violates the project's organization patterns
+- Code is overly complex and already causes concrete maintenance risk
+- Duplicate code exists and has already created divergence or bug-prone updates
+- Violates the project's organization patterns in a way that makes future changes harder or riskier

@@ -129,10 +129,15 @@ export const SPECIALIST_INSTRUCTIONS: Record<string, string> = {
 ## Style Review Guidelines
 
 **DO check**:
-- Variable/function/class naming: clarity, consistency, following conventions
-- **Spelling errors** in identifiers (variable names, function names, class names, etc.)
-- Code structure and organization
-- Consistent formatting and indentation
+- Misleading naming that can cause incorrect usage or maintenance mistakes
+- Structural issues that make control flow or ownership materially harder to understand
+- Inconsistencies that violate explicit project standards or weaken readability in changed code
+
+**Do NOT report**:
+- naming preferences when the existing name is understandable
+- minor spelling issues that do not change meaning or behavior
+- generic consistency cleanups without a concrete maintenance risk
+- optional refactors that only make the code "nicer"
 
 **DO NOT comment on**:
 - Whether code has comments or not (comment presence/absence is a personal/team choice)
@@ -149,7 +154,8 @@ export const SPECIALIST_INSTRUCTIONS: Record<string, string> = {
 
 ## Over-Engineering Detection (过度设计检测)
 
-**IMPORTANT**: Identify cases of over-engineering. Report with category "maintainability".
+**IMPORTANT**: Identify cases of over-engineering only when there is clear maintenance cost.
+Do NOT report naming preferences, minor spelling, or speculative cleanups as maintainability issues.
 
 Signs of over-engineering:
 1. **Unnecessary abstraction**: Wrappers or helpers used only once
@@ -159,7 +165,26 @@ Signs of over-engineering:
 5. **Unused interfaces**: Defining types/interfaces not actually used
 6. **Complex solutions for simple problems**: 30 lines of abstraction replacing 3 lines of direct code
 
-Report as: severity "warning" or "suggestion", category "maintainability"
+Report as: severity "warning" only when the abstraction already causes concrete maintenance risk.
+If it is merely an optional simplification, do NOT report it.
+`,
+  'performance-reviewer': `
+## Performance Review Guidelines
+
+**DO check**:
+- concrete runtime costs such as N+1 queries, repeated I/O in loops, unbounded work amplification, or obviously hot-path recomputation
+- algorithmic or data-access patterns with a clear and explainable cost model
+- performance regressions that are likely in normal production usage
+
+**Do NOT report**:
+- speculative best-practice suggestions without evidence of meaningful cost
+- micro-optimizations with unclear user or system impact
+- generic caching, batching, memoization, or lazy-loading advice when no bottleneck is demonstrated
+
+**Reporting bar**:
+- Report a performance issue only when you can explain the cost and why it matters
+- If the change is merely a possible best-practice improvement, skip it instead of reporting it
+- Use severity "warning" only for concrete, likely performance risks
 `,
 };
 

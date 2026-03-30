@@ -44,7 +44,7 @@ function createMockChecklist(overrides: Partial<ChecklistItem> = {}): ChecklistI
 }
 
 describe('aggregateIssues', () => {
-  it('should filter out rejected issues by default', () => {
+  it('should filter out rejected and uncertain issues by default', () => {
     const issues: ValidatedIssue[] = [
       createMockIssue({ id: '1', validation_status: 'confirmed', file: 'a.ts' }),
       createMockIssue({ id: '2', validation_status: 'rejected', file: 'b.ts' }),
@@ -53,10 +53,46 @@ describe('aggregateIssues', () => {
 
     const result = aggregateIssues(issues);
 
-    expect(result).toHaveLength(2);
+    expect(result).toHaveLength(1);
     expect(result.map((i) => i.id)).toContain('1');
-    expect(result.map((i) => i.id)).toContain('3');
+    expect(result.map((i) => i.id)).not.toContain('3');
     expect(result.map((i) => i.id)).not.toContain('2');
+  });
+
+  it('should suppress uncertain issues and low-signal soft suggestions by default', () => {
+    const issues: ValidatedIssue[] = [
+      createMockIssue({ id: '1', category: 'logic', severity: 'suggestion', file: 'logic.ts' }),
+      createMockIssue({ id: '2', category: 'style', severity: 'suggestion', file: 'style.ts' }),
+      createMockIssue({
+        id: '3',
+        category: 'maintainability',
+        severity: 'suggestion',
+        file: 'maintainability.ts',
+      }),
+      createMockIssue({
+        id: '4',
+        category: 'performance',
+        severity: 'suggestion',
+        file: 'performance.ts',
+      }),
+      createMockIssue({
+        id: '5',
+        category: 'style',
+        severity: 'warning',
+        final_confidence: 0.92,
+        file: 'style-warning.ts',
+      }),
+      createMockIssue({
+        id: '6',
+        category: 'logic',
+        validation_status: 'uncertain',
+        file: 'uncertain.ts',
+      }),
+    ];
+
+    const result = aggregateIssues(issues);
+
+    expect(result.map((issue) => issue.id)).toEqual(['5', '1']);
   });
 
   it('should include rejected issues when option is set', () => {

@@ -12,6 +12,7 @@ import type {
   IssueCategory,
   ChecklistResult,
 } from './types.js';
+import { shouldIncludeIssueInFinalReport } from './high-signal-policy.js';
 
 /**
  * Options for aggregation
@@ -19,12 +20,14 @@ import type {
 export interface AggregationOptions {
   /** Include rejected issues in output (default: false) */
   includeRejected?: boolean;
-  /** Include uncertain issues in output (default: true) */
+  /** Include uncertain issues in output (default: false) */
   includeUncertain?: boolean;
   /** Minimum confidence threshold (0-1, default: 0) */
   minConfidence?: number;
   /** Sort order (default: severity-first) */
   sortBy?: 'severity' | 'confidence' | 'file' | 'category';
+  /** Apply default high-signal filtering policy (default: true) */
+  applyHighSignalPolicy?: boolean;
 }
 
 /**
@@ -48,9 +51,10 @@ export interface AggregationResult {
 
 const DEFAULT_OPTIONS: Required<AggregationOptions> = {
   includeRejected: false,
-  includeUncertain: true,
+  includeUncertain: false,
   minConfidence: 0,
   sortBy: 'severity',
+  applyHighSignalPolicy: true,
 };
 
 /**
@@ -89,6 +93,10 @@ export function aggregateIssues(
     filtered = filtered.filter((issue) => issue.final_confidence >= opts.minConfidence);
   }
 
+  if (opts.applyHighSignalPolicy) {
+    filtered = filtered.filter((issue) => shouldIncludeIssueInFinalReport(issue));
+  }
+
   // Step 3: Sort
   return sortIssues(filtered, opts.sortBy);
 }
@@ -121,6 +129,10 @@ export function aggregate(
   // Step 2: Filter by confidence
   if (opts.minConfidence > 0) {
     filtered = filtered.filter((issue) => issue.final_confidence >= opts.minConfidence);
+  }
+
+  if (opts.applyHighSignalPolicy) {
+    filtered = filtered.filter((issue) => shouldIncludeIssueInFinalReport(issue));
   }
 
   const afterFilter = filtered.length;
