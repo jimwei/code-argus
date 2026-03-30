@@ -5,12 +5,6 @@
  * Agents report issues via MCP tool, enabling immediate deduplication and validation.
  */
 
-import {
-  query,
-  createSdkMcpServer,
-  tool,
-  type SDKResultMessage,
-} from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type {
   ReviewContext,
@@ -49,13 +43,14 @@ import {
 } from '../git/ref.js';
 import { parseDiff, type DiffFile } from '../git/parser.js';
 import { isFileIgnored, stripIgnoredFromDiff } from '../config/reviewignore.js';
+import { createRuntimeFromEnv } from '../runtime/factory.js';
+import type { AgentRuntime, RuntimeExecution, RuntimeToolDefinition } from '../runtime/types.js';
 import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
 import { createStreamingValidator, type StreamingValidator } from './streaming-validator.js';
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
 import { standardsToText } from './prompts/specialist.js';
 import {
-  DEFAULT_AGENT_MODEL,
   getRecommendedMaxTurns,
   MAX_AGENT_RETRIES,
   AGENT_RETRY_DELAY_MS,
@@ -1948,8 +1943,10 @@ export class StreamingReviewOrchestrator {
       }
     }
 
-    // Create MCP server with report_issue tool (includes filter maps)
-    const mcpServer = this.createReportIssueMcpServer(
+    const runtime = createRuntimeFromEnv();
+
+    // Create runtime tool bridge with report_issue (includes filter maps)
+    const runtimeTools = this.createReportIssueRuntimeTools(
       changedLinesByFile,
       whitespaceOnlyLinesByFile
     );
@@ -1975,7 +1972,8 @@ export class StreamingReviewOrchestrator {
             agentType as AgentType,
             context,
             standardsText,
-            mcpServer,
+            runtime,
+            runtimeTools,
             reviewRepoPath,
             dynamicMaxTurns
           );
@@ -2126,15 +2124,15 @@ export class StreamingReviewOrchestrator {
   }
 
   /**
-   * Create MCP server with report_issue tool
+   * Create runtime tools for built-in review agents.
    *
    * @param changedLinesByFile - Map of file path to set of changed line numbers (for filtering style issues)
    * @param whitespaceOnlyLinesByFile - Map of file path to set of whitespace-only change line numbers
    */
-  private createReportIssueMcpServer(
+  private createReportIssueRuntimeTools(
     changedLinesByFile?: Map<string, Set<number>>,
     whitespaceOnlyLinesByFile?: Map<string, Set<number>>
-  ) {
+  ): (agentType: AgentType) => RuntimeToolDefinition[] {
     const validator = this.streamingValidator;
     const deduplicator = this.realtimeDeduplicator;
     const verbose = this.options.verbose;
@@ -2142,183 +2140,166 @@ export class StreamingReviewOrchestrator {
     const progress = this.progress;
     const langLabel = this.options.language === 'en' ? 'English' : 'Chinese';
 
-    // We need to track which agent is calling, so we'll create per-agent servers
-    return (agentType: AgentType) =>
-      createSdkMcpServer({
-        name: 'code-review-tools',
-        version: '1.0.0',
-        tools: [
-          tool(
-            'report_issue',
-            `Report a discovered code issue. Call this for EACH issue found during review.
+    return (agentType: AgentType): RuntimeToolDefinition[] => [
+      {
+        name: 'report_issue',
+        description: `Report a discovered code issue. Call this for EACH issue found during review.
 The issue will be checked for duplicates and validated automatically.
 Write all text (title, description, suggestion) in ${langLabel}.`,
-            {
-              file: z.string().describe('File path where the issue is located'),
-              line_start: z.number().describe('Starting line number'),
-              line_end: z.number().describe('Ending line number'),
-              severity: z
-                .enum(['critical', 'error', 'warning', 'suggestion'])
-                .describe('Issue severity level'),
-              category: z
-                .enum(['security', 'logic', 'performance', 'style', 'maintainability'])
-                .describe('Issue category'),
-              title: z.string().describe(`Short title in ${langLabel}`),
-              description: z.string().describe(`Detailed description in ${langLabel}`),
-              suggestion: z.string().optional().describe(`Fix suggestion in ${langLabel}`),
-              code_snippet: z.string().optional().describe('Relevant code snippet'),
-              confidence: z.number().min(0).max(1).describe('Confidence level (0-1)'),
-            },
-            async (args) => {
+        inputSchema: {
+          file: z.string().describe('File path where the issue is located'),
+          line_start: z.number().describe('Starting line number'),
+          line_end: z.number().describe('Ending line number'),
+          severity: z
+            .enum(['critical', 'error', 'warning', 'suggestion'])
+            .describe('Issue severity level'),
+          category: z
+            .enum(['security', 'logic', 'performance', 'style', 'maintainability'])
+            .describe('Issue category'),
+          title: z.string().describe(`Short title in ${langLabel}`),
+          description: z.string().describe(`Detailed description in ${langLabel}`),
+          suggestion: z.string().optional().describe(`Fix suggestion in ${langLabel}`),
+          code_snippet: z.string().optional().describe('Relevant code snippet'),
+          confidence: z.number().min(0).max(1).describe('Confidence level (0-1)'),
+        },
+        execute: async (args) => {
+          if (verbose) {
+            console.log(`[Runtime] report_issue called by ${agentType}: ${args.title}`);
+          }
+
+          const issueId = `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+          if (agentType === 'style-reviewer' && args.category === 'style' && changedLinesByFile) {
+            const changedLines = changedLinesByFile.get(args.file);
+            if (!changedLines || changedLines.size === 0) {
               if (verbose) {
-                console.log(`[MCP] report_issue called by ${agentType}: ${args.title}`);
+                console.log(
+                  `[StreamingOrchestrator] Filtered style issue "${args.title}" - file has no changed lines: ${args.file}`
+                );
               }
-
-              // Generate unique issue ID
-              const issueId = `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-
-              // Step 0: Apply style-reviewer filters (before dedup/validation)
-              // Filter 1: Check if style issue is on unchanged context line
-              if (
-                agentType === 'style-reviewer' &&
-                args.category === 'style' &&
-                changedLinesByFile
-              ) {
-                const changedLines = changedLinesByFile.get(args.file);
-                if (!changedLines || changedLines.size === 0) {
-                  // No changed lines in this file - filter out
-                  if (verbose) {
-                    console.log(
-                      `[StreamingOrchestrator] Filtered style issue "${args.title}" - file has no changed lines: ${args.file}`
-                    );
-                  }
-                  progress.info(`过滤: "${args.title}" (文件无改动行)`);
-                  return {
-                    content: [
-                      {
-                        type: 'text' as const,
-                        text: `⏭️ 问题已过滤 (ID: ${issueId})\n原因: 样式问题在未变更的文件行上`,
-                      },
-                    ],
-                  };
-                }
-
-                // Check if issue's line range overlaps with any changed line
-                const lineStart = args.line_start;
-                const lineEnd = args.line_end ?? args.line_start;
-                let hasOverlap = false;
-                for (let line = lineStart; line <= lineEnd; line++) {
-                  if (changedLines.has(line)) {
-                    hasOverlap = true;
-                    break;
-                  }
-                }
-
-                if (!hasOverlap) {
-                  if (verbose) {
-                    console.log(
-                      `[StreamingOrchestrator] Filtered style issue "${args.title}" on unchanged line ${lineStart}: ${args.file}`
-                    );
-                  }
-                  progress.info(`过滤: "${args.title}" (行 ${lineStart} 未变更)`);
-                  return {
-                    content: [
-                      {
-                        type: 'text' as const,
-                        text: `⏭️ 问题已过滤 (ID: ${issueId})\n原因: 样式问题在未变更的行上 (行 ${lineStart}-${lineEnd})`,
-                      },
-                    ],
-                  };
-                }
-              }
-
-              // Filter 2: Check if style issue is on whitespace-only change line
-              if (
-                agentType === 'style-reviewer' &&
-                args.category === 'style' &&
-                whitespaceOnlyLinesByFile
-              ) {
-                const whitespaceLines = whitespaceOnlyLinesByFile.get(args.file);
-                if (whitespaceLines && whitespaceLines.has(args.line_start)) {
-                  if (verbose) {
-                    console.log(
-                      `[StreamingOrchestrator] Filtered pre-existing style issue "${args.title}" on whitespace-only line ${args.line_start}: ${args.file}`
-                    );
-                  }
-                  progress.info(`过滤: "${args.title}" (仅空白变更行 ${args.line_start})`);
-                  return {
-                    content: [
-                      {
-                        type: 'text' as const,
-                        text: `⏭️ 问题已过滤 (ID: ${issueId})\n原因: 样式问题在仅空白变更的行上 (行 ${args.line_start})`,
-                      },
-                    ],
-                  };
-                }
-              }
-
-              const rawIssue: RawIssue = {
-                id: issueId,
-                file: args.file,
-                line_start: args.line_start,
-                line_end: args.line_end,
-                severity: args.severity,
-                category: args.category,
-                title: args.title,
-                description: args.description,
-                suggestion: args.suggestion,
-                code_snippet: args.code_snippet,
-                confidence: args.confidence,
-                source_agent: agentType,
-              };
-
-              // Step 1: Realtime deduplication check
-              if (deduplicator) {
-                const dedupResult = await deduplicator.checkAndAdd(rawIssue);
-                if (dedupResult.isDuplicate) {
-                  // Issue is a duplicate - skip validation
-                  return {
-                    content: [
-                      {
-                        type: 'text' as const,
-                        text: `⚠️ 问题已去重 (ID: ${issueId})\n与已有问题重复: ${dedupResult.duplicateOf?.title}\n原因: ${dedupResult.reason || '相同根因'}`,
-                      },
-                    ],
-                  };
-                }
-              }
-
-              // Track issue count per agent (for progress reporting)
-              const currentCount = this.issueCountByAgent.get(agentType) || 0;
-              this.issueCountByAgent.set(agentType, currentCount + 1);
-
-              // Step 2: Process accepted issue
-              if (skipValidation) {
-                // Skip validation mode - just collect issues
-                this.rawIssuesForSkipMode.push(rawIssue);
-                return {
-                  content: [
-                    { type: 'text' as const, text: `✓ 问题已接收 (ID: ${issueId})\n跳过验证模式` },
-                  ],
-                };
-              }
-
-              // Enqueue for streaming validation
-              const autoRejected = validator?.enqueue(rawIssue);
-              if (autoRejected) {
-                // Issue was auto-rejected due to low confidence
-                this.autoRejectedIssues.push(autoRejected);
-              }
-
+              progress.info(`Filtered: "${args.title}" (file has no changed lines)`);
               return {
                 content: [
-                  { type: 'text' as const, text: `✓ 问题已接收 (ID: ${issueId})\n正在后台验证...` },
+                  {
+                    type: 'text' as const,
+                    text: `Issue filtered (ID: ${issueId})\nReason: style issue is on unchanged file lines`,
+                  },
                 ],
               };
             }
-          ),
-        ],
-      });
+
+            const lineStart = args.line_start;
+            const lineEnd = args.line_end ?? args.line_start;
+            let hasOverlap = false;
+            for (let line = lineStart; line <= lineEnd; line++) {
+              if (changedLines.has(line)) {
+                hasOverlap = true;
+                break;
+              }
+            }
+
+            if (!hasOverlap) {
+              if (verbose) {
+                console.log(
+                  `[StreamingOrchestrator] Filtered style issue "${args.title}" on unchanged line ${lineStart}: ${args.file}`
+                );
+              }
+              progress.info(`Filtered: "${args.title}" (line ${lineStart} unchanged)`);
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Issue filtered (ID: ${issueId})\nReason: style issue is on unchanged lines (${lineStart}-${lineEnd})`,
+                  },
+                ],
+              };
+            }
+          }
+
+          if (
+            agentType === 'style-reviewer' &&
+            args.category === 'style' &&
+            whitespaceOnlyLinesByFile
+          ) {
+            const whitespaceLines = whitespaceOnlyLinesByFile.get(args.file);
+            if (whitespaceLines && whitespaceLines.has(args.line_start)) {
+              if (verbose) {
+                console.log(
+                  `[StreamingOrchestrator] Filtered style issue "${args.title}" on whitespace-only line ${args.line_start}: ${args.file}`
+                );
+              }
+              progress.info(`Filtered: "${args.title}" (whitespace-only line ${args.line_start})`);
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Issue filtered (ID: ${issueId})\nReason: style issue is on a whitespace-only changed line (${args.line_start})`,
+                  },
+                ],
+              };
+            }
+          }
+
+          const rawIssue: RawIssue = {
+            id: issueId,
+            file: args.file,
+            line_start: args.line_start,
+            line_end: args.line_end,
+            severity: args.severity,
+            category: args.category,
+            title: args.title,
+            description: args.description,
+            suggestion: args.suggestion,
+            code_snippet: args.code_snippet,
+            confidence: args.confidence,
+            source_agent: agentType,
+          };
+
+          if (deduplicator) {
+            const dedupResult = await deduplicator.checkAndAdd(rawIssue);
+            if (dedupResult.isDuplicate) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Issue deduplicated (ID: ${issueId})\nDuplicate of: ${dedupResult.duplicateOf?.title}\nReason: ${dedupResult.reason || 'same root cause'}`,
+                  },
+                ],
+              };
+            }
+          }
+
+          const currentCount = this.issueCountByAgent.get(agentType) || 0;
+          this.issueCountByAgent.set(agentType, currentCount + 1);
+
+          if (skipValidation) {
+            this.rawIssuesForSkipMode.push(rawIssue);
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Issue accepted (ID: ${issueId})\nValidation skipped`,
+                },
+              ],
+            };
+          }
+
+          const autoRejected = validator?.enqueue(rawIssue);
+          if (autoRejected) {
+            this.autoRejectedIssues.push(autoRejected);
+          }
+
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Issue accepted (ID: ${issueId})\nQueued for validation`,
+              },
+            ],
+          };
+        },
+      },
+    ];
   }
 
   /**
@@ -2328,7 +2309,8 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     agentType: AgentType,
     context: ReviewContext,
     standardsText: string,
-    mcpServerFactory: (agentType: AgentType) => ReturnType<typeof createSdkMcpServer>,
+    runtime: AgentRuntime,
+    runtimeToolsFactory: (agentType: AgentType) => RuntimeToolDefinition[],
     reviewRepoPath: string,
     maxTurns: number = 30
   ): Promise<{ tokensUsed: number; checklists: ChecklistItem[] }> {
@@ -2336,26 +2318,22 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       console.log(`[StreamingOrchestrator] Starting agent: ${agentType}`);
     }
 
-    // Get project-specific rules for this agent
     const projectRules =
       agentType !== 'validator'
         ? getRulesForAgent(this.rulesConfig, agentType as RuleAgentType)
         : undefined;
 
-    // Build prompts
     const systemPrompt = buildStreamingSystemPrompt(agentType, this.options.language);
 
-    // Only add deleted files context for logic-reviewer (to understand code removal context)
     const deletedFilesContext =
       agentType === 'logic-reviewer' && context.deletedFiles && context.deletedFiles.length > 0
         ? formatDeletedFilesContext(context.deletedFiles)
         : undefined;
 
-    // Log PR context injection for this agent
     const contextIssues = context.prContext?.issues || context.prContext?.jiraIssues;
     if (contextIssues?.length) {
       this.progress.info(
-        `[${agentType}] 注入 PR Context: ${contextIssues.length} 个 issue - ${contextIssues.map((i) => i.key).join(', ')}`
+        `[${agentType}] Injected PR Context: ${contextIssues.length} issues - ${contextIssues.map((i) => i.key).join(', ')}`
       );
     }
 
@@ -2373,105 +2351,79 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     });
 
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
-
-    // Create MCP server for this agent
-    const mcpServer = mcpServerFactory(agentType);
+    const runtimeTools = runtimeToolsFactory(agentType);
 
     let tokensUsed = 0;
     let turnCount = 0;
-
-    // 用于资源清理的变量
-    let queryStream: ReturnType<typeof query> | null = null;
+    let execution: RuntimeExecution | null = null;
 
     try {
-      queryStream = query({
+      execution = runtime.execute({
         prompt: fullPrompt,
-        options: {
-          cwd: reviewRepoPath,
-          permissionMode: 'bypassPermissions',
-          allowDangerouslySkipPermissions: true,
-          maxTurns, // Dynamic based on diff size
-          model: DEFAULT_AGENT_MODEL,
-          settingSources: ['project'], // Load CLAUDE.md from repo
-          mcpServers: {
-            'code-review-tools': mcpServer,
-          },
-          // 传递 AbortController 以支持优雅关闭
-          abortController: this.options.abortController,
-        },
+        cwd: reviewRepoPath,
+        maxTurns,
+        model: runtime.config.models.main,
+        settingSources: ['project'],
+        abortController: this.options.abortController,
+        tools: runtimeTools,
+        toolNamespace: 'code-review-tools',
       });
 
-      // Consume the stream
-      for await (const message of queryStream) {
-        // 统计 stream_event 消息作为 turn 计数
-        if (message.type === 'stream_event') {
+      for await (const event of execution) {
+        if (event.type === 'activity') {
           turnCount++;
+          continue;
         }
 
-        if (message.type === 'result') {
-          const resultMessage = message as SDKResultMessage;
-          if (resultMessage.subtype === 'success') {
-            const inputTokens = resultMessage.usage.input_tokens;
-            const outputTokens = resultMessage.usage.output_tokens;
-            tokensUsed = inputTokens + outputTokens;
-
-            // 详细日志：Agent 最终 token 消耗
-            console.log(
-              `[Agent-Detail] ${agentType} FinalResult ` +
-                `Tokens: input=${inputTokens}, output=${outputTokens}, total=${tokensUsed}, turns=${turnCount}`
-            );
-          } else if (resultMessage.subtype === 'error_max_turns') {
-            // Agent reached max turns limit - treat as partial success
-            // Issues already reported via MCP report_issue are preserved
-            const issueCount = this.issueCountByAgent.get(agentType) || 0;
-            const inputTokens = resultMessage.usage.input_tokens;
-            const outputTokens = resultMessage.usage.output_tokens;
-            tokensUsed = inputTokens + outputTokens;
-            console.warn(
-              `[StreamingOrchestrator] Agent ${agentType} reached maxTurns limit (${maxTurns} turns). ` +
-                `Treating as partial success with ${issueCount} issues already reported. ` +
-                `Tokens: input=${inputTokens}, output=${outputTokens}, turns=${turnCount}`
-            );
-            this.progress.warn(
-              `Agent ${agentType} 达到最大轮次限制 (${maxTurns} turns)，已收集 ${issueCount} 个问题作为部分结果`
-            );
-          } else {
-            // SDK returned other non-success result (real errors)
-            // This must throw so the agent is properly counted as failed
-            // and retried by runAgentsWithStreaming
-            const errorDetail =
-              'error' in resultMessage
-                ? String((resultMessage as Record<string, unknown>).error)
-                : resultMessage.subtype;
-            console.error(
-              `[StreamingOrchestrator] Agent ${agentType} SDK result: ${resultMessage.subtype}`,
-              errorDetail
-            );
-            throw new Error(
-              `Agent ${agentType} failed: SDK returned ${resultMessage.subtype}${errorDetail !== resultMessage.subtype ? ` - ${errorDetail}` : ''}`
-            );
-          }
+        if (event.type !== 'result') {
+          continue;
         }
+
+        const inputTokens = event.usage?.inputTokens ?? 0;
+        const outputTokens = event.usage?.outputTokens ?? 0;
+        if (event.usage) {
+          tokensUsed = inputTokens + outputTokens;
+        }
+
+        if (event.status === 'success') {
+          console.log(
+            `[Agent-Detail] ${agentType} FinalResult Tokens: input=${inputTokens}, output=${outputTokens}, total=${tokensUsed}, turns=${turnCount}`
+          );
+          continue;
+        }
+
+        if (event.status === 'error_max_turns') {
+          const issueCount = this.issueCountByAgent.get(agentType) || 0;
+          console.warn(
+            `[StreamingOrchestrator] Agent ${agentType} reached maxTurns limit (${maxTurns} turns). Treating as partial success with ${issueCount} issues already reported. Tokens: input=${inputTokens}, output=${outputTokens}, turns=${turnCount}`
+          );
+          this.progress.warn(
+            `Agent ${agentType} reached max turns (${maxTurns}); keeping ${issueCount} reported issues as partial output`
+          );
+          continue;
+        }
+
+        const errorDetail = event.error || event.status;
+        console.error(
+          `[StreamingOrchestrator] Agent ${agentType} runtime result: ${event.status}`,
+          errorDetail
+        );
+        throw new Error(
+          `Agent ${agentType} failed: runtime returned ${event.status}${errorDetail !== event.status ? ` - ${errorDetail}` : ''}`
+        );
       }
     } catch (error) {
-      // 检查是否是 AbortError（用户取消操作）
       if (error instanceof Error && error.name === 'AbortError') {
         console.log(`[StreamingOrchestrator] Agent ${agentType} aborted by user`);
-        // 不重新抛出 AbortError，让调用方优雅处理
         return { tokensUsed, checklists: [] };
       }
       console.error(`[StreamingOrchestrator] Agent ${agentType} threw error:`, error);
-      // Re-throw the error so it's properly handled by the caller
       throw error;
     } finally {
-      // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
-      if (queryStream) {
+      if (execution) {
         try {
-          // 调用迭代器的 return() 方法触发 SDK 内部的 cleanup
-          // 这会导致 transport.close() 被调用，从而移除 process.on('exit') 监听器
-          await queryStream.return?.(undefined);
+          await execution.close();
         } catch (cleanupError) {
-          // 忽略清理过程中的错误，避免覆盖原始错误
           if (this.options.verbose) {
             console.warn(`[StreamingOrchestrator] Cleanup warning for ${agentType}:`, cleanupError);
           }
@@ -2479,7 +2431,6 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       }
     }
 
-    // 详细日志：Agent 完成汇总
     console.log(
       `[Agent-Summary] ${agentType} completed: turns=${turnCount}, totalTokens=${tokensUsed}`
     );
@@ -2488,7 +2439,6 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       console.log(`[StreamingOrchestrator] Agent ${agentType} completed`);
     }
 
-    // TODO: Parse checklist from agent output if needed
     return {
       tokensUsed,
       checklists: [],

@@ -5,10 +5,10 @@
  * Uses a hybrid approach: rule-based fast filtering + LLM for edge cases.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { DiffFile, FileCategory } from '../git/parser.js';
+import { getRuntimeModel } from '../config/env.js';
+import { createRuntimeFromEnv } from '../runtime/factory.js';
 import type { AgentType } from './types.js';
-import { DEFAULT_LIGHT_MODEL } from './constants.js';
 
 // ============================================================================
 // Types
@@ -401,8 +401,6 @@ async function selectAgentsByLLM(
   characteristics: FileCharacteristics,
   ruleBasedResult: { agents: AgentType[]; reasons: Record<string, string> }
 ): Promise<{ agents: AgentType[]; reasons: Record<string, string> }> {
-  const client = new Anthropic();
-
   // Build file list summary
   const fileSummary = diffFiles
     .slice(0, 30) // Limit to 30 files for prompt size
@@ -443,19 +441,15 @@ ${diffFiles.length > 30 ? `\n... 还有 ${diffFiles.length - 30} 个文件` : ''
 只输出 JSON，不要其他内容。`;
 
   try {
-    const response = await client.messages.create({
-      model: DEFAULT_LIGHT_MODEL,
-      max_tokens: 500,
-      messages: [{ role: 'user', content: prompt }],
+    const runtime = createRuntimeFromEnv();
+    const response = await runtime.generateText({
+      model: getRuntimeModel('light'),
+      maxOutputTokens: 500,
+      prompt,
     });
 
-    const content = response.content[0];
-    if (!content || content.type !== 'text') {
-      throw new Error('Unexpected response type');
-    }
-
     // Parse JSON response
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    const jsonMatch = response.text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error('No JSON found in response');
     }

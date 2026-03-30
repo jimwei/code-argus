@@ -40,7 +40,7 @@ process.on('SIGINT', () => handleGlobalShutdown('SIGINT'));
 import 'dotenv/config';
 import { initializeEnv } from './config/env.js';
 
-// Initialize environment variables for Claude Agent SDK
+// Initialize environment variables for the active runtime provider
 initializeEnv();
 
 import { readFileSync } from 'node:fs';
@@ -205,9 +205,14 @@ Config subcommands:
   argus config path                  Show config file location
 
 Config keys:
-  api-key       Anthropic API key
-  base-url      Custom API base URL (for proxies)
-  model         Model to use (e.g., claude-sonnet-4-5-20250929)
+  api-key       Stored API key for Claude runtime fallback
+  base-url      Stored Claude-compatible API base URL
+  model         Default main model fallback
+
+Runtime environment:
+  ARGUS_RUNTIME        claude-agent (default) | openai-responses
+  Claude credentials   ARGUS_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
+  OpenAI credentials   ARGUS_OPENAI_API_KEY / OPENAI_API_KEY
 
 PR Context (--pr-context):
   Provides business context for code review, typically from Jira integration.
@@ -275,9 +280,9 @@ Subcommands:
   path                 Show config file location
 
 Keys:
-  api-key       Anthropic API key
-  base-url      Custom API base URL (for proxies)
-  model         Model to use (e.g., claude-sonnet-4-5-20250929)
+  api-key       Stored API key for Claude runtime fallback
+  base-url      Stored Claude-compatible API base URL
+  model         Default main model fallback
 
 Examples:
   argus config set api-key sk-ant-api03-xxxxx
@@ -291,6 +296,8 @@ Examples:
 Note:
   Config is stored in ~/.argus/config.json
   Environment variables take precedence over config file values.
+  Runtime selection is env-only via ARGUS_RUNTIME.
+  OpenAI credentials are env-only via ARGUS_OPENAI_API_KEY or OPENAI_API_KEY.
 `);
 }
 

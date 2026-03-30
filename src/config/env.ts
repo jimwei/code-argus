@@ -1,51 +1,68 @@
 /**
- * Environment configuration for Argus
+ * Environment configuration for Argus runtimes.
  *
- * Priority order (highest to lowest):
- * 1. ARGUS_ANTHROPIC_BASE_URL + ARGUS_ANTHROPIC_API_KEY (both required)
- * 2. ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN (Claude Code OAuth)
- * 3. ANTHROPIC_API_KEY (official API with default endpoint)
- * 4. Config file (~/.argus/config.json)
- * 5. Error if none configured
+ * The current implementation supports two runtime families:
+ * - claude-agent
+ * - openai-responses
+ *
+ * Claude remains the default runtime for backwards compatibility.
  */
 
+import { DEFAULT_AGENT_MODEL, DEFAULT_LIGHT_MODEL } from '../review/constants.js';
 import { loadConfig } from './store.js';
 
-/**
- * Authentication configuration result
- */
-export interface AuthConfig {
+export type ArgusRuntimeType = 'claude-agent' | 'openai-responses';
+export type ArgusRuntimeModelKind = 'main' | 'light' | 'validator';
+
+export interface ClaudeAuthConfig {
   apiKey: string;
   baseUrl?: string;
   source: 'argus' | 'claude-oauth' | 'anthropic-api' | 'config';
 }
 
+export interface OpenAIAuthConfig {
+  apiKey: string;
+  baseUrl?: string;
+  source: 'argus' | 'openai-api';
+}
+
+export interface ArgusRuntimeConfig {
+  runtime: ArgusRuntimeType;
+  models: {
+    main: string;
+    light: string;
+    validator: string;
+  };
+  claude?: ClaudeAuthConfig;
+  openai?: OpenAIAuthConfig;
+}
+
 /**
- * Get authentication configuration with proper priority
- *
- * Priority:
- * 1. ARGUS_ANTHROPIC_BASE_URL + ARGUS_ANTHROPIC_API_KEY (both must be set)
- * 2. ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN (Claude Code OAuth)
- * 3. ANTHROPIC_API_KEY (official API)
- * 4. Config file (~/.argus/config.json)
- *
- * @throws Error if no valid configuration found
+ * Backwards-compatible alias kept for existing Anthropic-facing callers.
  */
-export function getAuthConfig(): AuthConfig {
+export type AuthConfig = ClaudeAuthConfig;
+
+function getRuntime(): ArgusRuntimeType {
+  const runtime = process.env.ARGUS_RUNTIME?.trim() || 'claude-agent';
+  if (runtime === 'claude-agent' || runtime === 'openai-responses') {
+    return runtime;
+  }
+
+  throw new Error(`Unsupported ARGUS_RUNTIME: ${runtime}`);
+}
+
+function getClaudeAuthConfig(): ClaudeAuthConfig {
   const config = loadConfig();
 
-  // Priority 1: ARGUS-specific configuration (both must be present)
   const argusApiKey = process.env.ARGUS_ANTHROPIC_API_KEY;
-  const argusBaseUrl = process.env.ARGUS_ANTHROPIC_BASE_URL;
-  if (argusApiKey && argusBaseUrl) {
+  if (argusApiKey) {
     return {
       apiKey: argusApiKey,
-      baseUrl: argusBaseUrl,
+      baseUrl: process.env.ARGUS_ANTHROPIC_BASE_URL,
       source: 'argus',
     };
   }
 
-  // Priority 2: Claude Code OAuth (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN)
   const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
   const anthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
   if (anthropicBaseUrl && anthropicAuthToken) {
@@ -56,17 +73,15 @@ export function getAuthConfig(): AuthConfig {
     };
   }
 
-  // Priority 3: Official Anthropic API Key (no base URL needed)
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   if (anthropicApiKey) {
     return {
       apiKey: anthropicApiKey,
-      baseUrl: undefined, // Use SDK default
+      baseUrl: process.env.ARGUS_ANTHROPIC_BASE_URL,
       source: 'anthropic-api',
     };
   }
 
-  // Priority 4: Config file
   if (config.apiKey) {
     return {
       apiKey: config.apiKey,
@@ -75,71 +90,137 @@ export function getAuthConfig(): AuthConfig {
     };
   }
 
-  // No valid configuration found
   throw new Error(
-    `No API credentials configured. Please set one of the following:
-  1. ARGUS_ANTHROPIC_API_KEY + ARGUS_ANTHROPIC_BASE_URL (for proxy services)
-  2. ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL (for Claude Code OAuth)
-  3. ANTHROPIC_API_KEY (for official Anthropic API)
+    `No Claude credentials configured. Please set one of the following:
+  1. ARGUS_ANTHROPIC_API_KEY
+  2. ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL
+  3. ANTHROPIC_API_KEY
   4. Run 'argus config set apiKey <your-key>' to save to config file`
   );
 }
 
-/**
- * Initialize environment variables for Claude Agent SDK
- * Sets ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL based on priority
- */
-export function initializeEnv(): void {
+function getOpenAIAuthConfig(): OpenAIAuthConfig {
+  const argusApiKey = process.env.ARGUS_OPENAI_API_KEY;
+  if (argusApiKey) {
+    return {
+      apiKey: argusApiKey,
+      baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
+      source: 'argus',
+    };
+  }
+
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  if (openaiApiKey) {
+    return {
+      apiKey: openaiApiKey,
+      baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
+      source: 'openai-api',
+    };
+  }
+
+  throw new Error(
+    `No OpenAI credentials configured. Please set one of the following:
+  1. ARGUS_OPENAI_API_KEY
+  2. OPENAI_API_KEY`
+  );
+}
+
+function getMainModel(runtime: ArgusRuntimeType): string {
+  const config = loadConfig();
+
+  return (
+    process.env.ARGUS_MODEL ||
+    (runtime === 'claude-agent'
+      ? process.env.ARGUS_ANTHROPIC_MODEL || process.env.ANTHROPIC_MODEL || config.model
+      : config.model) ||
+    DEFAULT_AGENT_MODEL
+  );
+}
+
+export function loadArgusRuntimeConfig(): ArgusRuntimeConfig {
+  const runtime = getRuntime();
+  const mainModel = getMainModel(runtime);
+  const lightModel = process.env.ARGUS_LIGHT_MODEL || mainModel || DEFAULT_LIGHT_MODEL;
+  const validatorModel = process.env.ARGUS_VALIDATOR_MODEL || mainModel;
+
+  if (runtime === 'claude-agent') {
+    return {
+      runtime,
+      models: {
+        main: mainModel,
+        light: lightModel,
+        validator: validatorModel,
+      },
+      claude: getClaudeAuthConfig(),
+    };
+  }
+
+  return {
+    runtime,
+    models: {
+      main: mainModel,
+      light: lightModel,
+      validator: validatorModel,
+    },
+    openai: getOpenAIAuthConfig(),
+  };
+}
+
+export function initializeProviderEnv(): void {
   try {
-    const auth = getAuthConfig();
+    const config = loadArgusRuntimeConfig();
 
-    // Set environment variables for SDK
-    process.env.ANTHROPIC_API_KEY = auth.apiKey;
-    if (auth.baseUrl) {
-      process.env.ANTHROPIC_BASE_URL = auth.baseUrl;
+    if (config.runtime === 'claude-agent' && config.claude) {
+      process.env.ANTHROPIC_API_KEY = config.claude.apiKey;
+      if (config.claude.baseUrl) {
+        process.env.ANTHROPIC_BASE_URL = config.claude.baseUrl;
+      }
+      process.env.ANTHROPIC_MODEL = config.models.main;
+
+      if (config.claude.source === 'argus') {
+        delete process.env.ANTHROPIC_AUTH_TOKEN;
+      }
+      return;
     }
 
-    // 清除其他认证变量，确保 Claude Agent SDK 使用我们设置的认证
-    // Claude Code CLI 子进程可能优先使用 ANTHROPIC_AUTH_TOKEN (OAuth)
-    // 如果不清除，即使我们设置了 ANTHROPIC_API_KEY，子进程也可能使用系统的 OAuth token
-    if (auth.source === 'argus') {
-      delete process.env.ANTHROPIC_AUTH_TOKEN;
-    }
-
-    // Handle model separately
-    const config = loadConfig();
-    if (!process.env.ANTHROPIC_MODEL) {
-      const model = process.env.ARGUS_ANTHROPIC_MODEL || config.model;
-      if (model) {
-        process.env.ANTHROPIC_MODEL = model;
+    if (config.runtime === 'openai-responses' && config.openai) {
+      process.env.OPENAI_API_KEY = config.openai.apiKey;
+      if (config.openai.baseUrl) {
+        process.env.OPENAI_BASE_URL = config.openai.baseUrl;
       }
     }
   } catch {
-    // Don't throw during initialization, let getAuthConfig throw when actually needed
+    // Defer validation errors until credentials are actually required.
   }
 }
 
 /**
- * Get API key (uses getAuthConfig internally)
- * @throws Error if no credentials configured
+ * Backwards-compatible initializer retained for existing startup code.
  */
+export function initializeEnv(): void {
+  initializeProviderEnv();
+}
+
+export function getAuthConfig(): AuthConfig {
+  const config = loadArgusRuntimeConfig();
+  if (!config.claude) {
+    throw new Error('Claude authentication is unavailable for the active runtime');
+  }
+  return config.claude;
+}
+
 export function getApiKey(): string {
   return getAuthConfig().apiKey;
 }
 
-/**
- * Get base URL (uses getAuthConfig internally)
- * @throws Error if no credentials configured
- */
 export function getBaseUrl(): string | undefined {
   return getAuthConfig().baseUrl;
 }
 
-/**
- * Get model with fallback chain
- * Priority: env var > config file
- */
+export function getRuntimeModel(kind: ArgusRuntimeModelKind): string {
+  return loadArgusRuntimeConfig().models[kind];
+}
+
 export function getModel(): string | undefined {
-  const config = loadConfig();
-  return process.env.ARGUS_ANTHROPIC_MODEL || process.env.ANTHROPIC_MODEL || config.model;
+  return getRuntimeModel('main');
 }

@@ -12,12 +12,8 @@
  * 4. Concurrent sessions - multiple files validated in parallel
  */
 
-import {
-  query,
-  type SDKResultMessage,
-  type SDKUserMessage,
-  type SDKAssistantMessage,
-} from '@anthropic-ai/claude-agent-sdk';
+import { createRuntimeFromEnv } from '../runtime/factory.js';
+import type { RuntimeExecution } from '../runtime/types.js';
 import type { RawIssue, ValidatedIssue, SymbolLookup, ValidationStatus } from './types.js';
 import {
   DEFAULT_VALIDATOR_MAX_TURNS,
@@ -25,7 +21,6 @@ import {
   MAX_CHALLENGE_ROUNDS,
   FAST_MODE_CHALLENGE_ROUNDS,
   MIN_CONFIDENCE_FOR_VALIDATION,
-  DEFAULT_AGENT_MODEL,
   getValidatorMaxTurns,
 } from './constants.js';
 import { extractJSON } from './utils/json-parser.js';
@@ -155,6 +150,16 @@ interface FileSession {
   notifyNewIssue?: () => void;
   /** Number of crash retries for this session */
   crashRetryCount?: number;
+}
+
+interface RuntimePromptMessage {
+  type: 'user';
+  message: {
+    role: 'user';
+    content: string;
+  };
+  parent_tool_use_id: null;
+  session_id: string;
 }
 
 /**
@@ -404,32 +409,26 @@ export class StreamingValidator {
       console.log(`[StreamingValidator] Starting session for ${session.file}`);
     }
 
-    // Message queue for multi-turn conversation
-    const messageQueue: SDKUserMessage[] = [];
-    let resolveNextMessage: ((msg: SDKUserMessage | null) => void) | null = null;
-    let sessionId = '';
+    const runtime = createRuntimeFromEnv();
+    const messageQueue: Array<RuntimePromptMessage | null> = [];
+    let resolveNextMessage: ((msg: RuntimePromptMessage | null) => void) | null = null;
 
-    // Track current issue being validated
     let currentIssue: RawIssue | null = null;
     let currentRound = 0;
     let currentResponses: ParsedValidationResponse[] = [];
 
-    // Promise to wait for new issues
     const waitForNewIssue = (): Promise<boolean> => {
       return new Promise((resolve) => {
-        // Check if queue has items
         if (session.queue.length > 0) {
           resolve(true);
           return;
         }
 
-        // If agents are complete and queue is empty, we're done
         if (this.allAgentsComplete) {
           resolve(false);
           return;
         }
 
-        // Set up notification callback
         session.notifyNewIssue = () => {
           session.notifyNewIssue = undefined;
           if (session.queue.length > 0) {
@@ -437,10 +436,8 @@ export class StreamingValidator {
           } else if (this.allAgentsComplete) {
             resolve(false);
           }
-          // Otherwise keep waiting
         };
 
-        // Set idle timeout
         session.idleTimeout = globalThis.setTimeout(() => {
           if (this.options.verbose) {
             console.log(`[StreamingValidator] Session ${session.file} idle timeout`);
@@ -451,7 +448,6 @@ export class StreamingValidator {
       });
     };
 
-    // Get next issue from queue (or wait for one)
     const getNextIssue = async (): Promise<RawIssue | null> => {
       if (session.queue.length > 0) {
         return session.queue.shift()!;
@@ -465,7 +461,6 @@ export class StreamingValidator {
       return null;
     };
 
-    // Build prompt for an issue
     const buildIssuePrompt = (issue: RawIssue, isFirst: boolean): string => {
       const systemPrompt = buildValidationSystemPrompt(issue.category, {
         projectRules: this.options.projectRules,
@@ -475,20 +470,17 @@ export class StreamingValidator {
       const userPrompt = this.buildUserPrompt(issue);
 
       if (isFirst) {
-        // First issue: include full system prompt
         return `${systemPrompt}\n\n${userPrompt}`;
-      } else {
-        // Subsequent issues: just the issue details
-        return `现在请验证下一个问题（同一文件，你已经读取过代码）：\n\n${userPrompt}`;
       }
+
+      return `Validate the next issue in the same file context.\n\n${userPrompt}`;
     };
 
-    // Message generator for SDK
-    async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
+    async function* messageGenerator(): AsyncGenerator<RuntimePromptMessage> {
       while (true) {
-        const msg = await new Promise<SDKUserMessage | null>((resolve) => {
+        const msg = await new Promise<RuntimePromptMessage | null>((resolve) => {
           if (messageQueue.length > 0) {
-            resolve(messageQueue.shift()!);
+            resolve(messageQueue.shift() ?? null);
           } else {
             resolveNextMessage = resolve;
           }
@@ -497,18 +489,26 @@ export class StreamingValidator {
         if (msg === null) {
           return;
         }
+
         yield msg;
       }
     }
 
-    // Send a message to the session
     const sendMessage = (content: string) => {
-      const msg: SDKUserMessage = {
-        type: 'user' as const,
-        message: { role: 'user' as const, content },
+      if (session.isClosed) {
+        return;
+      }
+
+      const msg: RuntimePromptMessage = {
+        type: 'user',
+        message: {
+          role: 'user',
+          content,
+        },
         parent_tool_use_id: null,
-        session_id: sessionId,
+        session_id: '',
       };
+
       if (resolveNextMessage) {
         const resolve = resolveNextMessage;
         resolveNextMessage = null;
@@ -518,22 +518,26 @@ export class StreamingValidator {
       }
     };
 
-    // End the session
     const endSession = () => {
+      if (session.isClosed) {
+        return;
+      }
+
+      session.isClosed = true;
+
       if (resolveNextMessage) {
         const resolve = resolveNextMessage;
         resolveNextMessage = null;
         resolve(null);
+      } else {
+        messageQueue.push(null);
       }
-      session.isClosed = true;
     };
 
-    // Complete current issue and move to next
     const completeCurrentIssue = (validatedIssue: ValidatedIssue) => {
       session.results.push(validatedIssue);
       this.completedCount++;
 
-      // Notify via callbacks
       this.options.callbacks?.onIssueValidated?.(validatedIssue);
 
       if (this.options.onProgress) {
@@ -556,7 +560,20 @@ export class StreamingValidator {
       currentResponses = [];
     };
 
-    // Start processing - get first issue
+    const advanceToNextIssue = async () => {
+      const nextIssue = await getNextIssue();
+      if (!nextIssue) {
+        endSession();
+        return false;
+      }
+
+      currentIssue = nextIssue;
+      currentRound = 1;
+      currentResponses = [];
+      sendMessage(buildIssuePrompt(nextIssue, false));
+      return true;
+    };
+
     currentIssue = await getNextIssue();
     if (!currentIssue) {
       session.isProcessing = false;
@@ -564,13 +581,10 @@ export class StreamingValidator {
       return;
     }
 
-    // Send first message to start the session
     const firstPrompt = buildIssuePrompt(currentIssue, true);
     currentRound = 1;
 
-    // 动态计算 maxTurns：基于当前队列大小 + buffer
-    // 预留 buffer 是因为 issues 可能在 session 运行时被动态添加
-    const estimatedIssueCount = Math.max(session.queue.length + 1, 5); // +1 是当前 issue，至少预估 5 个
+    const estimatedIssueCount = Math.max(session.queue.length + 1, 5);
     const dynamicMaxTurns = getValidatorMaxTurns(
       estimatedIssueCount,
       this.options.maxChallengeRounds
@@ -583,63 +597,51 @@ export class StreamingValidator {
       );
     }
 
-    // Start the query
-    // 用于资源清理的变量
-    let queryStream: ReturnType<typeof query> | null = null;
-
-    queryStream = query({
-      prompt: messageGenerator(),
-      options: {
-        cwd: this.options.repoPath,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        maxTurns,
-        model: DEFAULT_AGENT_MODEL,
-        settingSources: ['project'],
-      },
-    });
-
-    // 注册信号处理器，确保 SIGTERM/SIGINT 时能正确清理资源
-    // 这解决了 PR Manager 发送 SIGTERM 时 finally 块不执行的问题
-    let isCleaningUp = false;
-    const cleanupAndExit = async (signal: string) => {
-      if (isCleaningUp || !queryStream) return;
-      isCleaningUp = true;
-      console.log(
-        `[StreamingValidator] Received ${signal}, cleaning up session ${session.file}...`
-      );
-      try {
-        await queryStream.return?.(undefined);
-      } catch {
-        // 忽略清理错误
-      }
-      process.exit(0);
-    };
-    const sigtermHandler = () => cleanupAndExit('SIGTERM');
-    const sigintHandler = () => cleanupAndExit('SIGINT');
-    process.on('SIGTERM', sigtermHandler);
-    process.on('SIGINT', sigintHandler);
-
-    // Send first message after query starts
-    sendMessage(firstPrompt);
-
-    let lastAssistantText = '';
+    let execution: RuntimeExecution | null = null;
+    let sigtermHandler: (() => void) | null = null;
+    let sigintHandler: (() => void) | null = null;
 
     try {
-      for await (const message of queryStream) {
-        // Capture session ID
-        if (message.session_id && !sessionId) {
-          sessionId = message.session_id;
-        }
+      execution = runtime.execute({
+        prompt: messageGenerator(),
+        cwd: this.options.repoPath,
+        maxTurns,
+        model: runtime.config.models.validator,
+        settingSources: ['project'],
+      });
 
-        // Notify activity for heartbeat (shows validation is still running)
-        if (currentIssue && message.type) {
+      let isCleaningUp = false;
+      const cleanupAndExit = async (signal: string) => {
+        if (isCleaningUp || !execution) return;
+        isCleaningUp = true;
+        console.log(
+          `[StreamingValidator] Received ${signal}, cleaning up session ${session.file}...`
+        );
+        try {
+          await execution.close();
+        } catch {
+          // Ignore shutdown cleanup errors.
+        }
+        process.exit(0);
+      };
+      sigtermHandler = () => cleanupAndExit('SIGTERM');
+      sigintHandler = () => cleanupAndExit('SIGINT');
+      process.on('SIGTERM', sigtermHandler);
+      process.on('SIGINT', sigintHandler);
+
+      sendMessage(firstPrompt);
+
+      let lastAssistantText = '';
+
+      for await (const event of execution) {
+        if (currentIssue) {
           let activity = '';
-          if (message.type === 'assistant') {
-            activity = `第${currentRound}轮分析中...`;
-          } else if (message.type === 'tool_progress') {
-            activity = `第${currentRound}轮读取代码...`;
+          if (event.type === 'assistant.text') {
+            activity = `Round ${currentRound} analyzing...`;
+          } else if (event.type === 'activity') {
+            activity = `Round ${currentRound} reading code...`;
           }
+
           if (activity) {
             this.options.callbacks?.onValidationActivity?.(
               currentIssue.id,
@@ -649,221 +651,183 @@ export class StreamingValidator {
           }
         }
 
-        // Collect assistant text
-        if (message.type === 'assistant') {
-          const assistantMsg = message as SDKAssistantMessage;
-          for (const block of assistantMsg.message.content) {
-            if (block.type === 'text') {
-              lastAssistantText = block.text;
-            }
-          }
+        if (event.type === 'assistant.text') {
+          lastAssistantText = event.text;
+          continue;
         }
 
-        // Handle result (end of a turn)
-        if (message.type === 'result') {
-          const resultMessage = message as SDKResultMessage;
+        if (event.type !== 'result') {
+          continue;
+        }
 
-          if (resultMessage.subtype === 'success') {
-            const inputTokens = resultMessage.usage.input_tokens;
-            const outputTokens = resultMessage.usage.output_tokens;
-            const turnTokens = inputTokens + outputTokens;
-            session.tokensUsed += turnTokens;
+        const inputTokens = event.usage?.inputTokens ?? 0;
+        const outputTokens = event.usage?.outputTokens ?? 0;
+        const turnTokens = inputTokens + outputTokens;
+        session.tokensUsed += turnTokens;
 
-            // 详细日志：每轮的 token 消耗
+        console.log(
+          `[Validator-Detail] Issue="${currentIssue?.title?.slice(0, 30)}" Round=${currentRound} ` +
+            `Tokens: input=${inputTokens}, output=${outputTokens}, total=${turnTokens}, ` +
+            `session_total=${session.tokensUsed}`
+        );
+
+        if (event.status === 'success') {
+          const responseText = event.text || lastAssistantText;
+          const response = this.parseResponse(responseText);
+
+          if (!response) {
+            if (currentRound === 1) {
+              completeCurrentIssue(
+                this.createUncertainIssue(currentIssue!, 'Validator response could not be parsed')
+              );
+            } else {
+              const prevResponse = currentResponses[currentResponses.length - 1]!;
+              completeCurrentIssue(
+                this.responseToValidatedIssue(
+                  prevResponse,
+                  currentIssue!,
+                  'Challenge round parse failed'
+                )
+              );
+            }
+            await advanceToNextIssue();
+            continue;
+          }
+
+          currentResponses.push(response);
+          const maxRoundsForThisIssue = this.getMaxRoundsForIssue(currentIssue!);
+
+          this.options.callbacks?.onRoundComplete?.(
+            currentIssue!.id,
+            currentIssue!.title,
+            currentRound,
+            maxRoundsForThisIssue,
+            response.validation_status
+          );
+
+          if (this.options.verbose) {
             console.log(
-              `[Validator-Detail] Issue="${currentIssue?.title?.slice(0, 30)}" Round=${currentRound} ` +
-                `Tokens: input=${inputTokens}, output=${outputTokens}, total=${turnTokens}, ` +
-                `session_total=${session.tokensUsed}`
+              `[StreamingValidator] ${currentIssue!.id} Round ${currentRound}/${maxRoundsForThisIssue}: ${response.validation_status}`
             );
+          }
 
-            const responseText = resultMessage.result || lastAssistantText;
-            const response = this.parseResponse(responseText);
+          let shouldContinueChallenge = false;
 
-            if (!response) {
-              // Parse failed
-              if (currentRound === 1) {
-                completeCurrentIssue(this.createUncertainIssue(currentIssue!, '验证响应解析失败'));
-              } else {
-                // Use previous response
-                const prevResponse = currentResponses[currentResponses.length - 1]!;
-                completeCurrentIssue(
-                  this.responseToValidatedIssue(prevResponse, currentIssue!, '后续轮次解析失败')
-                );
+          if (this.options.challengeMode && currentRound < maxRoundsForThisIssue) {
+            if (currentRound >= 2) {
+              const prevResponse = currentResponses[currentResponses.length - 2]!;
+              if (prevResponse.validation_status !== response.validation_status) {
+                shouldContinueChallenge = true;
               }
             } else {
-              currentResponses.push(response);
-
-              // Check if challenge mode should continue
-              const maxRoundsForThisIssue = this.getMaxRoundsForIssue(currentIssue!);
-
-              // Notify round completion
-              this.options.callbacks?.onRoundComplete?.(
-                currentIssue!.id,
-                currentIssue!.title,
-                currentRound,
-                maxRoundsForThisIssue,
-                response.validation_status
-              );
-
-              if (this.options.verbose) {
-                console.log(
-                  `[StreamingValidator] ${currentIssue!.id} Round ${currentRound}/${maxRoundsForThisIssue}: ${response.validation_status}`
-                );
-              }
-
-              // Check if challenge mode should continue
-              let shouldContinueChallenge = false;
-
-              if (this.options.challengeMode && currentRound < maxRoundsForThisIssue) {
-                if (currentRound >= 2) {
-                  const prevResponse = currentResponses[currentResponses.length - 2]!;
-                  if (prevResponse.validation_status !== response.validation_status) {
-                    // Responses differ, continue challenging
-                    shouldContinueChallenge = true;
-                  }
-                  // If they agree, we're done with this issue
-                } else {
-                  // Round 1 complete, do challenge round (only if maxRounds > 1)
-                  shouldContinueChallenge = maxRoundsForThisIssue > 1;
-                }
-              }
-
-              if (shouldContinueChallenge) {
-                // Send challenge
-                currentRound++;
-
-                const challengePrompt = this.buildChallengePrompt(
-                  currentIssue!,
-                  response,
-                  currentRound,
-                  currentResponses.length >= 2
-                    ? currentResponses[currentResponses.length - 2]
-                    : undefined
-                );
-                sendMessage(challengePrompt);
-              } else {
-                // Issue validation complete
-                let validatedIssue: ValidatedIssue;
-
-                if (currentRound >= maxRoundsForThisIssue && currentResponses.length > 1) {
-                  // Use majority vote when max rounds reached with multiple responses
-                  validatedIssue = this.getFinalDecisionFromResponses(
-                    currentResponses,
-                    currentIssue!
-                  );
-                } else {
-                  const note =
-                    currentRound >= 2
-                      ? '两轮验证一致'
-                      : maxRoundsForThisIssue === 1
-                        ? '单轮验证'
-                        : undefined;
-                  validatedIssue = this.responseToValidatedIssue(response, currentIssue!, note);
-                }
-
-                // 详细日志：Issue 验证完成汇总
-                const roundHistory = currentResponses
-                  .map((r, i) => `R${i + 1}:${r.validation_status}`)
-                  .join(' → ');
-                console.log(
-                  `[Validator-Summary] Issue="${currentIssue?.title?.slice(0, 40)}" ` +
-                    `Rounds=${currentRound} History=[${roundHistory}] ` +
-                    `Final=${validatedIssue.validation_status} SessionTokens=${session.tokensUsed}`
-                );
-
-                completeCurrentIssue(validatedIssue);
-
-                // Get next issue
-                const nextIssue = await getNextIssue();
-                if (!nextIssue) {
-                  // No more issues, end session
-                  endSession();
-                } else {
-                  // Start validating next issue in same session
-                  currentIssue = nextIssue;
-                  currentRound = 1;
-                  currentResponses = [];
-
-                  const nextPrompt = buildIssuePrompt(nextIssue, false);
-                  sendMessage(nextPrompt);
-                }
-              }
+              shouldContinueChallenge = maxRoundsForThisIssue > 1;
             }
-          } else {
-            // Error in result
-            console.error(
-              `[StreamingValidator] Session ${session.file} error: ${resultMessage.subtype}`
+          }
+
+          if (shouldContinueChallenge) {
+            currentRound++;
+
+            const challengePrompt = this.buildChallengePrompt(
+              currentIssue!,
+              response,
+              currentRound,
+              currentResponses.length >= 2
+                ? currentResponses[currentResponses.length - 2]
+                : undefined
             );
+            sendMessage(challengePrompt);
+            continue;
+          }
 
-            if (currentIssue) {
-              if (currentResponses.length > 0) {
-                completeCurrentIssue(
-                  this.responseToValidatedIssue(
-                    currentResponses[currentResponses.length - 1]!,
-                    currentIssue,
-                    '验证中断'
-                  )
-                );
-              } else {
-                completeCurrentIssue(this.createUncertainIssue(currentIssue, '验证失败'));
-              }
-            }
+          let validatedIssue: ValidatedIssue;
 
-            endSession();
+          if (currentRound >= maxRoundsForThisIssue && currentResponses.length > 1) {
+            validatedIssue = this.getFinalDecisionFromResponses(currentResponses, currentIssue!);
+          } else {
+            const note =
+              currentRound >= 2
+                ? 'Multi-round validation'
+                : maxRoundsForThisIssue === 1
+                  ? 'Single-round validation'
+                  : undefined;
+            validatedIssue = this.responseToValidatedIssue(response, currentIssue!, note);
+          }
+
+          const roundHistory = currentResponses
+            .map((r, i) => `R${i + 1}:${r.validation_status}`)
+            .join(' -> ');
+          console.log(
+            `[Validator-Summary] Issue="${currentIssue?.title?.slice(0, 40)}" ` +
+              `Rounds=${currentRound} History=[${roundHistory}] ` +
+              `Final=${validatedIssue.validation_status} SessionTokens=${session.tokensUsed}`
+          );
+
+          completeCurrentIssue(validatedIssue);
+          await advanceToNextIssue();
+          continue;
+        }
+
+        console.error(`[StreamingValidator] Session ${session.file} error: ${event.status}`);
+
+        if (currentIssue) {
+          if (currentResponses.length > 0) {
+            completeCurrentIssue(
+              this.responseToValidatedIssue(
+                currentResponses[currentResponses.length - 1]!,
+                currentIssue,
+                'Validation interrupted'
+              )
+            );
+          } else {
+            completeCurrentIssue(this.createUncertainIssue(currentIssue, 'Validation failed'));
           }
         }
+
+        endSession();
       }
     } catch (error) {
       console.error(`[StreamingValidator] Session ${session.file} exception:`, error);
 
-      // Collect issues that need retry
       const issuesToRetry: RawIssue[] = [];
 
-      // Current issue needs retry if no valid response yet
       if (currentIssue) {
         if (currentResponses.length > 0) {
-          // Had some responses, use the last one
           completeCurrentIssue(
             this.responseToValidatedIssue(
               currentResponses[currentResponses.length - 1]!,
               currentIssue,
-              '验证异常(部分完成)'
+              'Validation session crashed'
             )
           );
         } else {
-          // No responses yet, queue for retry
           issuesToRetry.push(currentIssue);
         }
       }
 
-      // Collect remaining queued issues for retry
       while (session.queue.length > 0) {
         issuesToRetry.push(session.queue.shift()!);
       }
 
-      // Check if we should retry
       const retryCount = session.crashRetryCount ?? 0;
       if (issuesToRetry.length > 0 && retryCount < MAX_SESSION_CRASH_RETRIES) {
         console.log(
           `[StreamingValidator] Session ${session.file} crashed, attempting recovery (retry ${retryCount + 1}/${MAX_SESSION_CRASH_RETRIES})`
         );
-
-        // Mark session as closed
         session.isProcessing = false;
         session.isClosed = true;
-
-        // Start a new recovery session
         this.startRecoverySession(session.file, issuesToRetry, retryCount + 1);
         return;
       }
 
-      // Max retries exceeded, mark remaining as uncertain
       if (issuesToRetry.length > 0) {
         console.warn(
           `[StreamingValidator] Session ${session.file} max retries exceeded, marking ${issuesToRetry.length} issues as uncertain`
         );
         for (const issue of issuesToRetry) {
-          const uncertainIssue = this.createUncertainIssue(issue, '会话崩溃且重试失败');
+          const uncertainIssue = this.createUncertainIssue(
+            issue,
+            'Session crashed after maximum retries'
+          );
           session.results.push(uncertainIssue);
           this.completedCount++;
           this.options.callbacks?.onIssueValidated?.(uncertainIssue);
@@ -878,18 +842,13 @@ export class StreamingValidator {
         }
       }
     } finally {
-      // 先移除信号处理器，防止 finally 清理时触发
-      process.off('SIGTERM', sigtermHandler);
-      process.off('SIGINT', sigintHandler);
+      if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
+      if (sigintHandler) process.off('SIGINT', sigintHandler);
 
-      // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
-      if (queryStream) {
+      if (execution) {
         try {
-          // 调用迭代器的 return() 方法触发 SDK 内部的 cleanup
-          // 这会导致 transport.close() 被调用，从而移除 process.on('exit') 监听器
-          await queryStream.return?.(undefined);
+          await execution.close();
         } catch (cleanupError) {
-          // 忽略清理过程中的错误
           if (this.options.verbose) {
             console.warn(
               `[StreamingValidator] Cleanup warning for session ${session.file}:`,

@@ -13,11 +13,11 @@ import { join } from 'node:path';
  * Configuration structure
  */
 export interface ArgusConfig {
-  /** Anthropic API key */
+  /** Stored Claude-compatible API key fallback */
   apiKey?: string;
-  /** Custom base URL (for proxies) */
+  /** Stored Claude-compatible base URL fallback */
   baseUrl?: string;
-  /** Model to use */
+  /** Shared default model fallback */
   model?: string;
 }
 
