@@ -139,6 +139,8 @@ describe('fix verifier runtime bridge', () => {
     expect(result.total_verified).toBe(2);
     expect(result.by_status.fixed).toBe(1);
     expect(result.by_status.missed).toBe(1);
+    expect(result.input_tokens_used).toBe(13);
+    expect(result.output_tokens_used).toBe(8);
     expect(result.tokens_used).toBe(21);
     expect(result.results).toHaveLength(2);
 

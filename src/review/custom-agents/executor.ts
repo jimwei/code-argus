@@ -245,6 +245,8 @@ export async function executeCustomAgent(
   );
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
+  let inputTokensUsed = 0;
+  let outputTokensUsed = 0;
   let tokensUsed = 0;
   let execution: RuntimeExecution | null = null;
   let sigtermHandler: (() => void) | null = null;
@@ -283,7 +285,9 @@ export async function executeCustomAgent(
       }
 
       if (event.usage) {
-        tokensUsed = event.usage.inputTokens + event.usage.outputTokens;
+        inputTokensUsed = event.usage.inputTokens;
+        outputTokensUsed = event.usage.outputTokens;
+        tokensUsed = inputTokensUsed + outputTokensUsed;
       }
 
       if (event.status !== 'success' && options.verbose) {
@@ -295,6 +299,8 @@ export async function executeCustomAgent(
       agent_id: agent.id,
       agent_name: agent.name,
       issues,
+      input_tokens_used: inputTokensUsed,
+      output_tokens_used: outputTokensUsed,
       tokens_used: tokensUsed,
       execution_time_ms: Date.now() - startTime,
     };
@@ -320,6 +326,8 @@ export async function executeCustomAgent(
       agent_id: agent.id,
       agent_name: agent.name,
       issues,
+      input_tokens_used: inputTokensUsed,
+      output_tokens_used: outputTokensUsed,
       tokens_used: tokensUsed,
       execution_time_ms: Date.now() - startTime,
       error: errorMessage,

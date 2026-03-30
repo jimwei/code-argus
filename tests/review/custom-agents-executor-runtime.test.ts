@@ -103,6 +103,8 @@ describe('custom agent executor runtime bridge', () => {
       suggestion: 'Handle and surface network failures.',
       source_agent: 'custom:test-agent',
     });
+    expect(result.input_tokens_used).toBe(11);
+    expect(result.output_tokens_used).toBe(7);
     expect(result.tokens_used).toBe(18);
     expect(closeMock).toHaveBeenCalledTimes(1);
   });

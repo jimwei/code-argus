@@ -39,6 +39,10 @@ export interface DeduplicationCheckResult {
   reason?: string;
   /** Whether LLM was used for this check */
   usedLLM: boolean;
+  /** Input tokens used (if LLM was called) */
+  inputTokensUsed: number;
+  /** Output tokens used (if LLM was called) */
+  outputTokensUsed: number;
   /** Tokens used (if LLM was called) */
   tokensUsed: number;
 }
@@ -54,6 +58,8 @@ export class RealtimeDeduplicator {
   };
   private runtime?: Pick<AgentRuntime, 'generateText'>;
   private acceptedIssues: RawIssue[] = [];
+  private totalInputTokensUsed = 0;
+  private totalOutputTokensUsed = 0;
   private totalTokensUsed = 0;
   private duplicatesFound = 0;
   /** Lock to ensure sequential processing of issues (prevents race conditions) */
@@ -102,6 +108,8 @@ export class RealtimeDeduplicator {
       return {
         isDuplicate: false,
         usedLLM: false,
+        inputTokensUsed: 0,
+        outputTokensUsed: 0,
         tokensUsed: 0,
       };
     }
@@ -114,6 +122,8 @@ export class RealtimeDeduplicator {
     }
 
     const llmResult = await this.checkWithLLM(issue, potentialDuplicates);
+    this.totalInputTokensUsed += llmResult.inputTokensUsed;
+    this.totalOutputTokensUsed += llmResult.outputTokensUsed;
     this.totalTokensUsed += llmResult.tokensUsed;
 
     if (llmResult.isDuplicate && llmResult.duplicateOf) {
@@ -197,7 +207,9 @@ export class RealtimeDeduplicator {
           prompt,
         });
 
-        const tokensUsed = (response.usage?.inputTokens ?? 0) + (response.usage?.outputTokens ?? 0);
+        const inputTokensUsed = response.usage?.inputTokens ?? 0;
+        const outputTokensUsed = response.usage?.outputTokens ?? 0;
+        const tokensUsed = inputTokensUsed + outputTokensUsed;
         const resultText = response.text;
         const duration = Date.now() - attemptStart;
 
@@ -205,7 +217,12 @@ export class RealtimeDeduplicator {
           `[RealtimeDedup] LLM 调用成功: attempt=${attempt}, duration=${duration}ms, tokensUsed=${tokensUsed}`
         );
 
-        return this.parseLLMResponse(resultText, potentialDuplicates, tokensUsed);
+        return this.parseLLMResponse(
+          resultText,
+          potentialDuplicates,
+          inputTokensUsed,
+          outputTokensUsed
+        );
       } catch (error) {
         const duration = Date.now() - attemptStart;
         const isRetryable = this.isRetryableError(error);
@@ -239,6 +256,8 @@ export class RealtimeDeduplicator {
     return {
       isDuplicate: false,
       usedLLM: true,
+      inputTokensUsed: 0,
+      outputTokensUsed: 0,
       tokensUsed: 0,
     };
   }
@@ -369,8 +388,10 @@ Output JSON only:
   private parseLLMResponse(
     responseText: string,
     potentialDuplicates: RawIssue[],
-    tokensUsed: number
+    inputTokensUsed: number,
+    outputTokensUsed: number
   ): DeduplicationCheckResult {
+    const tokensUsed = inputTokensUsed + outputTokensUsed;
     try {
       const jsonStr = extractJSON(responseText, { verbose: this.options.verbose });
       if (!jsonStr) {
@@ -387,6 +408,8 @@ Output JSON only:
         return {
           isDuplicate: false,
           usedLLM: true,
+          inputTokensUsed,
+          outputTokensUsed,
           tokensUsed,
         };
       }
@@ -404,6 +427,8 @@ Output JSON only:
         return {
           isDuplicate: false,
           usedLLM: true,
+          inputTokensUsed,
+          outputTokensUsed,
           tokensUsed,
         };
       }
@@ -413,6 +438,8 @@ Output JSON only:
         duplicateOf,
         reason: parsed.reason,
         usedLLM: true,
+        inputTokensUsed,
+        outputTokensUsed,
         tokensUsed,
       };
     } catch (error) {
@@ -424,6 +451,8 @@ Output JSON only:
       return {
         isDuplicate: false,
         usedLLM: true,
+        inputTokensUsed,
+        outputTokensUsed,
         tokensUsed,
       };
     }
@@ -442,11 +471,15 @@ Output JSON only:
   getStats(): {
     accepted: number;
     deduplicated: number;
+    inputTokensUsed: number;
+    outputTokensUsed: number;
     tokensUsed: number;
   } {
     return {
       accepted: this.acceptedIssues.length,
       deduplicated: this.duplicatesFound,
+      inputTokensUsed: this.totalInputTokensUsed,
+      outputTokensUsed: this.totalOutputTokensUsed,
       tokensUsed: this.totalTokensUsed,
     };
   }
