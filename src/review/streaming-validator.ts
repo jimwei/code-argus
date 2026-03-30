@@ -25,6 +25,7 @@ import {
 } from './constants.js';
 import { extractJSON } from './utils/json-parser.js';
 import { buildValidationSystemPrompt } from './prompts/validation.js';
+import { getHighSignalValidationPolicy } from './high-signal-policy.js';
 
 /** Maximum number of times to retry a crashed session */
 const MAX_SESSION_CRASH_RETRIES = 2;
@@ -206,26 +207,30 @@ export class StreamingValidator {
     // Notify issue discovered
     this.options.callbacks?.onIssueDiscovered?.(issue);
 
-    // Confidence filter - auto-reject low confidence non-critical issues
-    if (issue.confidence < MIN_CONFIDENCE_FOR_VALIDATION && issue.severity !== 'critical') {
-      const rejected = this.createAutoRejectedIssue(issue);
+    const validationPolicy = getHighSignalValidationPolicy(issue, this.options.maxChallengeRounds);
+    const shouldRejectByConfidence =
+      issue.severity !== 'critical' && issue.confidence < validationPolicy.minConfidence;
+
+    if (!validationPolicy.shouldValidate || shouldRejectByConfidence) {
+      const rejectionReason =
+        validationPolicy.rejectionReason ||
+        `置信度过低 (${issue.confidence} < ${validationPolicy.minConfidence})`;
+      const rejected = this.createAutoRejectedIssue(issue, rejectionReason);
+      rejected.grounding_evidence.related_context = rejectionReason;
+      rejected.grounding_evidence.reasoning = rejectionReason;
+      rejected.rejection_reason = rejectionReason;
       this.completedCount++;
       this.totalEnqueued++;
 
       // Notify via callbacks
-      this.options.callbacks?.onAutoRejected?.(
-        issue,
-        `置信度 ${issue.confidence} < ${MIN_CONFIDENCE_FOR_VALIDATION}`
-      );
+      this.options.callbacks?.onAutoRejected?.(issue, rejectionReason);
 
       if (this.options.onProgress) {
         this.options.onProgress(this.completedCount, this.totalEnqueued, issue.id, 'rejected');
       }
 
       if (this.options.verbose) {
-        console.log(
-          `[StreamingValidator] Auto-rejected ${issue.id}: confidence ${issue.confidence} < ${MIN_CONFIDENCE_FOR_VALIDATION}`
-        );
+        console.log(`[StreamingValidator] Auto-rejected ${issue.id}: ${rejectionReason}`);
       }
 
       return rejected;
@@ -905,8 +910,9 @@ export class StreamingValidator {
    *
    * All issues use the same number of rounds for consistent validation quality.
    */
-  private getMaxRoundsForIssue(_issue: RawIssue): number {
-    return this.options.maxChallengeRounds;
+  private getMaxRoundsForIssue(issue: RawIssue): number {
+    const policy = getHighSignalValidationPolicy(issue, this.options.maxChallengeRounds);
+    return Math.max(policy.maxChallengeRounds, 1);
   }
 
   private buildUserPrompt(issue: RawIssue): string {
@@ -1078,7 +1084,10 @@ ${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`
     };
   }
 
-  private createAutoRejectedIssue(issue: RawIssue): ValidatedIssue {
+  private createAutoRejectedIssue(issue: RawIssue, reason?: string): ValidatedIssue {
+    void reason;
+    const resolvedReason = reason || '置信度过低，自动拒绝';
+    void resolvedReason;
     return {
       id: issue.id,
       file: issue.file,
