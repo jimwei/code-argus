@@ -17,6 +17,7 @@ import type {
   AgentType,
   FixVerificationSummary,
   FixVerificationResult,
+  ReviewMetadata,
 } from './types.js';
 import { groupBySeverity } from './aggregator.js';
 
@@ -316,7 +317,7 @@ export function generateReport(
   checklist: ChecklistItem[],
   metrics: ReviewMetrics,
   context?: ReviewContext,
-  metadata?: { review_time_ms: number; tokens_used: number; agents_used: AgentType[] },
+  metadata?: ReviewMetadata,
   language: 'en' | 'zh' = 'zh',
   fixVerification?: FixVerificationSummary
 ): ReviewReport {
@@ -328,6 +329,8 @@ export function generateReport(
     metrics,
     metadata: metadata || {
       review_time_ms: 0,
+      input_tokens_used: 0,
+      output_tokens_used: 0,
       tokens_used: 0,
       agents_used: [] as AgentType[],
     },

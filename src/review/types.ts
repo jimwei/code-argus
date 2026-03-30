@@ -363,6 +363,10 @@ export interface FixVerificationSummary {
   results: FixVerificationResult[];
   /** Time spent on verification in milliseconds */
   verification_time_ms: number;
+  /** Input tokens used for verification */
+  input_tokens_used: number;
+  /** Output tokens used for verification */
+  output_tokens_used: number;
   /** Tokens used for verification */
   tokens_used: number;
 }
@@ -451,6 +455,10 @@ export interface ReviewMetrics {
 export interface ReviewMetadata {
   /** Total review time in milliseconds */
   review_time_ms: number;
+  /** Total input tokens used */
+  input_tokens_used: number;
+  /** Total output tokens used */
+  output_tokens_used: number;
   /** Total tokens used */
   tokens_used: number;
   /** Agents that were used */
@@ -491,6 +499,10 @@ export interface AgentResult {
   issues: RawIssue[];
   /** Checklist results */
   checklist: ChecklistItem[];
+  /** Input tokens used by this agent */
+  input_tokens_used: number;
+  /** Output tokens used by this agent */
+  output_tokens_used: number;
   /** Tokens used by this agent */
   tokens_used: number;
 }

@@ -126,6 +126,8 @@ describe('streaming validator runtime bridge', () => {
       })
     );
 
+    expect(result.inputTokensUsed).toBe(9);
+    expect(result.outputTokensUsed).toBe(6);
     expect(result.tokensUsed).toBe(15);
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]).toMatchObject({
@@ -260,6 +262,8 @@ describe('streaming validator runtime bridge', () => {
     const result = await validator.flush();
 
     expect(result.issues).toHaveLength(0);
+    expect(result.inputTokensUsed).toBe(0);
+    expect(result.outputTokensUsed).toBe(0);
     expect(result.tokensUsed).toBe(0);
     expect(createRuntimeFromEnvMock).not.toHaveBeenCalled();
     expect(executeMock).not.toHaveBeenCalled();

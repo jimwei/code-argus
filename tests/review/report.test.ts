@@ -188,6 +188,32 @@ describe('generateReport', () => {
     expect(report.checklist).toHaveLength(1);
     expect(report.metrics).toBeDefined();
   });
+
+  it('preserves split token metadata alongside the total', () => {
+    const issues: ValidatedIssue[] = [createMockValidatedIssue({ severity: 'warning' })];
+    const metrics = calculateMetrics([createMockRawIssue()], issues);
+
+    const report = generateReport(
+      issues,
+      [],
+      metrics,
+      undefined,
+      {
+        review_time_ms: 3210,
+        input_tokens_used: 120,
+        output_tokens_used: 45,
+        tokens_used: 165,
+        agents_used: ['logic-reviewer'],
+      },
+      'en'
+    );
+
+    expect(report.metadata.review_time_ms).toBe(3210);
+    expect(report.metadata.input_tokens_used).toBe(120);
+    expect(report.metadata.output_tokens_used).toBe(45);
+    expect(report.metadata.tokens_used).toBe(165);
+    expect(report.metadata.agents_used).toEqual(['logic-reviewer']);
+  });
 });
 
 describe('formatAsJson', () => {

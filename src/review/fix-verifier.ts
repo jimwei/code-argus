@@ -85,6 +85,8 @@ export async function executeFixVerifier(
   const startTime = Date.now();
   const screeningResults: ScreeningResult[] = [];
   const verificationResults: FixVerificationResult[] = [];
+  let inputTokensUsed = 0;
+  let outputTokensUsed = 0;
   let tokensUsed = 0;
   const langLabel = (options.language ?? 'zh') === 'en' ? 'English' : 'Chinese';
 
@@ -267,7 +269,9 @@ Call this after deep investigation of unresolved/unclear issues.`,
       }
 
       if (event.usage) {
-        tokensUsed = event.usage.inputTokens + event.usage.outputTokens;
+        inputTokensUsed = event.usage.inputTokens;
+        outputTokensUsed = event.usage.outputTokens;
+        tokensUsed = inputTokensUsed + outputTokensUsed;
       }
 
       if (event.status !== 'success' && verbose) {
@@ -338,6 +342,8 @@ Call this after deep investigation of unresolved/unclear issues.`,
     by_status: byStatus,
     results: verificationResults,
     verification_time_ms: Date.now() - startTime,
+    input_tokens_used: inputTokensUsed,
+    output_tokens_used: outputTokensUsed,
     tokens_used: tokensUsed,
   };
 

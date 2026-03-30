@@ -141,6 +141,10 @@ interface FileSession {
   isClosed: boolean;
   /** Tokens used by this session */
   tokensUsed: number;
+  /** Input tokens used by this session */
+  inputTokensUsed: number;
+  /** Output tokens used by this session */
+  outputTokensUsed: number;
   /** Validated issues from this session */
   results: ValidatedIssue[];
   /** Idle timeout handle */
@@ -294,9 +298,12 @@ export class StreamingValidator {
    * Wait for all validation to complete and return results
    * @param timeoutMs Optional timeout in milliseconds (default: 30 minutes)
    */
-  async flush(
-    timeoutMs: number = 1800000
-  ): Promise<{ issues: ValidatedIssue[]; tokensUsed: number }> {
+  async flush(timeoutMs: number = 1800000): Promise<{
+    issues: ValidatedIssue[];
+    tokensUsed: number;
+    inputTokensUsed: number;
+    outputTokensUsed: number;
+  }> {
     this.markAgentsComplete();
 
     const startTime = Date.now();
@@ -346,10 +353,14 @@ export class StreamingValidator {
     // Collect all results (including partial if timed out)
     const allIssues: ValidatedIssue[] = [];
     let totalTokens = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
 
     for (const session of this.sessions.values()) {
       allIssues.push(...session.results);
       totalTokens += session.tokensUsed;
+      totalInputTokens += session.inputTokensUsed;
+      totalOutputTokens += session.outputTokensUsed;
     }
 
     if (this.options.verbose) {
@@ -360,6 +371,8 @@ export class StreamingValidator {
 
     return {
       issues: allIssues,
+      inputTokensUsed: totalInputTokens,
+      outputTokensUsed: totalOutputTokens,
       tokensUsed: totalTokens,
     };
   }
@@ -386,6 +399,8 @@ export class StreamingValidator {
         isProcessing: false,
         isClosed: false,
         tokensUsed: 0,
+        inputTokensUsed: 0,
+        outputTokensUsed: 0,
         results: [],
       };
       this.sessions.set(file, session);
@@ -668,6 +683,8 @@ export class StreamingValidator {
         const inputTokens = event.usage?.inputTokens ?? 0;
         const outputTokens = event.usage?.outputTokens ?? 0;
         const turnTokens = inputTokens + outputTokens;
+        session.inputTokensUsed += inputTokens;
+        session.outputTokensUsed += outputTokens;
         session.tokensUsed += turnTokens;
 
         console.log(
@@ -885,6 +902,8 @@ export class StreamingValidator {
       isProcessing: false,
       isClosed: false,
       tokensUsed: 0,
+      inputTokensUsed: 0,
+      outputTokensUsed: 0,
       results: [],
       crashRetryCount: retryCount,
     };
@@ -895,6 +914,8 @@ export class StreamingValidator {
       // Preserve results from old session
       recoverySession.results = [...oldSession.results];
       recoverySession.tokensUsed = oldSession.tokensUsed;
+      recoverySession.inputTokensUsed = oldSession.inputTokensUsed;
+      recoverySession.outputTokensUsed = oldSession.outputTokensUsed;
     }
 
     this.sessions.set(file, recoverySession);

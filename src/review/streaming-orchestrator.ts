@@ -202,6 +202,8 @@ export class StreamingReviewOrchestrator {
    */
   async review(input: OrchestratorInput): Promise<ReviewReport> {
     const startTime = Date.now();
+    let inputTokensUsed = 0;
+    let outputTokensUsed = 0;
     let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
     let managedWorktreeRef: ManagedWorktreeInfo | null = null;
@@ -585,6 +587,8 @@ export class StreamingReviewOrchestrator {
         this.progress.agent('fix-verifier', 'error', String(fixVerifierSettled.reason));
       } else if (fixVerifierSettled.value) {
         this.fixVerificationResults = fixVerifierSettled.value;
+        inputTokensUsed += this.fixVerificationResults.input_tokens_used;
+        outputTokensUsed += this.fixVerificationResults.output_tokens_used;
         tokensUsed += this.fixVerificationResults.tokens_used;
         const fv = this.fixVerificationResults;
         this.progress.agent(
@@ -595,12 +599,29 @@ export class StreamingReviewOrchestrator {
       }
 
       // Collect results from built-in agents
-      const { checklists, tokens: agentTokens } = builtInResult;
+      const {
+        checklists,
+        tokens: agentTokens,
+        inputTokensUsed: agentInputTokens,
+        outputTokensUsed: agentOutputTokens,
+      } = builtInResult;
+      inputTokensUsed += agentInputTokens;
+      outputTokensUsed += agentOutputTokens;
       tokensUsed += agentTokens;
 
       // Collect results from custom agents
       if (customAgentResults.length > 0) {
+        const customAgentInputTokens = customAgentResults.reduce(
+          (sum, r) => sum + r.input_tokens_used,
+          0
+        );
+        const customAgentOutputTokens = customAgentResults.reduce(
+          (sum, r) => sum + r.output_tokens_used,
+          0
+        );
         const customAgentTokens = customAgentResults.reduce((sum, r) => sum + r.tokens_used, 0);
+        inputTokensUsed += customAgentInputTokens;
+        outputTokensUsed += customAgentOutputTokens;
         tokensUsed += customAgentTokens;
 
         const totalCustomIssues = customAgentResults.reduce((sum, r) => sum + r.issues.length, 0);
@@ -619,6 +640,8 @@ export class StreamingReviewOrchestrator {
 
       // Flush streaming validator and get results
       let validatedIssues: ValidatedIssue[] = [];
+      let validationInputTokens = 0;
+      let validationOutputTokens = 0;
       let validationTokens = 0;
       if (this.streamingValidator) {
         // Start a status polling interval to show progress while waiting
@@ -634,7 +657,11 @@ export class StreamingReviewOrchestrator {
         try {
           const validationResult = await this.streamingValidator.flush();
           validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
+          validationInputTokens = validationResult.inputTokensUsed;
+          validationOutputTokens = validationResult.outputTokensUsed;
           validationTokens = validationResult.tokensUsed;
+          inputTokensUsed += validationInputTokens;
+          outputTokensUsed += validationOutputTokens;
           tokensUsed += validationTokens;
         } finally {
           globalThis.clearInterval(statusInterval);
@@ -646,7 +673,11 @@ export class StreamingReviewOrchestrator {
 
         // Get deduplication stats
         const dedupStats = this.realtimeDeduplicator?.getStats();
+        const dedupInputTokens = dedupStats?.inputTokensUsed || 0;
+        const dedupOutputTokens = dedupStats?.outputTokensUsed || 0;
         const dedupTokens = dedupStats?.tokensUsed || 0;
+        inputTokensUsed += dedupInputTokens;
+        outputTokensUsed += dedupOutputTokens;
         tokensUsed += dedupTokens;
 
         this.progress.validationSummary({
@@ -715,6 +746,8 @@ export class StreamingReviewOrchestrator {
 
       const metadata = {
         review_time_ms: Date.now() - startTime,
+        input_tokens_used: inputTokensUsed,
+        output_tokens_used: outputTokensUsed,
         tokens_used: tokensUsed,
         agents_used: agentsToRun,
       };
@@ -768,6 +801,8 @@ export class StreamingReviewOrchestrator {
    */
   async reviewByRefs(input: ReviewInput): Promise<ReviewReport> {
     const startTime = Date.now();
+    let inputTokensUsed = 0;
+    let outputTokensUsed = 0;
     let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
     let managedWorktreeRef: ManagedWorktreeInfo | null = null;
@@ -1119,6 +1154,8 @@ export class StreamingReviewOrchestrator {
           },
           metadata: {
             review_time_ms: Date.now() - startTime,
+            input_tokens_used: 0,
+            output_tokens_used: 0,
             tokens_used: 0,
             agents_used: [],
           },
@@ -1266,6 +1303,8 @@ export class StreamingReviewOrchestrator {
         this.progress.agent('fix-verifier', 'error', String(fixVerifierSettled.reason));
       } else if (fixVerifierSettled.value) {
         this.fixVerificationResults = fixVerifierSettled.value;
+        inputTokensUsed += this.fixVerificationResults.input_tokens_used;
+        outputTokensUsed += this.fixVerificationResults.output_tokens_used;
         tokensUsed += this.fixVerificationResults.tokens_used;
         const fv = this.fixVerificationResults;
         this.progress.agent(
@@ -1276,12 +1315,29 @@ export class StreamingReviewOrchestrator {
       }
 
       // Collect results from built-in agents
-      const { checklists, tokens: agentTokens } = builtInResult;
+      const {
+        checklists,
+        tokens: agentTokens,
+        inputTokensUsed: agentInputTokens,
+        outputTokensUsed: agentOutputTokens,
+      } = builtInResult;
+      inputTokensUsed += agentInputTokens;
+      outputTokensUsed += agentOutputTokens;
       tokensUsed += agentTokens;
 
       // Collect results from custom agents
       if (customAgentResults.length > 0) {
+        const customAgentInputTokens = customAgentResults.reduce(
+          (sum, r) => sum + r.input_tokens_used,
+          0
+        );
+        const customAgentOutputTokens = customAgentResults.reduce(
+          (sum, r) => sum + r.output_tokens_used,
+          0
+        );
         const customAgentTokens = customAgentResults.reduce((sum, r) => sum + r.tokens_used, 0);
+        inputTokensUsed += customAgentInputTokens;
+        outputTokensUsed += customAgentOutputTokens;
         tokensUsed += customAgentTokens;
 
         const totalCustomIssues = customAgentResults.reduce((sum, r) => sum + r.issues.length, 0);
@@ -1300,6 +1356,8 @@ export class StreamingReviewOrchestrator {
 
       // Flush streaming validator and get results
       let validatedIssues: ValidatedIssue[] = [];
+      let validationInputTokens = 0;
+      let validationOutputTokens = 0;
       let validationTokens = 0;
       if (this.streamingValidator) {
         // Start a status polling interval to show progress while waiting
@@ -1315,7 +1373,11 @@ export class StreamingReviewOrchestrator {
         try {
           const validationResult = await this.streamingValidator.flush();
           validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
+          validationInputTokens = validationResult.inputTokensUsed;
+          validationOutputTokens = validationResult.outputTokensUsed;
           validationTokens = validationResult.tokensUsed;
+          inputTokensUsed += validationInputTokens;
+          outputTokensUsed += validationOutputTokens;
           tokensUsed += validationTokens;
         } finally {
           globalThis.clearInterval(statusInterval);
@@ -1327,7 +1389,11 @@ export class StreamingReviewOrchestrator {
 
         // Get deduplication stats
         const dedupStats = this.realtimeDeduplicator?.getStats();
+        const dedupInputTokens = dedupStats?.inputTokensUsed || 0;
+        const dedupOutputTokens = dedupStats?.outputTokensUsed || 0;
         const dedupTokens = dedupStats?.tokensUsed || 0;
+        inputTokensUsed += dedupInputTokens;
+        outputTokensUsed += dedupOutputTokens;
         tokensUsed += dedupTokens;
 
         this.progress.validationSummary({
@@ -1396,6 +1462,8 @@ export class StreamingReviewOrchestrator {
 
       const metadata = {
         review_time_ms: Date.now() - startTime,
+        input_tokens_used: inputTokensUsed,
+        output_tokens_used: outputTokensUsed,
         tokens_used: tokensUsed,
         agents_used: agentsToRun,
       };
@@ -1899,9 +1967,16 @@ export class StreamingReviewOrchestrator {
     context: ReviewContext,
     reviewRepoPath: string,
     agentsToRun: AgentType[] = this.options.agents
-  ): Promise<{ checklists: ChecklistItem[]; tokens: number }> {
+  ): Promise<{
+    checklists: ChecklistItem[];
+    tokens: number;
+    inputTokensUsed: number;
+    outputTokensUsed: number;
+  }> {
     const standardsText = standardsToText(context.standards);
     let totalTokens = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
     const allChecklists: ChecklistItem[] = [];
 
     // Calculate dynamic maxTurns based on diff size
@@ -2037,6 +2112,8 @@ export class StreamingReviewOrchestrator {
 
       if (res.success) {
         totalTokens += res.result.tokensUsed;
+        totalInputTokens += res.result.inputTokensUsed;
+        totalOutputTokens += res.result.outputTokensUsed;
         allChecklists.push(...res.result.checklists);
 
         // Get issue count for this agent
@@ -2069,6 +2146,8 @@ export class StreamingReviewOrchestrator {
 
     return {
       checklists: allChecklists,
+      inputTokensUsed: totalInputTokens,
+      outputTokensUsed: totalOutputTokens,
       tokens: totalTokens,
     };
   }
@@ -2315,7 +2394,12 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     runtimeToolsFactory: (agentType: AgentType) => RuntimeToolDefinition[],
     reviewRepoPath: string,
     maxTurns: number = 30
-  ): Promise<{ tokensUsed: number; checklists: ChecklistItem[] }> {
+  ): Promise<{
+    tokensUsed: number;
+    inputTokensUsed: number;
+    outputTokensUsed: number;
+    checklists: ChecklistItem[];
+  }> {
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Starting agent: ${agentType}`);
     }
@@ -2355,6 +2439,8 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
     const runtimeTools = runtimeToolsFactory(agentType);
 
+    let inputTokensUsed = 0;
+    let outputTokensUsed = 0;
     let tokensUsed = 0;
     let turnCount = 0;
     let execution: RuntimeExecution | null = null;
@@ -2384,7 +2470,9 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         const inputTokens = event.usage?.inputTokens ?? 0;
         const outputTokens = event.usage?.outputTokens ?? 0;
         if (event.usage) {
-          tokensUsed = inputTokens + outputTokens;
+          inputTokensUsed = inputTokens;
+          outputTokensUsed = outputTokens;
+          tokensUsed = inputTokensUsed + outputTokensUsed;
         }
 
         if (event.status === 'success') {
@@ -2417,7 +2505,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         console.log(`[StreamingOrchestrator] Agent ${agentType} aborted by user`);
-        return { tokensUsed, checklists: [] };
+        return { tokensUsed, inputTokensUsed, outputTokensUsed, checklists: [] };
       }
       console.error(`[StreamingOrchestrator] Agent ${agentType} threw error:`, error);
       throw error;
@@ -2443,6 +2531,8 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
     return {
       tokensUsed,
+      inputTokensUsed,
+      outputTokensUsed,
       checklists: [],
     };
   }
@@ -2520,12 +2610,16 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
     // Collect results from all segments
     let totalTokens = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
     const allChecklists: ChecklistItem[] = [];
     const failedSegments: string[] = [];
 
     for (const { segment, result, error } of segmentResults) {
       if (result) {
         totalTokens += result.tokens;
+        totalInputTokens += result.inputTokensUsed;
+        totalOutputTokens += result.outputTokensUsed;
         allChecklists.push(...result.checklists);
       } else if (error) {
         failedSegments.push(segment.name);
@@ -2553,6 +2647,8 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       try {
         const validationResult = await this.streamingValidator.flush();
         validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
+        totalInputTokens += validationResult.inputTokensUsed;
+        totalOutputTokens += validationResult.outputTokensUsed;
         totalTokens += validationResult.tokensUsed;
       } finally {
         globalThis.clearInterval(statusInterval);
@@ -2560,6 +2656,10 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
       const confirmed = validatedIssues.filter((i) => i.validation_status === 'confirmed').length;
       const rejected = validatedIssues.filter((i) => i.validation_status === 'rejected').length;
+      const dedupStats = this.realtimeDeduplicator?.getStats();
+      totalInputTokens += dedupStats?.inputTokensUsed || 0;
+      totalOutputTokens += dedupStats?.outputTokensUsed || 0;
+      totalTokens += dedupStats?.tokensUsed || 0;
       this.progress.success(`验证完成: ${confirmed} 确认, ${rejected} 拒绝`);
     } else if (this.options.skipValidation) {
       // Use raw issues when validation is skipped
@@ -2603,6 +2703,8 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     const endTime = Date.now();
     const metadata = {
       review_time_ms: endTime - startTime,
+      input_tokens_used: totalInputTokens,
+      output_tokens_used: totalOutputTokens,
       tokens_used: totalTokens,
       agents_used: agentsToRun,
     };

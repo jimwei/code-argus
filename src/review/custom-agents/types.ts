@@ -300,6 +300,16 @@ export interface CustomAgentResult {
   issues: CustomAgentIssue[];
 
   /**
+   * Input tokens used
+   */
+  input_tokens_used: number;
+
+  /**
+   * Output tokens used
+   */
+  output_tokens_used: number;
+
+  /**
    * Tokens used
    */
   tokens_used: number;

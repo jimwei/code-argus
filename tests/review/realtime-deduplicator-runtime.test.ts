@@ -92,5 +92,10 @@ describe('realtime deduplicator runtime bridge', () => {
       })
     );
     expect(anthropicCreateMock).not.toHaveBeenCalled();
+    expect(deduplicator.getStats()).toMatchObject({
+      inputTokensUsed: 6,
+      outputTokensUsed: 3,
+      tokensUsed: 9,
+    });
   });
 });
