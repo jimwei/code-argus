@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod';
+import { getArgusRuntimeType } from '../config/env.js';
 import type {
   ReviewContext,
   ReviewReport,
@@ -80,6 +81,7 @@ import { executeFixVerifier } from './fix-verifier.js';
 import type { FixVerificationSummary, PreviousReviewData } from './types.js';
 import { preprocessDiff, formatDeletedFilesContext, needsSegmentation } from '../diff/index.js';
 import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
+import { getSegmentSizeLimitForRuntime } from '../runtime/limits.js';
 
 /**
  * Default orchestrator options
@@ -1083,7 +1085,7 @@ export class StreamingReviewOrchestrator {
 
       // Check if diff needs segmentation (large PR handling)
       const diffSize = Buffer.byteLength(context.diff.diff, 'utf8');
-      const segmentSizeLimit = 150 * 1024; // 150KB
+      const segmentSizeLimit = getSegmentSizeLimitForRuntime(getArgusRuntimeType());
       const maxDiffSize = MAX_REVIEW_DIFF_SIZE_BYTES;
 
       // Skip review if diff is too large (prevent OOM)

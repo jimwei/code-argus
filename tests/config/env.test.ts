@@ -10,6 +10,7 @@ vi.mock('../../src/config/store.js', () => ({
 
 import {
   getApiKey,
+  getArgusRuntimeType,
   getBaseUrl,
   getModel,
   getRuntimeModel,
@@ -137,5 +138,11 @@ describe('runtime-aware env configuration', () => {
     process.env.ARGUS_MODEL = 'ignored';
 
     expect(() => loadArgusRuntimeConfig()).toThrow('Unsupported ARGUS_RUNTIME: bad-runtime');
+  });
+
+  it('reads the runtime type without requiring provider credentials', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+
+    expect(getArgusRuntimeType()).toBe('openai-responses');
   });
 });
