@@ -42,7 +42,7 @@ export interface ArgusRuntimeConfig {
  */
 export type AuthConfig = ClaudeAuthConfig;
 
-function getRuntime(): ArgusRuntimeType {
+export function getArgusRuntimeType(): ArgusRuntimeType {
   const runtime = process.env.ARGUS_RUNTIME?.trim() || 'claude-agent';
   if (runtime === 'claude-agent' || runtime === 'openai-responses') {
     return runtime;
@@ -138,7 +138,7 @@ function getMainModel(runtime: ArgusRuntimeType): string {
 }
 
 export function loadArgusRuntimeConfig(): ArgusRuntimeConfig {
-  const runtime = getRuntime();
+  const runtime = getArgusRuntimeType();
   const mainModel = getMainModel(runtime);
   const lightModel = process.env.ARGUS_LIGHT_MODEL || mainModel || DEFAULT_LIGHT_MODEL;
   const validatorModel = process.env.ARGUS_VALIDATOR_MODEL || mainModel;
