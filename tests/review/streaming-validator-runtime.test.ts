@@ -115,8 +115,12 @@ describe('streaming validator runtime bridge', () => {
       expect.objectContaining({
         cwd: 'C:\\repo',
         model: 'gpt-5.3-codex',
+        tools: expect.any(Array),
       })
     );
+    expect(
+      executeMock.mock.calls[0]?.[0]?.tools?.map((tool: { name: string }) => tool.name)
+    ).toEqual(['Read', 'Grep', 'Glob']);
     expect(queryMock).not.toHaveBeenCalled();
 
     const runtimeOptions = executeMock.mock.calls[0]?.[0];

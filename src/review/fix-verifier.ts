@@ -6,6 +6,7 @@
  */
 
 import { createRuntimeFromEnv } from '../runtime/factory.js';
+import { createRepoContextTools } from '../runtime/repo-context-tools.js';
 import type { RuntimeExecution, RuntimeToolDefinition } from '../runtime/types.js';
 import { z } from 'zod';
 import type {
@@ -99,6 +100,8 @@ export async function executeFixVerifier(
   progress?.info(`Starting fix verification for ${previousReview.issues.length} issues...`);
 
   const runtime = createRuntimeFromEnv();
+  const repoContextTools =
+    runtime.kind === 'openai-responses' ? createRepoContextTools(repoPath) : [];
   const runtimeTools: RuntimeToolDefinition<any>[] = [
     {
       name: 'report_screening_result',
@@ -226,6 +229,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
         };
       },
     },
+    ...repoContextTools,
   ];
 
   const systemPrompt = buildFixVerifierSystemPrompt(options.language);

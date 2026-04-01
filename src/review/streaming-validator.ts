@@ -26,6 +26,7 @@ import {
 import { extractJSON } from './utils/json-parser.js';
 import { buildValidationSystemPrompt } from './prompts/validation.js';
 import { getHighSignalValidationPolicy } from './high-signal-policy.js';
+import { createRepoContextTools } from '../runtime/repo-context-tools.js';
 
 /** Maximum number of times to retry a crashed session */
 const MAX_SESSION_CRASH_RETRIES = 2;
@@ -622,12 +623,16 @@ export class StreamingValidator {
     let sigintHandler: (() => void) | null = null;
 
     try {
+      const repoContextTools =
+        runtime.kind === 'openai-responses' ? createRepoContextTools(this.options.repoPath) : [];
+
       execution = runtime.execute({
         prompt: messageGenerator(),
         cwd: this.options.repoPath,
         maxTurns,
         model: runtime.config.models.validator,
         settingSources: ['project'],
+        ...(repoContextTools.length > 0 ? { tools: repoContextTools } : {}),
       });
 
       let isCleaningUp = false;

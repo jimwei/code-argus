@@ -129,6 +129,9 @@ describe('fix verifier runtime bridge', () => {
         tools: expect.any(Array),
       })
     );
+    expect(
+      executeMock.mock.calls[0]?.[0]?.tools?.map((tool: { name: string }) => tool.name)
+    ).toEqual(['report_screening_result', 'report_verification_result', 'Read', 'Grep', 'Glob']);
     expect(queryMock).not.toHaveBeenCalled();
 
     const runtimeOptions = executeMock.mock.calls[0]?.[0];
