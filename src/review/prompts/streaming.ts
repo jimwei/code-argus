@@ -238,6 +238,7 @@ export function buildStreamingUserPrompt(
     diff: string;
     intentSummary?: string;
     fileAnalyses?: string;
+    dependencyContextText?: string;
     standardsText?: string;
     /** Custom project-specific rules for this agent */
     projectRules?: string;
@@ -302,6 +303,15 @@ export function buildStreamingUserPrompt(
   if (params.fileAnalyses) {
     sections.push('## File Change Analysis\n');
     sections.push(params.fileAnalyses);
+    sections.push('');
+  }
+
+  if (params.dependencyContextText) {
+    sections.push(params.dependencyContextText);
+    sections.push('');
+    sections.push(
+      'Do not suggest APIs introduced after these versions. If a better fix requires a newer dependency version, state that an upgrade is required.'
+    );
     sections.push('');
   }
 

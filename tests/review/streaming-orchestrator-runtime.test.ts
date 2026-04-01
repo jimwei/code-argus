@@ -46,6 +46,8 @@ describe('streaming orchestrator runtime bridge', () => {
   });
 
   it('executes built-in review agents through the runtime tool bridge', async () => {
+    let capturedPrompt = '';
+
     createRuntimeFromEnvMock.mockReturnValue({
       kind: 'openai-responses',
       config: {
@@ -62,6 +64,7 @@ describe('streaming orchestrator runtime bridge', () => {
       },
       execute: executeMock.mockImplementation((options) => ({
         async *[Symbol.asyncIterator]() {
+          capturedPrompt = String(options.prompt);
           await options.tools?.[0]?.execute({
             file: 'src/api/service.ts',
             line_start: 18,
@@ -111,6 +114,22 @@ describe('streaming orchestrator runtime bridge', () => {
           source: [],
         },
         diffFiles: [],
+        dependencyContext: {
+          snapshots: [
+            {
+              packageRoot: '.',
+              packageManager: 'npm',
+              appliesToFiles: ['src/api/service.ts'],
+              dependencies: [
+                {
+                  name: 'react-router-dom',
+                  declaredVersion: '^7.10.1',
+                  resolvedVersion: '7.10.1',
+                },
+              ],
+            },
+          ],
+        },
       },
       'C:\\repo',
       ['logic-reviewer']
@@ -136,6 +155,8 @@ describe('streaming orchestrator runtime bridge', () => {
       title: 'Missing error handling',
       source_agent: 'logic-reviewer',
     });
+    expect(capturedPrompt).toContain('Frontend Dependency Versions');
+    expect(capturedPrompt).toContain('react-router-dom');
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
 });
