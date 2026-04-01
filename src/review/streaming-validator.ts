@@ -26,6 +26,8 @@ import {
 import { extractJSON } from './utils/json-parser.js';
 import { buildValidationSystemPrompt } from './prompts/validation.js';
 import { getHighSignalValidationPolicy } from './high-signal-policy.js';
+import type { FrontendDependencyContext } from './dependency-context/types.js';
+import { formatFrontendDependencyContext } from './dependency-context/extractor.js';
 
 /** Maximum number of times to retry a crashed session */
 const MAX_SESSION_CRASH_RETRIES = 2;
@@ -90,6 +92,8 @@ export interface StreamingValidatorOptions {
   fastMode?: boolean;
   /** Output language for review comments */
   language?: 'en' | 'zh';
+  /** Frontend dependency grounding for version-sensitive validation */
+  dependencyContext?: FrontendDependencyContext;
 }
 
 /**
@@ -108,6 +112,7 @@ interface ResolvedOptions {
   maxChallengeRounds: number;
   fastMode: boolean;
   language: 'en' | 'zh';
+  dependencyContext?: FrontendDependencyContext;
 }
 
 /**
@@ -196,6 +201,7 @@ export class StreamingValidator {
         (fastMode ? FAST_MODE_CHALLENGE_ROUNDS : MAX_CHALLENGE_ROUNDS),
       fastMode,
       language: options.language ?? 'zh',
+      dependencyContext: options.dependencyContext,
     };
   }
 
@@ -487,7 +493,13 @@ export class StreamingValidator {
         fastMode: this.options.fastMode,
         language: this.options.language,
       });
-      const userPrompt = this.buildUserPrompt(issue);
+      const dependencyContextText = this.options.dependencyContext
+        ? formatFrontendDependencyContext(this.options.dependencyContext, issue.file)
+        : '';
+      const dependencyRules = dependencyContextText
+        ? `${dependencyContextText}\n\nGrounding rule:\n- Reject version-sensitive suggestions that exceed these grounded versions.\n- If the suggested API requires a newer package version, reject it unless the issue explicitly calls out the upgrade requirement.\n\n`
+        : '';
+      const userPrompt = `${dependencyRules}${this.buildUserPrompt(issue)}`;
 
       if (isFirst) {
         return `${systemPrompt}\n\n${userPrompt}`;
