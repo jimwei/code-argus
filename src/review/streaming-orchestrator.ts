@@ -45,6 +45,7 @@ import {
 import { parseDiff, type DiffFile } from '../git/parser.js';
 import { isFileIgnored, stripIgnoredFromDiff } from '../config/reviewignore.js';
 import { createRuntimeFromEnv } from '../runtime/factory.js';
+import { createRepoContextTools } from '../runtime/repo-context-tools.js';
 import type { AgentRuntime, RuntimeExecution, RuntimeToolDefinition } from '../runtime/types.js';
 import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
@@ -2054,11 +2055,14 @@ export class StreamingReviewOrchestrator {
     }
 
     const runtime = createRuntimeFromEnv();
+    const repoContextTools =
+      runtime.kind === 'openai-responses' ? createRepoContextTools(reviewRepoPath) : [];
 
     // Create runtime tool bridge with report_issue (includes filter maps)
     const runtimeTools = this.createReportIssueRuntimeTools(
       changedLinesByFile,
-      whitespaceOnlyLinesByFile
+      whitespaceOnlyLinesByFile,
+      repoContextTools
     );
 
     // Show agents starting
@@ -2245,7 +2249,8 @@ export class StreamingReviewOrchestrator {
    */
   private createReportIssueRuntimeTools(
     changedLinesByFile?: Map<string, Set<number>>,
-    whitespaceOnlyLinesByFile?: Map<string, Set<number>>
+    whitespaceOnlyLinesByFile?: Map<string, Set<number>>,
+    additionalTools: RuntimeToolDefinition[] = []
   ): (agentType: AgentType) => RuntimeToolDefinition[] {
     const validator = this.streamingValidator;
     const deduplicator = this.realtimeDeduplicator;
@@ -2413,6 +2418,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           };
         },
       },
+      ...additionalTools,
     ];
   }
 

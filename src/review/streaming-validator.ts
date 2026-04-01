@@ -26,6 +26,7 @@ import {
 import { extractJSON } from './utils/json-parser.js';
 import { buildValidationSystemPrompt } from './prompts/validation.js';
 import { getHighSignalValidationPolicy } from './high-signal-policy.js';
+import { createRepoContextTools } from '../runtime/repo-context-tools.js';
 import type { FrontendDependencyContext } from './dependency-context/types.js';
 import { formatFrontendDependencyContext } from './dependency-context/extractor.js';
 
@@ -634,12 +635,16 @@ export class StreamingValidator {
     let sigintHandler: (() => void) | null = null;
 
     try {
+      const repoContextTools =
+        runtime.kind === 'openai-responses' ? createRepoContextTools(this.options.repoPath) : [];
+
       execution = runtime.execute({
         prompt: messageGenerator(),
         cwd: this.options.repoPath,
         maxTurns,
         model: runtime.config.models.validator,
         settingSources: ['project'],
+        ...(repoContextTools.length > 0 ? { tools: repoContextTools } : {}),
       });
 
       let isCleaningUp = false;

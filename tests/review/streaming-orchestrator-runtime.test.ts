@@ -144,6 +144,9 @@ describe('streaming orchestrator runtime bridge', () => {
         tools: expect.any(Array),
       })
     );
+    expect(
+      executeMock.mock.calls[0]?.[0]?.tools?.map((tool: { name: string }) => tool.name)
+    ).toEqual(['report_issue', 'Read', 'Grep', 'Glob']);
     expect(queryMock).not.toHaveBeenCalled();
     expect(result.tokens).toBe(18);
     expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(1);
