@@ -252,6 +252,7 @@ export interface ProjectStandards {
 import type { DiffResult } from '../git/type.js';
 import type { ChangeAnalysis } from '../analyzer/types.js';
 import type { DiffFile } from '../git/parser.js';
+import type { FrontendDependencyContext } from './dependency-context/types.js';
 
 /**
  * Complete context for code review
@@ -271,6 +272,8 @@ export interface ReviewContext {
   deletedFiles?: string[];
   /** PR business context (Jira integration) */
   prContext?: PRContext;
+  /** Frontend dependency grounding for version-sensitive API suggestions */
+  dependencyContext?: FrontendDependencyContext;
 }
 
 // ============================================================================

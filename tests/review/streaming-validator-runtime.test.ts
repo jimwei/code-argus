@@ -54,6 +54,11 @@ describe('streaming validator runtime bridge', () => {
               role: 'user',
             },
           });
+          expect(firstPrompt.value.message.content).toContain('Frontend Dependency Versions');
+          expect(firstPrompt.value.message.content).toContain('react-router-dom');
+          expect(firstPrompt.value.message.content).toContain(
+            'Reject version-sensitive suggestions that exceed these grounded versions'
+          );
 
           const responseText = JSON.stringify({
             validation_status: 'confirmed',
@@ -90,6 +95,22 @@ describe('streaming validator runtime bridge', () => {
       challengeMode: false,
       maxChallengeRounds: 1,
       language: 'en',
+      dependencyContext: {
+        snapshots: [
+          {
+            packageRoot: '.',
+            packageManager: 'npm',
+            appliesToFiles: ['src/api/service.ts'],
+            dependencies: [
+              {
+                name: 'react-router-dom',
+                declaredVersion: '^7.10.1',
+                resolvedVersion: '7.10.1',
+              },
+            ],
+          },
+        ],
+      },
     });
 
     const autoRejected = validator.enqueue({

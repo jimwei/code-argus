@@ -21,4 +21,19 @@ describe('streaming specialist prompts', () => {
     expect(prompt).toContain('Do NOT report');
     expect(prompt).toContain('speculative');
   });
+
+  it('injects frontend dependency grounding and warns against newer-version API suggestions', () => {
+    const prompt = buildStreamingUserPrompt('logic-reviewer', {
+      diff: '+import { createBrowserRouter } from "react-router-dom"',
+      dependencyContextText: `## Frontend Dependency Versions
+
+- Package root: packages/web
+- react-router-dom: declared ^7.10.1, resolved 7.10.1`,
+    } as any);
+
+    expect(prompt).toContain('## Frontend Dependency Versions');
+    expect(prompt).toContain('react-router-dom');
+    expect(prompt).toContain('Do not suggest APIs introduced after these versions');
+    expect(prompt).toContain('state that an upgrade is required');
+  });
 });

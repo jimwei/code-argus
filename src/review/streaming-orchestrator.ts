@@ -82,6 +82,10 @@ import type { FixVerificationSummary, PreviousReviewData } from './types.js';
 import { preprocessDiff, formatDeletedFilesContext, needsSegmentation } from '../diff/index.js';
 import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
 import { getSegmentSizeLimitForRuntime } from '../runtime/limits.js';
+import {
+  extractFrontendDependencyContext,
+  formatFrontendDependencyContext,
+} from './dependency-context/extractor.js';
 
 /**
  * Default orchestrator options
@@ -179,6 +183,29 @@ export class StreamingReviewOrchestrator {
         }
       },
     };
+  }
+
+  private async attachDependencyContext(
+    context: ReviewContext,
+    reviewRepoPath: string,
+    diffFiles: DiffFile[]
+  ): Promise<void> {
+    if (context.dependencyContext || diffFiles.length === 0) {
+      return;
+    }
+
+    try {
+      context.dependencyContext = await extractFrontendDependencyContext(reviewRepoPath, diffFiles);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.progress.warn(`Frontend dependency grounding unavailable: ${message}`);
+      if (this.options.verbose) {
+        console.warn(
+          '[StreamingOrchestrator] Failed to extract frontend dependency context:',
+          error
+        );
+      }
+    }
   }
 
   /**
@@ -393,6 +420,8 @@ export class StreamingReviewOrchestrator {
       this.rawIssuesForSkipMode = [];
       this.issueCountByAgent.clear();
 
+      await this.attachDependencyContext(context, reviewRepoPath, diffFiles);
+
       // Create realtime deduplicator with progress callbacks
       this.realtimeDeduplicator = createRealtimeDeduplicator({
         verbose: this.options.verbose,
@@ -415,6 +444,7 @@ export class StreamingReviewOrchestrator {
             projectRules: projectRulesText || undefined,
             fastMode: this.options.reviewMode === 'fast',
             language: this.options.language,
+            dependencyContext: context.dependencyContext,
             callbacks: {
               onIssueDiscovered: (issue) => {
                 this.progress.issueDiscovered(
@@ -1049,6 +1079,8 @@ export class StreamingReviewOrchestrator {
       this.rawIssuesForSkipMode = [];
       this.issueCountByAgent.clear();
 
+      await this.attachDependencyContext(context, reviewRepoPath, diffFiles);
+
       // Create realtime deduplicator with progress callbacks
       this.realtimeDeduplicator = createRealtimeDeduplicator({
         verbose: this.options.verbose,
@@ -1071,6 +1103,7 @@ export class StreamingReviewOrchestrator {
             projectRules: projectRulesText || undefined,
             fastMode: this.options.reviewMode === 'fast',
             language: this.options.language,
+            dependencyContext: context.dependencyContext,
             callbacks: {
               onIssueDiscovered: (issue) => {
                 this.progress.issueDiscovered(
@@ -2428,6 +2461,9 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       fileAnalyses: context.fileAnalyses
         .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
         .join('\n'),
+      dependencyContextText: context.dependencyContext
+        ? formatFrontendDependencyContext(context.dependencyContext)
+        : undefined,
       standardsText,
       projectRules: projectRules
         ? `## Project-Specific Review Guidelines\n\n> Loaded from: ${this.rulesConfig.sources.join(', ')}\n\n${projectRules}`
