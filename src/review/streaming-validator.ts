@@ -498,7 +498,7 @@ export class StreamingValidator {
         ? formatFrontendDependencyContext(this.options.dependencyContext, issue.file)
         : '';
       const dependencyRules = dependencyContextText
-        ? `${dependencyContextText}\n\nGrounding rule:\n- Reject version-sensitive suggestions that exceed these grounded versions.\n- If the suggested API requires a newer package version, reject it unless the issue explicitly calls out the upgrade requirement.\n\n`
+        ? `${dependencyContextText}\n\nGrounding rule:\n- Reject version-sensitive suggestions that exceed these grounded versions.\n- If the suggested API requires a newer package version, reject it unless the issue explicitly calls out the upgrade requirement.\n- Treat compatibility notes as authoritative. Reject issues that rely on older framework conventions contradicted by these grounded versions.\n\n`
         : '';
       const userPrompt = `${dependencyRules}${this.buildUserPrompt(issue)}`;
 

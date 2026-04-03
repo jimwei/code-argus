@@ -59,6 +59,8 @@ describe('streaming validator runtime bridge', () => {
           expect(firstPrompt.value.message.content).toContain(
             'Reject version-sensitive suggestions that exceed these grounded versions'
           );
+          expect(firstPrompt.value.message.content).toContain('ref as a regular prop');
+          expect(firstPrompt.value.message.content).toContain('compatibility notes');
 
           const responseText = JSON.stringify({
             validation_status: 'confirmed',
@@ -102,6 +104,11 @@ describe('streaming validator runtime bridge', () => {
             packageManager: 'npm',
             appliesToFiles: ['src/api/service.ts'],
             dependencies: [
+              {
+                name: 'react',
+                declaredVersion: '^19.2.0',
+                resolvedVersion: '19.2.0',
+              },
               {
                 name: 'react-router-dom',
                 declaredVersion: '^7.10.1',

@@ -28,12 +28,18 @@ describe('streaming specialist prompts', () => {
       dependencyContextText: `## Frontend Dependency Versions
 
 - Package root: packages/web
-- react-router-dom: declared ^7.10.1, resolved 7.10.1`,
+- react-router-dom: declared ^7.10.1, resolved 7.10.1
+
+React 19+ compatibility notes:
+- Treat ref as a regular prop on function components; do not require forwardRef solely to receive or pass refs.`,
     } as any);
 
     expect(prompt).toContain('## Frontend Dependency Versions');
     expect(prompt).toContain('react-router-dom');
     expect(prompt).toContain('Do not suggest APIs introduced after these versions');
     expect(prompt).toContain('state that an upgrade is required');
+    expect(prompt).toContain('ref as a regular prop');
+    expect(prompt).toContain('forwardRef solely to receive or pass refs');
+    expect(prompt).toContain('compatibility notes');
   });
 });
