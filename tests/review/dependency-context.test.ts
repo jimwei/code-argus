@@ -193,6 +193,122 @@ packages: {}
     expect(promptText).toContain('exact version unknown');
   });
 
+  it('adds React 19 compatibility notes for ref-as-prop patterns', () => {
+    const promptText = formatFrontendDependencyContext({
+      snapshots: [
+        {
+          packageRoot: 'apps/web',
+          packageManager: 'pnpm',
+          appliesToFiles: ['apps/web/src/App.tsx'],
+          dependencies: [
+            { name: 'antd-mobile', declaredVersion: '^5.40.0', resolvedVersion: '5.40.0' },
+            { name: 'react', declaredVersion: '^19.2.0', resolvedVersion: '19.2.0' },
+            { name: 'react-dom', declaredVersion: '^19.2.0', resolvedVersion: '19.2.0' },
+          ],
+        },
+      ],
+    });
+
+    expect(promptText).toContain('Compatibility notes');
+    expect(promptText).toContain('ref as a regular prop');
+    expect(promptText).toContain('do not require forwardRef');
+    expect(promptText).toContain('useEffectEvent');
+    expect(promptText).toContain('unstableSetRender');
+  });
+
+  it('prioritizes framework dependencies when limiting grounded packages', async () => {
+    const repoPath = await createTempRepo('argus-deps-priority');
+    await mkdir(join(repoPath, 'apps', 'web', 'src'), { recursive: true });
+
+    await writeFile(
+      join(repoPath, 'apps', 'web', 'package.json'),
+      JSON.stringify(
+        {
+          name: '@repo/web',
+          dependencies: {
+            'antd-mobile': '^5.40.0',
+            axios: '^1.0.0',
+            classnames: '^2.5.1',
+            dayjs: '^1.11.0',
+            lodash: '^4.17.21',
+            react: '^19.2.0',
+            'react-dom': '^19.2.0',
+            'react-router-dom': '^7.13.0',
+            swr: '^2.3.7',
+            zustand: '^5.0.0',
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    await writeFile(
+      join(repoPath, 'pnpm-lock.yaml'),
+      `lockfileVersion: '9.0'
+importers:
+  apps/web:
+    dependencies:
+      antd-mobile:
+        specifier: ^5.40.0
+        version: 5.40.0
+      axios:
+        specifier: ^1.0.0
+        version: 1.0.0
+      classnames:
+        specifier: ^2.5.1
+        version: 2.5.1
+      dayjs:
+        specifier: ^1.11.0
+        version: 1.11.0
+      lodash:
+        specifier: ^4.17.21
+        version: 4.17.21
+      react:
+        specifier: ^19.2.0
+        version: 19.2.0
+      react-dom:
+        specifier: ^19.2.0
+        version: 19.2.0
+      react-router-dom:
+        specifier: ^7.13.0
+        version: 7.13.0
+      swr:
+        specifier: ^2.3.7
+        version: 2.3.7
+      zustand:
+        specifier: ^5.0.0
+        version: 5.0.0
+packages: {}
+`
+    );
+
+    const context = await extractFrontendDependencyContext(repoPath, [
+      makeDiffFile(
+        'apps/web/src/main.tsx',
+        `diff --git a/apps/web/src/main.tsx b/apps/web/src/main.tsx
++import { unstableSetRender } from 'antd-mobile';
++import axios from 'axios';
++import classNames from 'classnames';
++import dayjs from 'dayjs';
++import _ from 'lodash';
++import React from 'react';
++import { createRoot } from 'react-dom/client';
++import { createBrowserRouter } from 'react-router-dom';
++import useSWR from 'swr';
++import { create } from 'zustand';`
+      ),
+    ]);
+
+    const dependencyNames = context?.snapshots[0]?.dependencies.map(
+      (dependency) => dependency.name
+    );
+    expect(dependencyNames).toContain('antd-mobile');
+    expect(dependencyNames).toContain('react');
+    expect(dependencyNames).toContain('react-dom');
+    expect(dependencyNames).toContain('react-router-dom');
+  });
+
   it('returns no dependency context for non-frontend diffs', async () => {
     const repoPath = await createTempRepo('argus-deps-none');
     await mkdir(join(repoPath, 'src'), { recursive: true });

@@ -41,6 +41,7 @@ const FRONTEND_FRAMEWORK_PACKAGES = [
   'react-dom',
   'react-router',
   'react-router-dom',
+  'antd-mobile',
   'vue',
   'vue-router',
   'pinia',
@@ -71,6 +72,7 @@ const IMPORT_PATTERNS = [
   /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
   /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
 ];
+const MAX_FRONTEND_DEPENDENCIES = 8;
 
 function normalizePath(value: string): string {
   return value.replace(/\\/g, '/');
@@ -195,6 +197,50 @@ function parseResolvedVersion(rawVersion: unknown): string | undefined {
   return typeof rawVersion === 'string' && rawVersion.trim()
     ? stripPnpmPeerSuffix(rawVersion)
     : undefined;
+}
+
+function extractComparableVersion(version: string | undefined): [number, number, number] | null {
+  if (!version) {
+    return null;
+  }
+
+  const match = version.match(/(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  if (!match) {
+    return null;
+  }
+
+  return [
+    Number.parseInt(match[1] || '0', 10),
+    Number.parseInt(match[2] || '0', 10),
+    Number.parseInt(match[3] || '0', 10),
+  ];
+}
+
+function compareVersions(
+  left: [number, number, number] | null,
+  right: [number, number, number]
+): number {
+  if (!left) {
+    return -1;
+  }
+
+  for (let index = 0; index < right.length; index++) {
+    const leftPart = left[index] || 0;
+    const rightPart = right[index] || 0;
+
+    if (leftPart > rightPart) {
+      return 1;
+    }
+    if (leftPart < rightPart) {
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+function isVersionAtLeast(version: string | undefined, minimum: [number, number, number]): boolean {
+  return compareVersions(extractComparableVersion(version), minimum) >= 0;
 }
 
 async function findNearestLockFile(
@@ -337,6 +383,7 @@ function buildDependencyList(
   importedPackages: Set<string>
 ): string[] {
   const names = new Set<string>();
+  const priorityNames = new Set<string>();
 
   for (const name of importedPackages) {
     if (manifest.declaredVersions.has(name)) {
@@ -347,12 +394,20 @@ function buildDependencyList(
   for (const name of FRONTEND_FRAMEWORK_PACKAGES) {
     if (manifest.declaredVersions.has(name)) {
       names.add(name);
+      priorityNames.add(name);
     }
   }
 
   return Array.from(names)
-    .sort((left, right) => left.localeCompare(right))
-    .slice(0, 8);
+    .sort((left, right) => {
+      const priorityDelta = Number(priorityNames.has(right)) - Number(priorityNames.has(left));
+      if (priorityDelta !== 0) {
+        return priorityDelta;
+      }
+
+      return left.localeCompare(right);
+    })
+    .slice(0, MAX_FRONTEND_DEPENDENCIES);
 }
 
 function isFrontendCandidateFile(
@@ -501,6 +556,49 @@ export function formatFrontendDependencyContext(
       const resolved = dependency.resolvedVersion || 'exact version unknown';
       lines.push(`- ${dependency.name}: declared ${declared}, resolved ${resolved}`);
     }
+
+    const dependencyVersionByName = new Map(
+      snapshot.dependencies.map((dependency) => [
+        dependency.name,
+        dependency.resolvedVersion || dependency.declaredVersion,
+      ])
+    );
+    const capabilityNotes: string[] = [];
+    const reactVersion = dependencyVersionByName.get('react');
+    const antdMobileVersion = dependencyVersionByName.get('antd-mobile');
+
+    if (isVersionAtLeast(reactVersion, [19, 0, 0])) {
+      capabilityNotes.push(
+        'React modern ref semantics (react >= 19): function components may receive ref as a regular prop; do not require forwardRef solely because a component receives or passes ref.'
+      );
+      capabilityNotes.push(
+        'React modern ref semantics (react >= 19): useImperativeHandle(ref, ...) can be valid when ref is received from props.'
+      );
+    }
+
+    if (isVersionAtLeast(reactVersion, [19, 2, 0])) {
+      capabilityNotes.push(
+        'React hook availability (react >= 19.2): useEffectEvent is supported for these grounded versions.'
+      );
+    }
+
+    if (
+      isVersionAtLeast(reactVersion, [19, 0, 0]) &&
+      isVersionAtLeast(antdMobileVersion, [5, 40, 0])
+    ) {
+      capabilityNotes.push(
+        'antd-mobile React compatibility (antd-mobile >= 5.40.0 with react >= 19): unstableSetRender and explicit root lifecycle bridging may be required compatibility code; do not flag that pattern by itself.'
+      );
+    }
+
+    if (capabilityNotes.length > 0) {
+      lines.push('');
+      lines.push('Compatibility notes:');
+      for (const note of capabilityNotes) {
+        lines.push(`- ${note}`);
+      }
+    }
+
     lines.push('');
   }
 
@@ -510,6 +608,9 @@ export function formatFrontendDependencyContext(
     '- Do not suggest APIs introduced after these versions unless you explicitly state that an upgrade is required.'
   );
   lines.push('- If exact version is unknown, avoid version-sensitive API rewrite suggestions.');
+  lines.push(
+    '- Treat compatibility notes as authoritative. Do not flag patterns that are valid for these grounded versions only because older framework conventions differed.'
+  );
 
   return lines.join('\n');
 }

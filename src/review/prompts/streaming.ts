@@ -312,6 +312,9 @@ export function buildStreamingUserPrompt(
     sections.push(
       'Do not suggest APIs introduced after these versions. If a better fix requires a newer dependency version, state that an upgrade is required.'
     );
+    sections.push(
+      'Treat compatibility notes in the dependency context as authoritative. Do not report code that is valid for these grounded versions just because older framework conventions differed.'
+    );
     sections.push('');
   }
 
