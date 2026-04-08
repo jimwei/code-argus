@@ -75,6 +75,131 @@ function createAsyncStream(messages: unknown[], onReturn?: () => void) {
   };
 }
 
+type MockOpenAIResponse = {
+  id: string;
+  status?: string | null;
+  output?: Array<Record<string, any>>;
+  output_text?: string;
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+  };
+  error?: {
+    message?: string;
+  } | null;
+};
+
+function cloneValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function createOpenAIResponseStream(
+  response: MockOpenAIResponse,
+  options: { textChunks?: string[] } = {}
+) {
+  let sequenceNumber = 1;
+  const events: Array<Record<string, any>> = [
+    {
+      type: 'response.created',
+      sequence_number: sequenceNumber++,
+      response: {
+        id: response.id,
+        status: 'in_progress',
+        output: [],
+      },
+    },
+  ];
+
+  const output = Array.isArray(response.output) ? response.output : [];
+  for (const [outputIndex, item] of output.entries()) {
+    if (item.type === 'message') {
+      events.push({
+        type: 'response.output_item.added',
+        sequence_number: sequenceNumber++,
+        output_index: outputIndex,
+        item: {
+          ...cloneValue(item),
+          content: [],
+        },
+      });
+
+      const content = Array.isArray(item.content) ? item.content : [];
+      for (const [contentIndex, part] of content.entries()) {
+        if (part.type !== 'output_text') {
+          continue;
+        }
+
+        events.push({
+          type: 'response.content_part.added',
+          sequence_number: sequenceNumber++,
+          output_index: outputIndex,
+          content_index: contentIndex,
+          part: {
+            ...cloneValue(part),
+            text: '',
+          },
+        });
+
+        const textChunks = options.textChunks ?? [part.text];
+        for (const chunk of textChunks) {
+          events.push({
+            type: 'response.output_text.delta',
+            sequence_number: sequenceNumber++,
+            output_index: outputIndex,
+            content_index: contentIndex,
+            delta: chunk,
+          });
+        }
+      }
+
+      continue;
+    }
+
+    if (item.type === 'function_call') {
+      events.push({
+        type: 'response.output_item.added',
+        sequence_number: sequenceNumber++,
+        output_index: outputIndex,
+        item: {
+          ...cloneValue(item),
+          arguments: '',
+        },
+      });
+
+      events.push({
+        type: 'response.function_call_arguments.delta',
+        sequence_number: sequenceNumber++,
+        output_index: outputIndex,
+        item_id: item.id,
+        delta: item.arguments,
+      });
+    }
+  }
+
+  events.push({
+    type:
+      response.status === 'failed'
+        ? 'response.failed'
+        : response.status === 'incomplete'
+          ? 'response.incomplete'
+          : 'response.completed',
+    sequence_number: sequenceNumber++,
+    response: cloneValue({
+      id: response.id,
+      status: response.status ?? 'completed',
+      output_text: response.output_text,
+      output: response.output ?? [],
+      usage: response.usage,
+      error: response.error,
+    }),
+  });
+
+  return {
+    ...createAsyncStream(events),
+    controller: new AbortController(),
+  };
+}
+
 describe('runtime execution', () => {
   it('normalizes Claude Agent SDK messages and wraps runtime tools', async () => {
     const stream = createAsyncStream([
@@ -287,7 +412,8 @@ describe('runtime execution', () => {
   it('executes OpenAI Responses tool calls and normalizes the final result', async () => {
     const createMock = vi
       .fn()
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
         id: 'resp_1',
         status: 'completed',
         output_text: '',
@@ -313,8 +439,10 @@ describe('runtime execution', () => {
           input_tokens_details: { cached_tokens: 0 },
           output_tokens_details: { reasoning_tokens: 0 },
         },
-      })
-      .mockResolvedValueOnce({
+        })
+      )
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
         id: 'resp_2',
         status: 'completed',
         output_text: 'Done',
@@ -340,7 +468,8 @@ describe('runtime execution', () => {
           input_tokens_details: { cached_tokens: 0 },
           output_tokens_details: { reasoning_tokens: 0 },
         },
-      });
+        })
+      );
 
     const executeTool = vi.fn().mockResolvedValue({
       content: [{ type: 'text' as const, text: 'Issue recorded' }],
@@ -396,6 +525,7 @@ describe('runtime execution', () => {
       expect.objectContaining({
         model: 'gpt-5.3-codex',
         input: 'Review this diff',
+        stream: true,
         parallel_tool_calls: false,
         tools: [
           expect.objectContaining({
@@ -421,6 +551,7 @@ describe('runtime execution', () => {
       2,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        stream: true,
         previous_response_id: 'resp_1',
         input: [
           {
@@ -472,7 +603,8 @@ describe('runtime execution', () => {
 
     const createMock = vi
       .fn()
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
         id: 'resp_1',
         status: 'completed',
         output_text: '',
@@ -495,9 +627,11 @@ describe('runtime execution', () => {
           input_tokens: 8,
           output_tokens: 3,
         },
-      })
+        })
+      )
       .mockRejectedValueOnce(upstreamError)
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
         id: 'resp_2',
         status: 'completed',
         output_text: 'Done',
@@ -520,7 +654,8 @@ describe('runtime execution', () => {
           input_tokens: 11,
           output_tokens: 7,
         },
-      });
+        })
+      );
 
     const executeTool = vi.fn().mockResolvedValue({
       content: [{ type: 'text' as const, text: 'Issue recorded' }],
@@ -575,6 +710,7 @@ describe('runtime execution', () => {
       2,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        stream: true,
         previous_response_id: 'resp_1',
         input: [
           {
@@ -590,6 +726,7 @@ describe('runtime execution', () => {
       3,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        stream: true,
         input: [
           {
             type: 'message',
@@ -637,7 +774,8 @@ describe('runtime execution', () => {
   it('supports async prompt streams for multi-turn OpenAI Responses sessions', async () => {
     const createMock = vi
       .fn()
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
         id: 'resp_1',
         status: 'completed',
         output_text: 'Round 1 complete',
@@ -663,8 +801,10 @@ describe('runtime execution', () => {
           input_tokens_details: { cached_tokens: 0 },
           output_tokens_details: { reasoning_tokens: 0 },
         },
-      })
-      .mockResolvedValueOnce({
+        })
+      )
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
         id: 'resp_2',
         status: 'completed',
         output_text: 'Round 2 complete',
@@ -690,7 +830,8 @@ describe('runtime execution', () => {
           input_tokens_details: { cached_tokens: 0 },
           output_tokens_details: { reasoning_tokens: 0 },
         },
-      });
+        })
+      );
 
     async function* promptStream() {
       yield {
@@ -750,6 +891,7 @@ describe('runtime execution', () => {
       expect.objectContaining({
         model: 'gpt-5.3-codex',
         input: 'First validation turn',
+        stream: true,
       }),
       expect.any(Object)
     );
@@ -757,6 +899,7 @@ describe('runtime execution', () => {
       2,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        stream: true,
         previous_response_id: 'resp_1',
         input: 'Second validation turn',
       }),
@@ -796,7 +939,8 @@ describe('runtime execution', () => {
   it('normalizes OpenAI tool schemas for strict mode and converts null tool args to undefined', async () => {
     const createMock = vi
       .fn()
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
         id: 'resp_schema_1',
         status: 'completed',
         output: [
@@ -821,8 +965,10 @@ describe('runtime execution', () => {
           input_tokens: 9,
           output_tokens: 3,
         },
-      })
-      .mockResolvedValueOnce({
+        })
+      )
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
         id: 'resp_schema_2',
         status: 'completed',
         output_text: 'Done',
@@ -845,7 +991,8 @@ describe('runtime execution', () => {
           input_tokens: 11,
           output_tokens: 4,
         },
-      });
+        })
+      );
 
     const executeTool = vi.fn().mockResolvedValue({
       content: [{ type: 'text' as const, text: 'Issue recorded' }],
@@ -965,30 +1112,32 @@ describe('runtime execution', () => {
   });
 
   it('generates plain text through the OpenAI Responses runtime abstraction', async () => {
-    const createMock = vi.fn().mockResolvedValue({
-      id: 'resp_text_1',
-      status: 'completed',
-      output_text: 'runtime text output',
-      output: [
-        {
-          id: 'msg_1',
-          type: 'message',
-          role: 'assistant',
-          status: 'completed',
-          content: [
-            {
-              type: 'output_text',
-              text: 'runtime text output',
-              annotations: [],
-            },
-          ],
+    const createMock = vi.fn().mockResolvedValue(
+      createOpenAIResponseStream({
+        id: 'resp_text_1',
+        status: 'completed',
+        output_text: 'runtime text output',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'runtime text output',
+                annotations: [],
+              },
+            ],
+          },
+        ],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 4,
         },
-      ],
-      usage: {
-        input_tokens: 10,
-        output_tokens: 4,
-      },
-    });
+      })
+    );
 
     const runtime = new OpenAIResponsesRuntime(
       {
@@ -1018,6 +1167,7 @@ describe('runtime execution', () => {
     expect(createMock).toHaveBeenCalledWith({
       model: 'gpt-5-mini',
       input: 'Return JSON only',
+      stream: true,
     });
     expect(result).toEqual({
       text: 'runtime text output',
@@ -1026,6 +1176,64 @@ describe('runtime execution', () => {
         outputTokens: 4,
       },
     });
+  });
+
+  it('reports completed OpenAI stream turns with no text or tool calls as an error', async () => {
+    const createMock = vi.fn().mockResolvedValue(
+      createOpenAIResponseStream({
+        id: 'resp_empty_1',
+        status: 'completed',
+        output_text: '',
+        output: [],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 4,
+        },
+      })
+    );
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const execution = runtime.execute({
+      prompt: 'Review this diff',
+      cwd: 'C:\\repo',
+      maxTurns: 6,
+    });
+
+    const events = [];
+    for await (const event of execution) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: 'result',
+        status: 'error_empty_output',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 4,
+        },
+        error: 'OpenAI Responses stream completed without text or tool calls',
+      },
+    ]);
   });
 
   it('does not abort an externally managed AbortController when execution is closed', async () => {
