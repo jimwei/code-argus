@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { ResponseInputItem } from 'openai/resources/responses/responses';
+import type { ResponseInputItem, ResponseStreamEvent } from 'openai/resources/responses/responses';
 import { z, toJSONSchema } from 'zod';
 
 import type { ArgusRuntimeConfig } from '../config/env.js';
@@ -44,10 +44,36 @@ type OpenAIResponseInputItem = ResponseInputItem;
 
 type OpenAIResponseInput = string | OpenAIResponseInputItem[];
 
+type OpenAIRequestTool = {
+  type: 'function';
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  strict: true;
+};
+
+type OpenAIResponseRequest = {
+  model: string;
+  input: OpenAIResponseInput;
+  previous_response_id?: string;
+  tools?: OpenAIRequestTool[];
+  parallel_tool_calls?: false;
+  max_output_tokens?: number;
+};
+
+type OpenAIResponseStream = AsyncIterable<ResponseStreamEvent> & {
+  controller?: AbortController;
+};
+
 type JsonSchema = Record<string, unknown>;
+type MutableJsonObject = Record<string, any>;
 
 function isPlainObject(value: unknown): value is JsonSchema {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function makeSchemaNullable(schema: unknown): unknown {
@@ -242,6 +268,229 @@ function normalizeUsage(usage: OpenAIResponse['usage'] | undefined): RuntimeUsag
   };
 }
 
+function createResponseSnapshot(response: OpenAIResponse): OpenAIResponse {
+  const snapshot = cloneJson(response);
+  snapshot.output = Array.isArray(snapshot.output) ? snapshot.output : [];
+  return snapshot;
+}
+
+function mergeResponseSnapshot(
+  snapshot: OpenAIResponse | undefined,
+  response: OpenAIResponse
+): OpenAIResponse {
+  const merged = snapshot ? cloneJson(snapshot) : createResponseSnapshot(response);
+  merged.id = response.id;
+  merged.status = response.status ?? merged.status;
+  merged.usage = response.usage ?? merged.usage;
+  merged.error = response.error ?? merged.error;
+
+  if (typeof response.output_text === 'string') {
+    merged.output_text = response.output_text;
+  }
+
+  if (Array.isArray(response.output) && response.output.length > 0) {
+    merged.output = cloneJson(response.output);
+  }
+
+  return merged;
+}
+
+function ensureOutputItem(
+  snapshot: OpenAIResponse,
+  outputIndex: number
+): MutableJsonObject | undefined {
+  if (!Array.isArray(snapshot.output)) {
+    snapshot.output = [];
+  }
+
+  const outputItem = snapshot.output[outputIndex];
+  return isPlainObject(outputItem) ? outputItem : undefined;
+}
+
+function applyOutputItemAdded(snapshot: OpenAIResponse, event: ResponseStreamEvent): void {
+  if (event.type !== 'response.output_item.added') {
+    return;
+  }
+
+  if (!Array.isArray(snapshot.output)) {
+    snapshot.output = [];
+  }
+
+  const item = cloneJson(event.item) as unknown as MutableJsonObject;
+  if (item.type === 'message' && !Array.isArray(item.content)) {
+    item.content = [];
+  }
+  if (item.type === 'function_call' && typeof item.arguments !== 'string') {
+    item.arguments = '';
+  }
+
+  snapshot.output[event.output_index] = item;
+}
+
+function applyContentPartAdded(snapshot: OpenAIResponse, event: ResponseStreamEvent): void {
+  if (event.type !== 'response.content_part.added') {
+    return;
+  }
+
+  const outputItem = ensureOutputItem(snapshot, event.output_index);
+  if (!outputItem || outputItem.type !== 'message') {
+    return;
+  }
+
+  if (!Array.isArray(outputItem.content)) {
+    outputItem.content = [];
+  }
+
+  outputItem.content[event.content_index] = cloneJson(event.part) as unknown as MutableJsonObject;
+}
+
+function ensureOutputTextContent(
+  outputItem: MutableJsonObject,
+  contentIndex: number
+): MutableJsonObject {
+  if (!Array.isArray(outputItem.content)) {
+    outputItem.content = [];
+  }
+
+  let content = outputItem.content[contentIndex];
+  if (!isPlainObject(content) || content.type !== 'output_text') {
+    content = {
+      type: 'output_text',
+      text: '',
+      annotations: [],
+    } satisfies MutableJsonObject;
+    outputItem.content[contentIndex] = content;
+  }
+
+  if (typeof content.text !== 'string') {
+    content.text = '';
+  }
+
+  return content;
+}
+
+function applyOutputTextDelta(snapshot: OpenAIResponse, event: ResponseStreamEvent): void {
+  if (event.type !== 'response.output_text.delta') {
+    return;
+  }
+
+  const outputItem = ensureOutputItem(snapshot, event.output_index);
+  if (!outputItem || outputItem.type !== 'message') {
+    return;
+  }
+
+  const content = ensureOutputTextContent(outputItem, event.content_index);
+  content.text = `${content.text}${event.delta}`;
+}
+
+function applyFunctionCallArgumentsDelta(
+  snapshot: OpenAIResponse,
+  event: ResponseStreamEvent
+): void {
+  if (event.type !== 'response.function_call_arguments.delta') {
+    return;
+  }
+
+  const outputItem = ensureOutputItem(snapshot, event.output_index);
+  if (!outputItem || outputItem.type !== 'function_call') {
+    return;
+  }
+
+  if (typeof outputItem.arguments !== 'string') {
+    outputItem.arguments = '';
+  }
+
+  outputItem.arguments = `${outputItem.arguments}${event.delta}`;
+}
+
+async function createOpenAIStreamSnapshot(
+  client: OpenAI,
+  request: OpenAIResponseRequest,
+  signal?: AbortSignal
+): Promise<OpenAIResponse> {
+  const stream = (
+    signal
+      ? await client.responses.create(
+          {
+            ...request,
+            stream: true,
+          },
+          { signal }
+        )
+      : await client.responses.create({
+          ...request,
+          stream: true,
+        })
+  ) as OpenAIResponseStream;
+
+  let snapshot: OpenAIResponse | undefined;
+  let sawTerminalEvent = false;
+
+  for await (const event of stream) {
+    switch (event.type) {
+      case 'response.created':
+        snapshot = createResponseSnapshot(event.response as OpenAIResponse);
+        break;
+      case 'response.output_item.added':
+        if (!snapshot) {
+          snapshot = createResponseSnapshot({
+            id: '',
+            output: [],
+          });
+        }
+        applyOutputItemAdded(snapshot, event);
+        break;
+      case 'response.content_part.added':
+        if (!snapshot) {
+          snapshot = createResponseSnapshot({
+            id: '',
+            output: [],
+          });
+        }
+        applyContentPartAdded(snapshot, event);
+        break;
+      case 'response.output_text.delta':
+        if (!snapshot) {
+          snapshot = createResponseSnapshot({
+            id: '',
+            output: [],
+          });
+        }
+        applyOutputTextDelta(snapshot, event);
+        break;
+      case 'response.function_call_arguments.delta':
+        if (!snapshot) {
+          snapshot = createResponseSnapshot({
+            id: '',
+            output: [],
+          });
+        }
+        applyFunctionCallArgumentsDelta(snapshot, event);
+        break;
+      case 'response.completed':
+      case 'response.failed':
+      case 'response.incomplete':
+        snapshot = mergeResponseSnapshot(snapshot, event.response as OpenAIResponse);
+        sawTerminalEvent = true;
+        break;
+      case 'error':
+        throw new Error(event.message);
+      default:
+        break;
+    }
+  }
+
+  if (!snapshot) {
+    throw new Error('OpenAI Responses stream ended without a response');
+  }
+
+  if (!sawTerminalEvent) {
+    throw new Error('OpenAI Responses stream ended before completion');
+  }
+
+  return snapshot;
+}
+
 function normalizeResponseStatus(response: OpenAIResponse): string {
   switch (response.status) {
     case 'completed':
@@ -388,30 +637,28 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
   }
 
   async generateText(options: RuntimeGenerateTextOptions): Promise<RuntimeGenerateTextResult> {
-    const response = (
-      options.abortController
-        ? await this.client.responses.create(
-            {
-              model: options.model || this.config.models.main,
-              input: options.prompt,
-            },
-            {
-              signal: options.abortController.signal,
-            }
-          )
-        : await this.client.responses.create({
-            model: options.model || this.config.models.main,
-            input: options.prompt,
-          })
-    ) as OpenAIResponse;
+    const response = await createOpenAIStreamSnapshot(
+      this.client,
+      {
+        model: options.model || this.config.models.main,
+        input: options.prompt,
+        ...(options.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}),
+      },
+      options.abortController?.signal
+    );
 
     const error = getResponseError(response);
     if (error) {
       throw new Error(error);
     }
 
+    const text = getResponseText(response);
+    if (!text) {
+      throw new Error('OpenAI Responses stream completed without text output');
+    }
+
     return {
-      text: getResponseText(response) || '',
+      text,
       usage: normalizeUsage(response.usage),
     };
   }
@@ -423,14 +670,14 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     const ownsAbortController = !options.abortController;
     const runtimeTools = options.tools ?? [];
     const toolsByName = new Map(runtimeTools.map((tool) => [tool.name, tool]));
-    const openAITools =
+    const openAITools: OpenAIRequestTool[] | undefined =
       runtimeTools.length > 0
         ? runtimeTools.map((tool) => ({
             type: 'function' as const,
             name: tool.name,
             description: tool.description,
             parameters: buildToolParameters(tool),
-            strict: true,
+            strict: true as const,
           }))
         : undefined;
 
@@ -465,16 +712,14 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               ...(openAITools
                 ? {
                     tools: openAITools,
-                    parallel_tool_calls: false,
+                    parallel_tool_calls: false as const,
                   }
                 : {}),
             };
 
             let response: OpenAIResponse;
             try {
-              response = (await client.responses.create(request, {
-                signal: abortController.signal,
-              })) as OpenAIResponse;
+              response = await createOpenAIStreamSnapshot(client, request, abortController.signal);
             } catch (error) {
               const shouldFallbackToStatelessReplay =
                 !statelessMode &&
@@ -489,21 +734,20 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               statelessMode = true;
               previousResponseId = undefined;
               input = [...conversationItems];
-              response = (await client.responses.create(
+              response = await createOpenAIStreamSnapshot(
+                client,
                 {
                   input,
                   model: options.model || defaultModel,
                   ...(openAITools
                     ? {
                         tools: openAITools,
-                        parallel_tool_calls: false,
+                        parallel_tool_calls: false as const,
                       }
                     : {}),
                 },
-                {
-                  signal: abortController.signal,
-                }
-              )) as OpenAIResponse;
+                abortController.signal
+              );
             }
 
             if (!statelessMode) {
@@ -525,6 +769,16 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             }
 
             const functionCalls = responseOutputItems.filter(isFunctionCallItem);
+            if (response.status === 'completed' && !responseText && functionCalls.length === 0) {
+              yield {
+                type: 'result',
+                status: 'error_empty_output',
+                usage: lastUsage,
+                error: 'OpenAI Responses stream completed without text or tool calls',
+              };
+              break;
+            }
+
             if (functionCalls.length === 0) {
               const error = getResponseError(response);
               yield {
