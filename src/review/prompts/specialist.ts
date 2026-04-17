@@ -30,25 +30,32 @@ export function buildSpecialistPrompt(agentType: AgentType, context: SpecialistC
   const sections: string[] = [];
 
   // PR Business Context (Issue Tracker integration)
-  const prIssues = context.prContext?.issues || context.prContext?.jiraIssues;
-  if (context.prContext && prIssues && prIssues.length > 0) {
+  const prIssues = context.prContext?.issues || context.prContext?.jiraIssues || [];
+  const prDescription = context.prContext?.prDescription?.trim();
+  const truncatedPrDescription =
+    prDescription && prDescription.length > 3000
+      ? `${prDescription.slice(0, 3000)}...`
+      : prDescription;
+  if (context.prContext && (prIssues.length > 0 || truncatedPrDescription)) {
     sections.push('## PR Business Context\n');
     sections.push(`**PR Title**: ${context.prContext.prTitle}\n`);
-    if (context.prContext.prDescription) {
-      sections.push(`**PR Description**: ${context.prContext.prDescription}\n`);
+    if (truncatedPrDescription) {
+      sections.push(`**PR Description**: ${truncatedPrDescription}\n`);
     }
-    sections.push('### Related Issues\n');
-    for (const issue of prIssues) {
-      sections.push(`#### ${issue.key} (${issue.type})`);
-      sections.push(`**摘要**: ${issue.summary}\n`);
-      if (issue.keyPoints.length > 0) {
-        sections.push('**关键点**:');
-        for (const point of issue.keyPoints) {
-          sections.push(`- ${point}`);
+    if (prIssues.length > 0) {
+      sections.push('### Related Issues\n');
+      for (const issue of prIssues) {
+        sections.push(`#### ${issue.key} (${issue.type})`);
+        sections.push(`**摘要**: ${issue.summary}\n`);
+        if (issue.keyPoints.length > 0) {
+          sections.push('**关键点**:');
+          for (const point of issue.keyPoints) {
+            sections.push(`- ${point}`);
+          }
+          sections.push('');
         }
-        sections.push('');
+        sections.push(`**Review 重点**: ${issue.reviewContext}\n`);
       }
-      sections.push(`**Review 重点**: ${issue.reviewContext}\n`);
     }
     sections.push('---\n');
   }
