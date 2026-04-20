@@ -170,6 +170,170 @@ describe('streaming validator runtime bridge', () => {
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
 
+  it('starts a fresh OpenAI validator execution for each queued issue in the same file', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock
+        .mockImplementationOnce((options) => ({
+          async *[Symbol.asyncIterator]() {
+            const iterator = options.prompt[Symbol.asyncIterator]();
+            const firstPrompt = await iterator.next();
+
+            expect(firstPrompt.done).toBe(false);
+            expect(firstPrompt.value).toMatchObject({
+              type: 'user',
+              message: {
+                role: 'user',
+              },
+            });
+            expect(firstPrompt.value.message.content).toContain('issue-1');
+            expect(firstPrompt.value.message.content).toContain('Missing null guard');
+            expect(firstPrompt.value.message.content).not.toContain('issue-2');
+
+            const responseText = JSON.stringify({
+              validation_status: 'confirmed',
+              final_confidence: 0.91,
+              grounding_evidence: {
+                checked_files: ['src/api/service.ts'],
+                checked_symbols: [],
+                related_context: 'Observed the missing guard.',
+                reasoning: 'The nullable payload is dereferenced immediately.',
+              },
+            });
+
+            yield {
+              type: 'assistant.text',
+              text: responseText,
+            };
+
+            yield {
+              type: 'result',
+              status: 'success',
+              usage: {
+                inputTokens: 7,
+                outputTokens: 4,
+              },
+              text: responseText,
+            };
+          },
+          close: closeMock,
+        }))
+        .mockImplementationOnce((options) => ({
+          async *[Symbol.asyncIterator]() {
+            const iterator = options.prompt[Symbol.asyncIterator]();
+            const firstPrompt = await iterator.next();
+
+            expect(firstPrompt.done).toBe(false);
+            expect(firstPrompt.value).toMatchObject({
+              type: 'user',
+              message: {
+                role: 'user',
+              },
+            });
+            expect(firstPrompt.value.message.content).toContain('issue-2');
+            expect(firstPrompt.value.message.content).toContain('Missing fallback');
+            expect(firstPrompt.value.message.content).not.toContain('issue-1');
+
+            const responseText = JSON.stringify({
+              validation_status: 'rejected',
+              final_confidence: 0.73,
+              grounding_evidence: {
+                checked_files: ['src/api/service.ts'],
+                checked_symbols: [],
+                related_context: 'Fallback already exists.',
+                reasoning: 'The null branch is handled before the call site.',
+              },
+              rejection_reason: 'Guard already exists.',
+            });
+
+            yield {
+              type: 'assistant.text',
+              text: responseText,
+            };
+
+            yield {
+              type: 'result',
+              status: 'success',
+              usage: {
+                inputTokens: 6,
+                outputTokens: 5,
+              },
+              text: responseText,
+            };
+          },
+          close: closeMock,
+        })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: false,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+
+    validator.enqueue({
+      id: 'issue-1',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      suggestion: 'Guard the null path before accessing response fields.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    validator.enqueue({
+      id: 'issue-2',
+      file: 'src/api/service.ts',
+      line_start: 28,
+      line_end: 31,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing fallback',
+      description: 'The helper returns undefined without a fallback.',
+      suggestion: 'Return a default object when the response is empty.',
+      confidence: 0.86,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush();
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(closeMock).toHaveBeenCalledTimes(2);
+    expect(result.inputTokensUsed).toBe(13);
+    expect(result.outputTokensUsed).toBe(9);
+    expect(result.tokensUsed).toBe(22);
+    expect(result.issues).toHaveLength(2);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        id: 'issue-1',
+        validation_status: 'confirmed',
+        final_confidence: 0.91,
+      }),
+      expect.objectContaining({
+        id: 'issue-2',
+        validation_status: 'rejected',
+        final_confidence: 0.73,
+      }),
+    ]);
+  });
+
   it('closes the runtime prompt stream after the final queued issue is validated', async () => {
     let secondPromptResult: { done: boolean; value?: unknown | 'timeout' } | undefined;
 

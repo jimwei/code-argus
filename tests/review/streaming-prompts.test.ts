@@ -2,6 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { buildStreamingUserPrompt } from '../../src/review/prompts/streaming.js';
 
 describe('streaming specialist prompts', () => {
+  it('includes PR description even when there are no linked issues', () => {
+    const prompt = buildStreamingUserPrompt('logic-reviewer', {
+      diff: '+const ready = true',
+      prContext: {
+        prTitle: 'Improve login validation',
+        prDescription: 'Handle special characters and keep backward compatibility.',
+        issues: [],
+      },
+    } as any);
+
+    expect(prompt).toContain('## PR Business Context');
+    expect(prompt).toContain(
+      '**PR Description**: Handle special characters and keep backward compatibility.'
+    );
+    expect(prompt).not.toContain('### Related Issues');
+  });
+
   it('tells style reviewers to avoid low-value naming and spelling nits', () => {
     const prompt = buildStreamingUserPrompt('style-reviewer', {
       diff: '+const recieveValue = getValue()',
