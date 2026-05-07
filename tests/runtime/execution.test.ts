@@ -524,7 +524,13 @@ describe('runtime execution', () => {
       1,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
-        input: 'Review this diff',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Review this diff' }],
+          },
+        ],
         stream: true,
         parallel_tool_calls: false,
         tools: [
@@ -890,7 +896,13 @@ describe('runtime execution', () => {
       1,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
-        input: 'First validation turn',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'First validation turn' }],
+          },
+        ],
         stream: true,
       }),
       expect.any(Object)
@@ -901,7 +913,13 @@ describe('runtime execution', () => {
         model: 'gpt-5.3-codex',
         stream: true,
         previous_response_id: 'resp_1',
-        input: 'Second validation turn',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Second validation turn' }],
+          },
+        ],
       }),
       expect.any(Object)
     );
@@ -1166,13 +1184,116 @@ describe('runtime execution', () => {
 
     expect(createMock).toHaveBeenCalledWith({
       model: 'gpt-5-mini',
-      input: 'Return JSON only',
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Return JSON only' }],
+        },
+      ],
       stream: true,
     });
     expect(result).toEqual({
       text: 'runtime text output',
       usage: {
         inputTokens: 10,
+        outputTokens: 4,
+      },
+    });
+  });
+
+  it('retries OpenAI text generation with plain string input when the endpoint rejects message-list input', async () => {
+    const incompatibleInputError = Object.assign(new Error('input must be a string'), {
+      status: 400,
+      error: {
+        message: 'input must be a string',
+      },
+    });
+
+    const createMock = vi
+      .fn()
+      .mockRejectedValueOnce(incompatibleInputError)
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_text_fallback_1',
+          status: 'completed',
+          output_text: 'runtime text output',
+          output: [
+            {
+              id: 'msg_fallback_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'runtime text output',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 12,
+            output_tokens: 4,
+          },
+        })
+      );
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const result = await runtime.generateText({
+      model: 'gpt-5-mini',
+      prompt: 'Return JSON only',
+    });
+
+    expect(createMock).toHaveBeenCalledTimes(2);
+    expect(createMock).toHaveBeenNthCalledWith(
+      1,
+      {
+        model: 'gpt-5-mini',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Return JSON only' }],
+          },
+        ],
+        stream: true,
+      },
+      expect.any(Object)
+    );
+    expect(createMock).toHaveBeenNthCalledWith(
+      2,
+      {
+        model: 'gpt-5-mini',
+        input: 'Return JSON only',
+        stream: true,
+      },
+      expect.any(Object)
+    );
+    expect(result).toEqual({
+      text: 'runtime text output',
+      usage: {
+        inputTokens: 12,
         outputTokens: 4,
       },
     });
