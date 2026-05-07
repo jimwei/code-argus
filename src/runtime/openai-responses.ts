@@ -44,6 +44,8 @@ type OpenAIResponseInputItem = ResponseInputItem;
 
 type OpenAIResponseInput = string | OpenAIResponseInputItem[];
 
+type OpenAIUserPromptInputMode = 'message_list' | 'string';
+
 type OpenAIRequestTool = {
   type: 'function';
   name: string;
@@ -220,6 +222,21 @@ function createUserMessageInput(prompt: string): OpenAIResponseInputItem {
   };
 }
 
+function buildUserPromptInputVariants(
+  prompt: string
+): Array<{ mode: OpenAIUserPromptInputMode; input: OpenAIResponseInput }> {
+  return [
+    {
+      mode: 'message_list',
+      input: [createUserMessageInput(prompt)],
+    },
+    {
+      mode: 'string',
+      input: prompt,
+    },
+  ];
+}
+
 function isFunctionCallOutputItem(item: unknown): item is OpenAIFunctionCallOutputItem {
   return Boolean(
     item &&
@@ -254,6 +271,66 @@ function isToolContinuationGatewayFailure(error: unknown): boolean {
     status === 502 &&
     errorType === 'upstream_error' &&
     (message === '502 Upstream request failed' || errorMessage === 'Upstream request failed')
+  );
+}
+
+function getOpenAIErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object' || !('status' in error)) {
+    return undefined;
+  }
+
+  return typeof error.status === 'number' ? error.status : undefined;
+}
+
+function getOpenAIErrorMessage(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+
+  if ('error' in error && isPlainObject(error.error) && typeof error.error.message === 'string') {
+    return error.error.message;
+  }
+
+  if ('message' in error && typeof error.message === 'string') {
+    return error.message;
+  }
+
+  return undefined;
+}
+
+function isInputCompatibilityError(message: string | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const normalized = message.toLowerCase();
+  const indicators = [
+    'input must be a list',
+    'input must be an array',
+    'input should be a list',
+    'input should be an array',
+    'input must be a string',
+    'input should be a string',
+    'expected input to be a list',
+    'expected input to be an array',
+    'expected input to be a string',
+    'invalid input type',
+    'input format',
+    'content must be a string',
+    'content should be a string',
+  ];
+
+  return indicators.some((indicator) => normalized.includes(indicator));
+}
+
+function shouldRetryUserPromptAsString(
+  mode: OpenAIUserPromptInputMode,
+  error: unknown
+): boolean {
+  return (
+    mode === 'message_list' &&
+    getOpenAIErrorStatus(error) === 400 &&
+    isInputCompatibilityError(getOpenAIErrorMessage(error))
   );
 }
 
@@ -491,6 +568,40 @@ async function createOpenAIStreamSnapshot(
   return snapshot;
 }
 
+async function createOpenAIStreamSnapshotForUserPrompt(
+  client: OpenAI,
+  request: Omit<OpenAIResponseRequest, 'input'> & {
+    prompt: string;
+  },
+  signal?: AbortSignal
+): Promise<OpenAIResponse> {
+  let lastError: unknown;
+  const { prompt, ...requestWithoutPrompt } = request;
+
+  for (const variant of buildUserPromptInputVariants(prompt)) {
+    try {
+      return await createOpenAIStreamSnapshot(
+        client,
+        {
+          ...requestWithoutPrompt,
+          input: variant.input,
+        },
+        signal
+      );
+    } catch (error) {
+      if (!shouldRetryUserPromptAsString(variant.mode, error)) {
+        throw error;
+      }
+
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('OpenAI Responses request failed for all supported input formats');
+}
+
 function normalizeResponseStatus(response: OpenAIResponse): string {
   switch (response.status) {
     case 'completed':
@@ -637,11 +748,11 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
   }
 
   async generateText(options: RuntimeGenerateTextOptions): Promise<RuntimeGenerateTextResult> {
-    const response = await createOpenAIStreamSnapshot(
+    const response = await createOpenAIStreamSnapshotForUserPrompt(
       this.client,
       {
         model: options.model || this.config.models.main,
-        input: options.prompt,
+        prompt: options.prompt,
         ...(options.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}),
       },
       options.abortController?.signal
@@ -719,7 +830,24 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
 
             let response: OpenAIResponse;
             try {
-              response = await createOpenAIStreamSnapshot(client, request, abortController.signal);
+              response =
+                !statelessMode && typeof input === 'string'
+                  ? await createOpenAIStreamSnapshotForUserPrompt(
+                      client,
+                      {
+                        model: request.model,
+                        ...(request.previous_response_id
+                          ? { previous_response_id: request.previous_response_id }
+                          : {}),
+                        ...(request.tools ? { tools: request.tools } : {}),
+                        ...(request.parallel_tool_calls
+                          ? { parallel_tool_calls: request.parallel_tool_calls }
+                          : {}),
+                        prompt: input,
+                      },
+                      abortController.signal
+                    )
+                  : await createOpenAIStreamSnapshot(client, request, abortController.signal);
             } catch (error) {
               const shouldFallbackToStatelessReplay =
                 !statelessMode &&
