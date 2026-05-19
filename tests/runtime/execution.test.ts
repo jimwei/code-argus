@@ -414,60 +414,60 @@ describe('runtime execution', () => {
       .fn()
       .mockResolvedValueOnce(
         createOpenAIResponseStream({
-        id: 'resp_1',
-        status: 'completed',
-        output_text: '',
-        output: [
-          {
-            id: 'fc_1',
-            type: 'function_call',
-            call_id: 'call_1',
-            name: 'report_issue',
-            arguments: JSON.stringify({
-              file: 'src/api/service.ts',
-              line_start: 18,
-              line_end: 21,
-              title: 'Missing error handling',
-            }),
-            status: 'completed',
+          id: 'resp_1',
+          status: 'completed',
+          output_text: '',
+          output: [
+            {
+              id: 'fc_1',
+              type: 'function_call',
+              call_id: 'call_1',
+              name: 'report_issue',
+              arguments: JSON.stringify({
+                file: 'src/api/service.ts',
+                line_start: 18,
+                line_end: 21,
+                title: 'Missing error handling',
+              }),
+              status: 'completed',
+            },
+          ],
+          usage: {
+            input_tokens: 8,
+            output_tokens: 3,
+            total_tokens: 11,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens_details: { reasoning_tokens: 0 },
           },
-        ],
-        usage: {
-          input_tokens: 8,
-          output_tokens: 3,
-          total_tokens: 11,
-          input_tokens_details: { cached_tokens: 0 },
-          output_tokens_details: { reasoning_tokens: 0 },
-        },
         })
       )
       .mockResolvedValueOnce(
         createOpenAIResponseStream({
-        id: 'resp_2',
-        status: 'completed',
-        output_text: 'Done',
-        output: [
-          {
-            id: 'msg_1',
-            type: 'message',
-            role: 'assistant',
-            status: 'completed',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Done',
-                annotations: [],
-              },
-            ],
+          id: 'resp_2',
+          status: 'completed',
+          output_text: 'Done',
+          output: [
+            {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Done',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 11,
+            output_tokens: 7,
+            total_tokens: 18,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens_details: { reasoning_tokens: 0 },
           },
-        ],
-        usage: {
-          input_tokens: 11,
-          output_tokens: 7,
-          total_tokens: 18,
-          input_tokens_details: { cached_tokens: 0 },
-          output_tokens_details: { reasoning_tokens: 0 },
-        },
         })
       );
 
@@ -611,55 +611,55 @@ describe('runtime execution', () => {
       .fn()
       .mockResolvedValueOnce(
         createOpenAIResponseStream({
-        id: 'resp_1',
-        status: 'completed',
-        output_text: '',
-        output: [
-          {
-            id: 'fc_1',
-            type: 'function_call',
-            call_id: 'call_1',
-            name: 'report_issue',
-            arguments: JSON.stringify({
-              file: 'src/api/service.ts',
-              line_start: 18,
-              line_end: 21,
-              title: 'Missing error handling',
-            }),
-            status: 'completed',
+          id: 'resp_1',
+          status: 'completed',
+          output_text: '',
+          output: [
+            {
+              id: 'fc_1',
+              type: 'function_call',
+              call_id: 'call_1',
+              name: 'report_issue',
+              arguments: JSON.stringify({
+                file: 'src/api/service.ts',
+                line_start: 18,
+                line_end: 21,
+                title: 'Missing error handling',
+              }),
+              status: 'completed',
+            },
+          ],
+          usage: {
+            input_tokens: 8,
+            output_tokens: 3,
           },
-        ],
-        usage: {
-          input_tokens: 8,
-          output_tokens: 3,
-        },
         })
       )
       .mockRejectedValueOnce(upstreamError)
       .mockResolvedValueOnce(
         createOpenAIResponseStream({
-        id: 'resp_2',
-        status: 'completed',
-        output_text: 'Done',
-        output: [
-          {
-            id: 'msg_1',
-            type: 'message',
-            role: 'assistant',
-            status: 'completed',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Done',
-                annotations: [],
-              },
-            ],
+          id: 'resp_2',
+          status: 'completed',
+          output_text: 'Done',
+          output: [
+            {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Done',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 11,
+            output_tokens: 7,
           },
-        ],
-        usage: {
-          input_tokens: 11,
-          output_tokens: 7,
-        },
         })
       );
 
@@ -777,65 +777,474 @@ describe('runtime execution', () => {
     ]);
   });
 
+  it('falls back to stateless tool-loop replay when HTTP responses reject previous_response_id continuation', async () => {
+    const unsupportedContinuationError = Object.assign(
+      new Error('400 previous_response_id is only supported on Responses WebSocket v2'),
+      {
+        status: 400,
+        error: {
+          message: 'previous_response_id is only supported on Responses WebSocket v2',
+          type: 'invalid_request_error',
+        },
+      }
+    );
+
+    const createMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_1',
+          status: 'completed',
+          output_text: '',
+          output: [
+            {
+              id: 'fc_1',
+              type: 'function_call',
+              call_id: 'call_1',
+              name: 'report_issue',
+              arguments: JSON.stringify({
+                file: 'src/api/service.ts',
+                line_start: 18,
+                line_end: 21,
+                title: 'Missing error handling',
+              }),
+              status: 'completed',
+            },
+          ],
+          usage: {
+            input_tokens: 8,
+            output_tokens: 3,
+          },
+        })
+      )
+      .mockRejectedValueOnce(unsupportedContinuationError)
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_2',
+          status: 'completed',
+          output_text: 'Done',
+          output: [
+            {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Done',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 11,
+            output_tokens: 7,
+          },
+        })
+      );
+
+    const executeTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text' as const, text: 'Issue recorded' }],
+    });
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.5',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.5',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const execution = runtime.execute({
+      prompt: 'Review this diff',
+      cwd: 'C:\\repo',
+      maxTurns: 6,
+      tools: [
+        {
+          name: 'report_issue',
+          description: 'Capture an issue',
+          inputSchema: {
+            file: z.string(),
+            line_start: z.number(),
+            line_end: z.number(),
+            title: z.string(),
+          },
+          execute: executeTool,
+        },
+      ],
+    });
+
+    const events = [];
+    for await (const event of execution) {
+      events.push(event);
+    }
+
+    expect(createMock).toHaveBeenCalledTimes(3);
+    expect(createMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        model: 'gpt-5.5',
+        stream: true,
+        previous_response_id: 'resp_1',
+        input: [
+          {
+            type: 'function_call_output',
+            call_id: 'call_1',
+            output: 'Issue recorded',
+          },
+        ],
+      }),
+      expect.any(Object)
+    );
+    expect(createMock).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        model: 'gpt-5.5',
+        stream: true,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Review this diff' }],
+          },
+          expect.objectContaining({
+            id: 'fc_1',
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'report_issue',
+          }),
+          {
+            type: 'function_call_output',
+            call_id: 'call_1',
+            output: 'Issue recorded',
+          },
+        ],
+      }),
+      expect.any(Object)
+    );
+    expect(createMock.mock.calls[2]?.[0]?.previous_response_id).toBeUndefined();
+
+    expect(events).toEqual([
+      {
+        type: 'activity',
+        event: 'function_call:report_issue',
+      },
+      {
+        type: 'assistant.text',
+        text: 'Done',
+      },
+      {
+        type: 'result',
+        status: 'success',
+        text: 'Done',
+        usage: {
+          inputTokens: 11,
+          outputTokens: 7,
+        },
+      },
+    ]);
+  });
+
+  it('falls back to item_reference continuation when stateless tool replay is rejected by the gateway', async () => {
+    const unsupportedContinuationError = Object.assign(
+      new Error('400 previous_response_id is only supported on Responses WebSocket v2'),
+      {
+        status: 400,
+        error: {
+          message: 'previous_response_id is only supported on Responses WebSocket v2',
+          type: 'invalid_request_error',
+        },
+      }
+    );
+
+    const itemReferenceRequiredError = Object.assign(
+      new Error(
+        '400 function_call_output requires item_reference ids matching each call_id on HTTP requests; continuation via previous_response_id is only supported on Responses WebSocket v2'
+      ),
+      {
+        status: 400,
+        error: {
+          message:
+            'function_call_output requires item_reference ids matching each call_id on HTTP requests; continuation via previous_response_id is only supported on Responses WebSocket v2',
+          type: 'invalid_request_error',
+        },
+      }
+    );
+
+    const createMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_1',
+          status: 'completed',
+          output_text: '',
+          output: [
+            {
+              id: 'fc_1',
+              type: 'function_call',
+              call_id: 'call_1',
+              name: 'report_issue',
+              arguments: JSON.stringify({
+                file: 'src/api/service.ts',
+                line_start: 18,
+                line_end: 21,
+                title: 'Missing error handling',
+              }),
+              status: 'completed',
+            },
+          ],
+          usage: {
+            input_tokens: 8,
+            output_tokens: 3,
+          },
+        })
+      )
+      .mockRejectedValueOnce(unsupportedContinuationError)
+      .mockRejectedValueOnce(itemReferenceRequiredError)
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_2',
+          status: 'completed',
+          output_text: 'Done',
+          output: [
+            {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Done',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 12,
+            output_tokens: 7,
+          },
+        })
+      );
+
+    const executeTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text' as const, text: 'Issue recorded' }],
+    });
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.5',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.5',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const execution = runtime.execute({
+      prompt: 'Review this diff',
+      cwd: 'C:\\repo',
+      maxTurns: 6,
+      tools: [
+        {
+          name: 'report_issue',
+          description: 'Capture an issue',
+          inputSchema: {
+            file: z.string(),
+            line_start: z.number(),
+            line_end: z.number(),
+            title: z.string(),
+          },
+          execute: executeTool,
+        },
+      ],
+    });
+
+    const events = [];
+    for await (const event of execution) {
+      events.push(event);
+    }
+
+    expect(createMock).toHaveBeenCalledTimes(4);
+    expect(createMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        model: 'gpt-5.5',
+        stream: true,
+        previous_response_id: 'resp_1',
+        input: [
+          {
+            type: 'function_call_output',
+            call_id: 'call_1',
+            output: 'Issue recorded',
+          },
+        ],
+      }),
+      expect.any(Object)
+    );
+    expect(createMock).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        model: 'gpt-5.5',
+        stream: true,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Review this diff' }],
+          },
+          expect.objectContaining({
+            id: 'fc_1',
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'report_issue',
+          }),
+          {
+            type: 'function_call_output',
+            call_id: 'call_1',
+            output: 'Issue recorded',
+          },
+        ],
+      }),
+      expect.any(Object)
+    );
+    expect(createMock).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({
+        model: 'gpt-5.5',
+        stream: true,
+        input: expect.arrayContaining([
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Review this diff' }],
+          },
+          expect.objectContaining({
+            id: 'fc_1',
+            type: 'function_call',
+            call_id: 'call_1',
+            name: 'report_issue',
+          }),
+          {
+            type: 'item_reference',
+            id: 'call_1',
+          },
+          {
+            type: 'function_call_output',
+            call_id: 'call_1',
+            output: 'Issue recorded',
+          },
+        ]),
+      }),
+      expect.any(Object)
+    );
+    expect(createMock.mock.calls[3]?.[0]?.previous_response_id).toBeUndefined();
+
+    expect(events).toEqual([
+      {
+        type: 'activity',
+        event: 'function_call:report_issue',
+      },
+      {
+        type: 'assistant.text',
+        text: 'Done',
+      },
+      {
+        type: 'result',
+        status: 'success',
+        text: 'Done',
+        usage: {
+          inputTokens: 12,
+          outputTokens: 7,
+        },
+      },
+    ]);
+  });
+
   it('supports async prompt streams for multi-turn OpenAI Responses sessions', async () => {
     const createMock = vi
       .fn()
       .mockResolvedValueOnce(
         createOpenAIResponseStream({
-        id: 'resp_1',
-        status: 'completed',
-        output_text: 'Round 1 complete',
-        output: [
-          {
-            id: 'msg_1',
-            type: 'message',
-            role: 'assistant',
-            status: 'completed',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Round 1 complete',
-                annotations: [],
-              },
-            ],
+          id: 'resp_1',
+          status: 'completed',
+          output_text: 'Round 1 complete',
+          output: [
+            {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Round 1 complete',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 5,
+            output_tokens: 2,
+            total_tokens: 7,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens_details: { reasoning_tokens: 0 },
           },
-        ],
-        usage: {
-          input_tokens: 5,
-          output_tokens: 2,
-          total_tokens: 7,
-          input_tokens_details: { cached_tokens: 0 },
-          output_tokens_details: { reasoning_tokens: 0 },
-        },
         })
       )
       .mockResolvedValueOnce(
         createOpenAIResponseStream({
-        id: 'resp_2',
-        status: 'completed',
-        output_text: 'Round 2 complete',
-        output: [
-          {
-            id: 'msg_2',
-            type: 'message',
-            role: 'assistant',
-            status: 'completed',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Round 2 complete',
-                annotations: [],
-              },
-            ],
+          id: 'resp_2',
+          status: 'completed',
+          output_text: 'Round 2 complete',
+          output: [
+            {
+              id: 'msg_2',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Round 2 complete',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 6,
+            output_tokens: 3,
+            total_tokens: 9,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens_details: { reasoning_tokens: 0 },
           },
-        ],
-        usage: {
-          input_tokens: 6,
-          output_tokens: 3,
-          total_tokens: 9,
-          input_tokens_details: { cached_tokens: 0 },
-          output_tokens_details: { reasoning_tokens: 0 },
-        },
         })
       );
 
@@ -959,56 +1368,56 @@ describe('runtime execution', () => {
       .fn()
       .mockResolvedValueOnce(
         createOpenAIResponseStream({
-        id: 'resp_schema_1',
-        status: 'completed',
-        output: [
-          {
-            type: 'function_call',
-            name: 'report_issue',
-            call_id: 'call_schema_1',
-            arguments: JSON.stringify({
-              file: 'src/api/service.ts',
-              line_start: 18,
-              line_end: 21,
-              title: 'Missing error handling',
-              suggestion: null,
-              updated_issue: {
-                title: 'Updated title',
+          id: 'resp_schema_1',
+          status: 'completed',
+          output: [
+            {
+              type: 'function_call',
+              name: 'report_issue',
+              call_id: 'call_schema_1',
+              arguments: JSON.stringify({
+                file: 'src/api/service.ts',
+                line_start: 18,
+                line_end: 21,
+                title: 'Missing error handling',
                 suggestion: null,
-              },
-            }),
+                updated_issue: {
+                  title: 'Updated title',
+                  suggestion: null,
+                },
+              }),
+            },
+          ],
+          usage: {
+            input_tokens: 9,
+            output_tokens: 3,
           },
-        ],
-        usage: {
-          input_tokens: 9,
-          output_tokens: 3,
-        },
         })
       )
       .mockResolvedValueOnce(
         createOpenAIResponseStream({
-        id: 'resp_schema_2',
-        status: 'completed',
-        output_text: 'Done',
-        output: [
-          {
-            id: 'msg_schema_2',
-            type: 'message',
-            role: 'assistant',
-            status: 'completed',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Done',
-                annotations: [],
-              },
-            ],
+          id: 'resp_schema_2',
+          status: 'completed',
+          output_text: 'Done',
+          output: [
+            {
+              id: 'msg_schema_2',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Done',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 11,
+            output_tokens: 4,
           },
-        ],
-        usage: {
-          input_tokens: 11,
-          output_tokens: 4,
-        },
         })
       );
 
@@ -1266,30 +1675,22 @@ describe('runtime execution', () => {
     });
 
     expect(createMock).toHaveBeenCalledTimes(2);
-    expect(createMock).toHaveBeenNthCalledWith(
-      1,
-      {
-        model: 'gpt-5-mini',
-        input: [
-          {
-            type: 'message',
-            role: 'user',
-            content: [{ type: 'input_text', text: 'Return JSON only' }],
-          },
-        ],
-        stream: true,
-      },
-      expect.any(Object)
-    );
-    expect(createMock).toHaveBeenNthCalledWith(
-      2,
-      {
-        model: 'gpt-5-mini',
-        input: 'Return JSON only',
-        stream: true,
-      },
-      expect.any(Object)
-    );
+    expect(createMock).toHaveBeenNthCalledWith(1, {
+      model: 'gpt-5-mini',
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Return JSON only' }],
+        },
+      ],
+      stream: true,
+    });
+    expect(createMock).toHaveBeenNthCalledWith(2, {
+      model: 'gpt-5-mini',
+      input: 'Return JSON only',
+      stream: true,
+    });
     expect(result).toEqual({
       text: 'runtime text output',
       usage: {

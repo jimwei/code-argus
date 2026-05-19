@@ -23,6 +23,7 @@ export default [
         __filename: 'readonly',
         NodeJS: 'readonly',
         AbortController: 'readonly',
+        AbortSignal: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         setInterval: 'readonly',
@@ -48,13 +49,6 @@ export default [
     },
   },
   {
-    ignores: [
-      'node_modules/**',
-      'dist/**',
-      'build/**',
-      '*.js',
-      '*.mjs',
-      '!eslint.config.mjs',
-    ],
+    ignores: ['node_modules/**', 'dist/**', 'build/**', '*.js', '*.mjs', '!eslint.config.mjs'],
   },
 ];
