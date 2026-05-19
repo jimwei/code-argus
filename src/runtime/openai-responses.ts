@@ -28,6 +28,7 @@ type OpenAIResponse = {
 };
 
 type OpenAIFunctionCallItem = {
+  id?: string;
   type: 'function_call';
   name: string;
   call_id: string;
@@ -44,7 +45,14 @@ type OpenAIResponseInputItem = ResponseInputItem;
 
 type OpenAIResponseInput = string | OpenAIResponseInputItem[];
 
+type OpenAIItemReferenceInputItem = {
+  type: 'item_reference';
+  id: string;
+};
+
 type OpenAIUserPromptInputMode = 'message_list' | 'string';
+
+type OpenAIConversationContinuationMode = 'managed' | 'stateless_full' | 'stateless_item_reference';
 
 type OpenAIRequestTool = {
   type: 'function';
@@ -256,6 +264,63 @@ function isFunctionCallOutputInput(
   return Array.isArray(input) && input.length > 0 && input.every(isFunctionCallOutputItem);
 }
 
+function containsFunctionCallOutputItems(
+  input: OpenAIResponseInput
+): input is OpenAIResponseInputItem[] {
+  return Array.isArray(input) && input.some(isFunctionCallOutputItem);
+}
+
+function getFunctionCallReferenceIds(item: OpenAIFunctionCallItem): string[] {
+  const ids = new Set<string>();
+
+  if (typeof item.id === 'string' && item.id.length > 0) {
+    ids.add(item.id);
+  }
+
+  ids.add(item.call_id);
+  return Array.from(ids);
+}
+
+function buildItemReferenceToolContinuationInput(
+  conversationItems: OpenAIResponseInputItem[]
+): OpenAIResponseInputItem[] {
+  const referenceIdsByCallId = new Map<string, string[]>();
+  const transformed: OpenAIResponseInputItem[] = [];
+
+  for (const item of conversationItems) {
+    if (isFunctionCallItem(item)) {
+      referenceIdsByCallId.set(item.call_id, getFunctionCallReferenceIds(item));
+      transformed.push(item);
+      continue;
+    }
+
+    if (isFunctionCallOutputItem(item)) {
+      const referenceIds = referenceIdsByCallId.get(item.call_id) ?? [item.call_id];
+      for (const referenceId of referenceIds) {
+        transformed.push({
+          type: 'item_reference',
+          id: referenceId,
+        } as OpenAIItemReferenceInputItem);
+      }
+    }
+
+    transformed.push(item);
+  }
+
+  return transformed;
+}
+
+function buildStatelessConversationInput(
+  mode: Exclude<OpenAIConversationContinuationMode, 'managed'>,
+  conversationItems: OpenAIResponseInputItem[]
+): OpenAIResponseInputItem[] {
+  if (mode === 'stateless_item_reference') {
+    return buildItemReferenceToolContinuationInput(conversationItems);
+  }
+
+  return [...conversationItems];
+}
+
 function isToolContinuationGatewayFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') {
     return false;
@@ -271,6 +336,37 @@ function isToolContinuationGatewayFailure(error: unknown): boolean {
     status === 502 &&
     errorType === 'upstream_error' &&
     (message === '502 Upstream request failed' || errorMessage === 'Upstream request failed')
+  );
+}
+
+function isPreviousResponseIdUnsupportedError(error: unknown): boolean {
+  if (getOpenAIErrorStatus(error) !== 400) {
+    return false;
+  }
+
+  const message = getOpenAIErrorMessage(error)?.toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes('previous_response_id') &&
+    (message.includes('websocket v2') ||
+      message.includes('responses websocket') ||
+      message.includes('not supported'))
+  );
+}
+
+function isItemReferenceRequiredError(error: unknown): boolean {
+  const message = getOpenAIErrorMessage(error)?.toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes('function_call_output') &&
+    message.includes('item_reference') &&
+    message.includes('call_id')
   );
 }
 
@@ -323,10 +419,7 @@ function isInputCompatibilityError(message: string | undefined): boolean {
   return indicators.some((indicator) => normalized.includes(indicator));
 }
 
-function shouldRetryUserPromptAsString(
-  mode: OpenAIUserPromptInputMode,
-  error: unknown
-): boolean {
+function shouldRetryUserPromptAsString(mode: OpenAIUserPromptInputMode, error: unknown): boolean {
   return (
     mode === 'message_list' &&
     getOpenAIErrorStatus(error) === 400 &&
@@ -798,7 +891,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
       async *[Symbol.asyncIterator]() {
         const conversationItems: OpenAIResponseInputItem[] = [];
         let previousResponseId: string | undefined;
-        let statelessMode = false;
+        let continuationMode: OpenAIConversationContinuationMode = 'managed';
         let remainingTurns = Math.max(options.maxTurns, 1);
 
         for await (const promptInput of iteratePromptInputs(options.prompt)) {
@@ -807,78 +900,82 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
           }
 
           conversationItems.push(createUserMessageInput(promptInput));
-          let input: OpenAIResponseInput = statelessMode ? [...conversationItems] : promptInput;
+          let input: OpenAIResponseInput =
+            continuationMode === 'managed'
+              ? promptInput
+              : buildStatelessConversationInput(continuationMode, conversationItems);
           let lastText: string | undefined;
           let lastUsage: RuntimeUsage | undefined;
 
           while (remainingTurns > 0 && !closed) {
             remainingTurns--;
 
-            const request = {
-              model: options.model || defaultModel,
-              input,
-              ...(!statelessMode && previousResponseId
-                ? { previous_response_id: previousResponseId }
-                : {}),
-              ...(openAITools
-                ? {
-                    tools: openAITools,
-                    parallel_tool_calls: false as const,
-                  }
-                : {}),
-            };
-
             let response: OpenAIResponse;
-            try {
-              response =
-                !statelessMode && typeof input === 'string'
-                  ? await createOpenAIStreamSnapshotForUserPrompt(
-                      client,
-                      {
-                        model: request.model,
-                        ...(request.previous_response_id
-                          ? { previous_response_id: request.previous_response_id }
-                          : {}),
-                        ...(request.tools ? { tools: request.tools } : {}),
-                        ...(request.parallel_tool_calls
-                          ? { parallel_tool_calls: request.parallel_tool_calls }
-                          : {}),
-                        prompt: input,
-                      },
-                      abortController.signal
-                    )
-                  : await createOpenAIStreamSnapshot(client, request, abortController.signal);
-            } catch (error) {
-              const shouldFallbackToStatelessReplay =
-                !statelessMode &&
-                previousResponseId &&
-                isFunctionCallOutputInput(input) &&
-                isToolContinuationGatewayFailure(error);
+            while (true) {
+              const request = {
+                model: options.model || defaultModel,
+                input,
+                ...(continuationMode === 'managed' && previousResponseId
+                  ? { previous_response_id: previousResponseId }
+                  : {}),
+                ...(openAITools
+                  ? {
+                      tools: openAITools,
+                      parallel_tool_calls: false as const,
+                    }
+                  : {}),
+              };
 
-              if (!shouldFallbackToStatelessReplay) {
+              try {
+                response =
+                  continuationMode === 'managed' && typeof input === 'string'
+                    ? await createOpenAIStreamSnapshotForUserPrompt(
+                        client,
+                        {
+                          model: request.model,
+                          ...(request.previous_response_id
+                            ? { previous_response_id: request.previous_response_id }
+                            : {}),
+                          ...(request.tools ? { tools: request.tools } : {}),
+                          ...(request.parallel_tool_calls !== undefined
+                            ? { parallel_tool_calls: request.parallel_tool_calls }
+                            : {}),
+                          prompt: input,
+                        },
+                        abortController.signal
+                      )
+                    : await createOpenAIStreamSnapshot(client, request, abortController.signal);
+                break;
+              } catch (error) {
+                const shouldFallbackToStatelessReplay =
+                  continuationMode === 'managed' &&
+                  previousResponseId &&
+                  (isPreviousResponseIdUnsupportedError(error) ||
+                    (isFunctionCallOutputInput(input) && isToolContinuationGatewayFailure(error)));
+
+                if (shouldFallbackToStatelessReplay) {
+                  continuationMode = 'stateless_full';
+                  previousResponseId = undefined;
+                  input = buildStatelessConversationInput(continuationMode, conversationItems);
+                  continue;
+                }
+
+                const shouldFallbackToItemReferenceReplay =
+                  continuationMode === 'stateless_full' &&
+                  containsFunctionCallOutputItems(input) &&
+                  isItemReferenceRequiredError(error);
+
+                if (shouldFallbackToItemReferenceReplay) {
+                  continuationMode = 'stateless_item_reference';
+                  input = buildStatelessConversationInput(continuationMode, conversationItems);
+                  continue;
+                }
+
                 throw error;
               }
-
-              statelessMode = true;
-              previousResponseId = undefined;
-              input = [...conversationItems];
-              response = await createOpenAIStreamSnapshot(
-                client,
-                {
-                  input,
-                  model: options.model || defaultModel,
-                  ...(openAITools
-                    ? {
-                        tools: openAITools,
-                        parallel_tool_calls: false as const,
-                      }
-                    : {}),
-                },
-                abortController.signal
-              );
             }
 
-            if (!statelessMode) {
+            if (continuationMode === 'managed') {
               previousResponseId = response.id;
             }
             lastUsage = normalizeUsage(response.usage);
@@ -896,7 +993,9 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               };
             }
 
-            const functionCalls = responseOutputItems.filter(isFunctionCallItem);
+            const functionCalls = responseOutputItems.filter(
+              (item): item is OpenAIFunctionCallItem => isFunctionCallItem(item)
+            );
             if (response.status === 'completed' && !responseText && functionCalls.length === 0) {
               yield {
                 type: 'result',
@@ -956,7 +1055,10 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             }
 
             conversationItems.push(...toolOutputs);
-            input = statelessMode ? [...conversationItems] : toolOutputs;
+            input =
+              continuationMode === 'managed'
+                ? toolOutputs
+                : buildStatelessConversationInput(continuationMode, conversationItems);
           }
 
           if (!closed && remainingTurns === 0) {
