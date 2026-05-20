@@ -64,6 +64,7 @@ type OpenAIRequestTool = {
 
 type OpenAIResponseRequest = {
   model: string;
+  instructions?: string;
   input: OpenAIResponseInput;
   previous_response_id?: string;
   tools?: OpenAIRequestTool[];
@@ -77,6 +78,9 @@ type OpenAIResponseStream = AsyncIterable<ResponseStreamEvent> & {
 
 type JsonSchema = Record<string, unknown>;
 type MutableJsonObject = Record<string, any>;
+
+const DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS =
+  'Follow the user instructions and tool definitions exactly.';
 
 function isPlainObject(value: unknown): value is JsonSchema {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -578,17 +582,22 @@ async function createOpenAIStreamSnapshot(
   request: OpenAIResponseRequest,
   signal?: AbortSignal
 ): Promise<OpenAIResponse> {
+  const requestWithDefaults = {
+    instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
+    ...request,
+  };
+
   const stream = (
     signal
       ? await client.responses.create(
           {
-            ...request,
+            ...requestWithDefaults,
             stream: true,
           },
           { signal }
         )
       : await client.responses.create({
-          ...request,
+          ...requestWithDefaults,
           stream: true,
         })
   ) as OpenAIResponseStream;

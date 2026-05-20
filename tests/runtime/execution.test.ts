@@ -93,6 +93,9 @@ function cloneValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+const DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS =
+  'Follow the user instructions and tool definitions exactly.';
+
 function createOpenAIResponseStream(
   response: MockOpenAIResponse,
   options: { textChunks?: string[] } = {}
@@ -524,6 +527,7 @@ describe('runtime execution', () => {
       1,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         input: [
           {
             type: 'message',
@@ -557,6 +561,7 @@ describe('runtime execution', () => {
       2,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         stream: true,
         previous_response_id: 'resp_1',
         input: [
@@ -716,6 +721,7 @@ describe('runtime execution', () => {
       2,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         stream: true,
         previous_response_id: 'resp_1',
         input: [
@@ -732,6 +738,7 @@ describe('runtime execution', () => {
       3,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         stream: true,
         input: [
           {
@@ -898,6 +905,7 @@ describe('runtime execution', () => {
       2,
       expect.objectContaining({
         model: 'gpt-5.5',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         stream: true,
         previous_response_id: 'resp_1',
         input: [
@@ -914,6 +922,7 @@ describe('runtime execution', () => {
       3,
       expect.objectContaining({
         model: 'gpt-5.5',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         stream: true,
         input: [
           {
@@ -1095,6 +1104,7 @@ describe('runtime execution', () => {
       2,
       expect.objectContaining({
         model: 'gpt-5.5',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         stream: true,
         previous_response_id: 'resp_1',
         input: [
@@ -1111,6 +1121,7 @@ describe('runtime execution', () => {
       3,
       expect.objectContaining({
         model: 'gpt-5.5',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         stream: true,
         input: [
           {
@@ -1137,6 +1148,7 @@ describe('runtime execution', () => {
       4,
       expect.objectContaining({
         model: 'gpt-5.5',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         stream: true,
         input: expect.arrayContaining([
           {
@@ -1305,6 +1317,7 @@ describe('runtime execution', () => {
       1,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         input: [
           {
             type: 'message',
@@ -1320,6 +1333,7 @@ describe('runtime execution', () => {
       2,
       expect.objectContaining({
         model: 'gpt-5.3-codex',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
         stream: true,
         previous_response_id: 'resp_1',
         input: [
@@ -1593,6 +1607,7 @@ describe('runtime execution', () => {
 
     expect(createMock).toHaveBeenCalledWith({
       model: 'gpt-5-mini',
+      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
       input: [
         {
           type: 'message',
@@ -1677,6 +1692,7 @@ describe('runtime execution', () => {
     expect(createMock).toHaveBeenCalledTimes(2);
     expect(createMock).toHaveBeenNthCalledWith(1, {
       model: 'gpt-5-mini',
+      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
       input: [
         {
           type: 'message',
@@ -1688,6 +1704,7 @@ describe('runtime execution', () => {
     });
     expect(createMock).toHaveBeenNthCalledWith(2, {
       model: 'gpt-5-mini',
+      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
       input: 'Return JSON only',
       stream: true,
     });
