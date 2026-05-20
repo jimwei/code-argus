@@ -1198,14 +1198,17 @@ describe('runtime execution', () => {
     ]);
   });
 
-  it('omits non-replayable reasoning items when falling back to stateless tool replay', async () => {
-    const unsupportedContinuationError = Object.assign(
-      new Error('400 previous_response_id is only supported on Responses WebSocket v2'),
+  it('falls back to stateless replay when store=false previous_response_id cannot find reasoning items', async () => {
+    const nonPersistedReasoningError = Object.assign(
+      new Error(
+        "404 Item with id 'rs_1' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input."
+      ),
       {
-        status: 400,
+        status: 404,
         error: {
-          message: 'previous_response_id is only supported on Responses WebSocket v2',
-          type: 'invalid_request_error',
+          message:
+            "Item with id 'rs_1' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+          type: 'not_found_error',
         },
       }
     );
@@ -1243,7 +1246,7 @@ describe('runtime execution', () => {
           },
         })
       )
-      .mockRejectedValueOnce(unsupportedContinuationError)
+      .mockRejectedValueOnce(nonPersistedReasoningError)
       .mockResolvedValueOnce(
         createOpenAIResponseStream({
           id: 'resp_2',

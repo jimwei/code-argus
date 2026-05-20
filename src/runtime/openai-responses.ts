@@ -382,6 +382,24 @@ function isPreviousResponseIdUnsupportedError(error: unknown): boolean {
   );
 }
 
+function isNonPersistedItemReferenceError(error: unknown): boolean {
+  if (getOpenAIErrorStatus(error) !== 404) {
+    return false;
+  }
+
+  const message = getOpenAIErrorMessage(error)?.toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes('item with id') &&
+    message.includes('not found') &&
+    (message.includes('items are not persisted') ||
+      (message.includes('store') && message.includes('false')))
+  );
+}
+
 function isItemReferenceRequiredError(error: unknown): boolean {
   const message = getOpenAIErrorMessage(error)?.toLowerCase();
   if (!message) {
@@ -1014,6 +1032,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                   continuationMode === 'managed' &&
                   previousResponseId &&
                   (isPreviousResponseIdUnsupportedError(error) ||
+                    isNonPersistedItemReferenceError(error) ||
                     (isFunctionCallOutputInput(input) && isToolContinuationGatewayFailure(error)));
 
                 if (shouldFallbackToStatelessReplay) {
