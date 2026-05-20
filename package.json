@@ -1,6 +1,6 @@
 {
   "name": "code-argus",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "AI-powered automated code review CLI with multi-agent orchestration and Claude/OpenAI runtime support",
   "type": "module",
   "main": "./dist/index.js",
