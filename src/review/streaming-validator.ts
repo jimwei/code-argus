@@ -32,6 +32,84 @@ import { formatFrontendDependencyContext } from './dependency-context/extractor.
 
 /** Maximum number of times to retry a crashed session */
 const MAX_SESSION_CRASH_RETRIES = 2;
+const OPENAI_VALIDATION_READ_CONTEXT_LINES = 60;
+const OPENAI_VALIDATION_DEFAULT_READ_LIMIT = 140;
+const OPENAI_VALIDATION_MAX_READ_LIMIT = 180;
+const MAX_VALIDATION_DESCRIPTION_CHARS = 5000;
+const MAX_VALIDATION_SUGGESTION_CHARS = 3000;
+const MAX_VALIDATION_CODE_SNIPPET_CHARS = 6000;
+const MAX_CHALLENGE_ROUNDS_FOR_LARGE_CONTEXT = 2;
+const LARGE_ISSUE_CONTEXT_CHARS = 12000;
+
+function getErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object' || !('status' in error)) {
+    return undefined;
+  }
+
+  return typeof error.status === 'number' ? error.status : undefined;
+}
+
+function getErrorText(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (!error || typeof error !== 'object') {
+    return String(error);
+  }
+
+  const parts: string[] = [];
+  if ('message' in error && typeof error.message === 'string') {
+    parts.push(error.message);
+  }
+
+  if ('error' in error && error.error && typeof error.error === 'object') {
+    const upstreamError = error.error as Record<string, unknown>;
+    if (typeof upstreamError.message === 'string') {
+      parts.push(upstreamError.message);
+    }
+    if (typeof upstreamError.type === 'string') {
+      parts.push(upstreamError.type);
+    }
+  }
+
+  return parts.length > 0 ? parts.join(' ') : String(error);
+}
+
+function isValidationContextLimitText(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes('context_length_exceeded') ||
+    normalized.includes('context length') ||
+    normalized.includes('maximum context') ||
+    normalized.includes('request too large') ||
+    normalized.includes('request entity too large') ||
+    normalized.includes('payload too large') ||
+    (normalized.includes('413') &&
+      (normalized.includes('openresty') ||
+        normalized.includes('too large') ||
+        normalized.includes('payload')))
+  );
+}
+
+function isValidationContextLimitError(error: unknown): boolean {
+  return getErrorStatus(error) === 413 || isValidationContextLimitText(getErrorText(error));
+}
+
+function validationContextLimitReason(error: unknown): string {
+  const message = getErrorText(error);
+  return message
+    ? `Validation context exceeded provider limits: ${message}`
+    : 'Validation context exceeded provider limits';
+}
+
+function truncatePromptText(value: string | undefined, maxChars: number): string | undefined {
+  if (!value || value.length <= maxChars) {
+    return value;
+  }
+
+  return `${value.slice(0, maxChars)}\n\n[truncated ${value.length - maxChars} chars for validator context budget]`;
+}
 
 /**
  * Progress callback for streaming validation (legacy)
@@ -614,8 +692,6 @@ export class StreamingValidator {
       // Reuse within a single issue for challenge rounds, but reset between issues.
       // OpenAI validator sessions can accumulate enough prior turns and tool output
       // to trip context_length_exceeded on later same-file issues.
-      const repoContextTools = createRepoContextTools(this.options.repoPath);
-
       while (true) {
         currentIssue = await getNextIssue();
         if (!currentIssue) {
@@ -624,6 +700,16 @@ export class StreamingValidator {
 
         currentRound = 1;
         currentResponses = [];
+        const repoContextTools = createRepoContextTools(this.options.repoPath, {
+          defaultReadLimit: OPENAI_VALIDATION_DEFAULT_READ_LIMIT,
+          maxReadLimit: OPENAI_VALIDATION_MAX_READ_LIMIT,
+          focusedReadWindow: {
+            filePath: currentIssue.file,
+            lineStart: currentIssue.line_start,
+            lineEnd: currentIssue.line_end,
+            contextLines: OPENAI_VALIDATION_READ_CONTEXT_LINES,
+          },
+        });
 
         const toPromptMessage = (content: string): RuntimePromptMessage => ({
           type: 'user',
@@ -695,145 +781,161 @@ export class StreamingValidator {
         });
 
         try {
-          for await (const event of execution) {
-            if (currentIssue) {
-              let activity = '';
+          try {
+            for await (const event of execution) {
+              if (currentIssue) {
+                let activity = '';
+                if (event.type === 'assistant.text') {
+                  activity = `Round ${currentRound} analyzing...`;
+                } else if (event.type === 'activity') {
+                  activity = `Round ${currentRound} reading code...`;
+                }
+
+                if (activity) {
+                  this.options.callbacks?.onValidationActivity?.(
+                    currentIssue.id,
+                    currentIssue.title,
+                    activity
+                  );
+                }
+              }
+
               if (event.type === 'assistant.text') {
-                activity = `Round ${currentRound} analyzing...`;
-              } else if (event.type === 'activity') {
-                activity = `Round ${currentRound} reading code...`;
+                lastAssistantText = event.text;
+                continue;
               }
 
-              if (activity) {
-                this.options.callbacks?.onValidationActivity?.(
-                  currentIssue.id,
-                  currentIssue.title,
-                  activity
+              if (event.type !== 'result') {
+                continue;
+              }
+
+              const inputTokens = event.usage?.inputTokens ?? 0;
+              const outputTokens = event.usage?.outputTokens ?? 0;
+              const turnTokens = inputTokens + outputTokens;
+              session.inputTokensUsed += inputTokens;
+              session.outputTokensUsed += outputTokens;
+              session.tokensUsed += turnTokens;
+
+              console.log(
+                `[Validator-Detail] Issue="${currentIssue?.title?.slice(0, 30)}" Round=${currentRound} ` +
+                  `Tokens: input=${inputTokens}, output=${outputTokens}, total=${turnTokens}, ` +
+                  `session_total=${session.tokensUsed}`
+              );
+
+              if (event.status === 'success') {
+                const responseText = event.text || lastAssistantText;
+                const response = this.parseResponse(responseText);
+
+                if (!response) {
+                  finalizedIssue =
+                    currentRound === 1
+                      ? this.createUncertainIssue(
+                          currentIssue!,
+                          'Validator response could not be parsed'
+                        )
+                      : this.responseToValidatedIssue(
+                          currentResponses[currentResponses.length - 1]!,
+                          currentIssue!,
+                          'Challenge round parse failed'
+                        );
+                  endPromptStream();
+                  continue;
+                }
+
+                currentResponses.push(response);
+                const maxRoundsForThisIssue = this.getMaxRoundsForIssue(currentIssue!);
+
+                this.options.callbacks?.onRoundComplete?.(
+                  currentIssue!.id,
+                  currentIssue!.title,
+                  currentRound,
+                  maxRoundsForThisIssue,
+                  response.validation_status
                 );
-              }
-            }
 
-            if (event.type === 'assistant.text') {
-              lastAssistantText = event.text;
-              continue;
-            }
+                if (this.options.verbose) {
+                  console.log(
+                    `[StreamingValidator] ${currentIssue!.id} Round ${currentRound}/${maxRoundsForThisIssue}: ${response.validation_status}`
+                  );
+                }
 
-            if (event.type !== 'result') {
-              continue;
-            }
+                let shouldContinueChallenge = false;
 
-            const inputTokens = event.usage?.inputTokens ?? 0;
-            const outputTokens = event.usage?.outputTokens ?? 0;
-            const turnTokens = inputTokens + outputTokens;
-            session.inputTokensUsed += inputTokens;
-            session.outputTokensUsed += outputTokens;
-            session.tokensUsed += turnTokens;
+                if (this.options.challengeMode && currentRound < maxRoundsForThisIssue) {
+                  if (currentRound >= 2) {
+                    const prevResponse = currentResponses[currentResponses.length - 2]!;
+                    if (prevResponse.validation_status !== response.validation_status) {
+                      shouldContinueChallenge = true;
+                    }
+                  } else {
+                    shouldContinueChallenge = maxRoundsForThisIssue > 1;
+                  }
+                }
 
-            console.log(
-              `[Validator-Detail] Issue="${currentIssue?.title?.slice(0, 30)}" Round=${currentRound} ` +
-                `Tokens: input=${inputTokens}, output=${outputTokens}, total=${turnTokens}, ` +
-                `session_total=${session.tokensUsed}`
-            );
+                if (shouldContinueChallenge) {
+                  currentRound++;
+                  sendPrompt(
+                    this.buildChallengePrompt(
+                      currentIssue!,
+                      response,
+                      currentRound,
+                      currentResponses.length >= 2
+                        ? currentResponses[currentResponses.length - 2]
+                        : undefined
+                    )
+                  );
+                  continue;
+                }
 
-            if (event.status === 'success') {
-              const responseText = event.text || lastAssistantText;
-              const response = this.parseResponse(responseText);
-
-              if (!response) {
                 finalizedIssue =
-                  currentRound === 1
-                    ? this.createUncertainIssue(
-                        currentIssue!,
-                        'Validator response could not be parsed'
-                      )
+                  currentRound >= maxRoundsForThisIssue && currentResponses.length > 1
+                    ? this.getFinalDecisionFromResponses(currentResponses, currentIssue!)
                     : this.responseToValidatedIssue(
-                        currentResponses[currentResponses.length - 1]!,
+                        response,
                         currentIssue!,
-                        'Challenge round parse failed'
+                        currentRound >= 2 ? 'Multi-round validation' : 'Single-round validation'
                       );
+
+                const roundHistory = currentResponses
+                  .map((roundResponse, index) => `R${index + 1}:${roundResponse.validation_status}`)
+                  .join(' -> ');
+                console.log(
+                  `[Validator-Summary] Issue="${currentIssue?.title?.slice(0, 40)}" ` +
+                    `Rounds=${currentRound} History=[${roundHistory}] ` +
+                    `Final=${finalizedIssue.validation_status} SessionTokens=${session.tokensUsed}`
+                );
+
                 endPromptStream();
                 continue;
               }
 
-              currentResponses.push(response);
-              const maxRoundsForThisIssue = this.getMaxRoundsForIssue(currentIssue!);
+              console.error(`[StreamingValidator] Session ${session.file} error: ${event.status}`);
 
-              this.options.callbacks?.onRoundComplete?.(
-                currentIssue!.id,
-                currentIssue!.title,
-                currentRound,
-                maxRoundsForThisIssue,
-                response.validation_status
-              );
-
-              if (this.options.verbose) {
-                console.log(
-                  `[StreamingValidator] ${currentIssue!.id} Round ${currentRound}/${maxRoundsForThisIssue}: ${response.validation_status}`
-                );
-              }
-
-              let shouldContinueChallenge = false;
-
-              if (this.options.challengeMode && currentRound < maxRoundsForThisIssue) {
-                if (currentRound >= 2) {
-                  const prevResponse = currentResponses[currentResponses.length - 2]!;
-                  if (prevResponse.validation_status !== response.validation_status) {
-                    shouldContinueChallenge = true;
-                  }
-                } else {
-                  shouldContinueChallenge = maxRoundsForThisIssue > 1;
-                }
-              }
-
-              if (shouldContinueChallenge) {
-                currentRound++;
-                sendPrompt(
-                  this.buildChallengePrompt(
+              finalizedIssue = isValidationContextLimitText(`${event.status} ${event.error ?? ''}`)
+                ? this.createUncertainIssue(
                     currentIssue!,
-                    response,
-                    currentRound,
-                    currentResponses.length >= 2
-                      ? currentResponses[currentResponses.length - 2]
-                      : undefined
+                    `Validation context exceeded provider limits: ${event.error ?? event.status}`
                   )
-                );
-                continue;
-              }
-
-              finalizedIssue =
-                currentRound >= maxRoundsForThisIssue && currentResponses.length > 1
-                  ? this.getFinalDecisionFromResponses(currentResponses, currentIssue!)
-                  : this.responseToValidatedIssue(
-                      response,
+                : currentResponses.length > 0
+                  ? this.responseToValidatedIssue(
+                      currentResponses[currentResponses.length - 1]!,
                       currentIssue!,
-                      currentRound >= 2 ? 'Multi-round validation' : 'Single-round validation'
-                    );
-
-              const roundHistory = currentResponses
-                .map((roundResponse, index) => `R${index + 1}:${roundResponse.validation_status}`)
-                .join(' -> ');
-              console.log(
-                `[Validator-Summary] Issue="${currentIssue?.title?.slice(0, 40)}" ` +
-                  `Rounds=${currentRound} History=[${roundHistory}] ` +
-                  `Final=${finalizedIssue.validation_status} SessionTokens=${session.tokensUsed}`
-              );
-
+                      'Validation interrupted'
+                    )
+                  : this.createUncertainIssue(currentIssue!, 'Validation failed');
               endPromptStream();
               continue;
             }
+          } catch (error) {
+            if (!isValidationContextLimitError(error)) {
+              throw error;
+            }
 
-            console.error(`[StreamingValidator] Session ${session.file} error: ${event.status}`);
-
-            finalizedIssue =
-              currentResponses.length > 0
-                ? this.responseToValidatedIssue(
-                    currentResponses[currentResponses.length - 1]!,
-                    currentIssue!,
-                    'Validation interrupted'
-                  )
-                : this.createUncertainIssue(currentIssue!, 'Validation failed');
+            finalizedIssue = this.createUncertainIssue(
+              currentIssue,
+              validationContextLimitReason(error)
+            );
             endPromptStream();
-            continue;
           }
         } finally {
           if (execution) {
@@ -1212,10 +1314,26 @@ export class StreamingValidator {
    */
   private getMaxRoundsForIssue(issue: RawIssue): number {
     const policy = getHighSignalValidationPolicy(issue, this.options.maxChallengeRounds);
-    return Math.max(policy.maxChallengeRounds, 1);
+    const issueContextChars = [
+      issue.title,
+      issue.description,
+      issue.suggestion ?? '',
+      issue.code_snippet ?? '',
+    ].join('\n').length;
+    const maxChallengeRounds =
+      issueContextChars > LARGE_ISSUE_CONTEXT_CHARS
+        ? Math.min(policy.maxChallengeRounds, MAX_CHALLENGE_ROUNDS_FOR_LARGE_CONTEXT)
+        : policy.maxChallengeRounds;
+
+    return Math.max(maxChallengeRounds, 1);
   }
 
   private buildUserPrompt(issue: RawIssue): string {
+    const description =
+      truncatePromptText(issue.description, MAX_VALIDATION_DESCRIPTION_CHARS) ?? issue.description;
+    const suggestion = truncatePromptText(issue.suggestion, MAX_VALIDATION_SUGGESTION_CHARS);
+    const codeSnippet = truncatePromptText(issue.code_snippet, MAX_VALIDATION_CODE_SNIPPET_CHARS);
+
     return `请验证以下问题：
 
 **问题 ID**: ${issue.id}
@@ -1224,9 +1342,9 @@ export class StreamingValidator {
 **类型**: ${issue.category}
 **严重程度**: ${issue.severity}
 **标题**: ${issue.title}
-**描述**: ${issue.description}
-${issue.suggestion ? `**建议**: ${issue.suggestion}` : ''}
-${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`` : ''}
+**描述**: ${description}
+${suggestion ? `**建议**: ${suggestion}` : ''}
+${codeSnippet ? `**代码片段**:\n\`\`\`\n${codeSnippet}\n\`\`\`` : ''}
 **初始置信度**: ${issue.confidence}
 
 请：

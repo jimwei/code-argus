@@ -14,6 +14,19 @@ const DEFAULT_GLOB_RESULTS = 200;
 const MAX_GLOB_RESULTS = 500;
 const IGNORED_DIRS = new Set(['.git', 'node_modules', '.worktrees']);
 
+export interface FocusedReadWindow {
+  filePath: string;
+  lineStart: number;
+  lineEnd?: number;
+  contextLines?: number;
+}
+
+export interface RepoContextToolsOptions {
+  defaultReadLimit?: number;
+  maxReadLimit?: number;
+  focusedReadWindow?: FocusedReadWindow;
+}
+
 interface ReadToolArgs {
   file_path: string;
   offset?: number;
@@ -129,7 +142,43 @@ function matchesText(
   return line.includes(pattern);
 }
 
-export function createRepoContextTools(repoPath: string): RuntimeToolDefinition[] {
+function getReadBounds(
+  relativePath: string,
+  lineCount: number,
+  args: ReadToolArgs,
+  options: RepoContextToolsOptions
+): { startLine: number; lineLimit: number } {
+  const maxReadLimit = clamp(options.maxReadLimit, MAX_READ_LIMIT, MAX_READ_LIMIT);
+  const defaultReadLimit = clamp(options.defaultReadLimit, DEFAULT_READ_LIMIT, maxReadLimit);
+  const focusedWindow = options.focusedReadWindow;
+  const normalizedReadPath = normalizePath(relativePath);
+  const focusedFilePath = focusedWindow ? normalizePath(focusedWindow.filePath) : undefined;
+  const focusApplies =
+    Boolean(focusedWindow && focusedFilePath === normalizedReadPath) && args.offset === undefined;
+
+  if (!focusApplies || !focusedWindow) {
+    return {
+      startLine: clamp(args.offset, 1, Math.max(lineCount, 1)),
+      lineLimit: clamp(args.limit, defaultReadLimit, maxReadLimit),
+    };
+  }
+
+  const contextLines = clamp(focusedWindow.contextLines, 40, maxReadLimit);
+  const lineStart = clamp(focusedWindow.lineStart, 1, Math.max(lineCount, 1));
+  const lineEnd = clamp(focusedWindow.lineEnd, lineStart, Math.max(lineCount, 1));
+  const issueLineCount = Math.max(lineEnd - lineStart + 1, 1);
+  const focusedDefaultLimit = Math.min(maxReadLimit, issueLineCount + contextLines * 2);
+
+  return {
+    startLine: Math.max(1, lineStart - contextLines),
+    lineLimit: clamp(args.limit, focusedDefaultLimit, maxReadLimit),
+  };
+}
+
+export function createRepoContextTools(
+  repoPath: string,
+  options: RepoContextToolsOptions = {}
+): RuntimeToolDefinition[] {
   let cachedRepoFiles: Promise<string[]> | null = null;
 
   const listRepoFiles = (startPath: string = '.'): Promise<string[]> => {
@@ -144,8 +193,13 @@ export function createRepoContextTools(repoPath: string): RuntimeToolDefinition[
   return [
     {
       name: 'Read',
-      description:
-        'Read file contents from the repository. Use offset and limit to inspect a specific line range when needed.',
+      description: options.focusedReadWindow
+        ? `Read file contents from the repository. Omit offset when reading ${normalizePath(
+            options.focusedReadWindow.filePath
+          )} to inspect a focused window around lines ${options.focusedReadWindow.lineStart}-${
+            options.focusedReadWindow.lineEnd ?? options.focusedReadWindow.lineStart
+          }; use offset and limit for other specific ranges.`
+        : 'Read file contents from the repository. Use offset and limit to inspect a specific line range when needed.',
       inputSchema: {
         file_path: z.string().describe('Repository-relative file path to read'),
         offset: z.number().int().positive().optional().describe('Starting line number (1-based)'),
@@ -156,8 +210,7 @@ export function createRepoContextTools(repoPath: string): RuntimeToolDefinition[
         const relativePath = toRepoRelativePath(repoPath, absolutePath);
         const fileContent = await readFile(absolutePath, 'utf8');
         const lines = fileContent.split(/\r?\n/);
-        const startLine = clamp(args.offset, 1, Math.max(lines.length, 1));
-        const lineLimit = clamp(args.limit, DEFAULT_READ_LIMIT, MAX_READ_LIMIT);
+        const { startLine, lineLimit } = getReadBounds(relativePath, lines.length, args, options);
         const endLine = Math.min(lines.length, startLine + lineLimit - 1);
         const snippet = lines
           .slice(startLine - 1, endLine)

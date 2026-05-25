@@ -334,6 +334,197 @@ describe('streaming validator runtime bridge', () => {
     ]);
   });
 
+  it('uses focused repo read tools for OpenAI validator executions', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const readTool = options.tools.find((tool: { name: string }) => tool.name === 'Read');
+          expect(readTool.description).toContain('src/api/service.ts');
+          expect(readTool.description).toContain('42-45');
+
+          const responseText = JSON.stringify({
+            validation_status: 'confirmed',
+            final_confidence: 0.9,
+            grounding_evidence: {
+              checked_files: ['src/api/service.ts'],
+              checked_symbols: [],
+              related_context: 'Focused read window was enough.',
+              reasoning: 'The issue line range is grounded.',
+            },
+          });
+
+          yield {
+            type: 'assistant.text',
+            text: responseText,
+          };
+
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: {
+              inputTokens: 5,
+              outputTokens: 4,
+            },
+            text: responseText,
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: false,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+
+    validator.enqueue({
+      id: 'issue-focused-read',
+      file: 'src/api/service.ts',
+      line_start: 42,
+      line_end: 45,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush();
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({
+      id: 'issue-focused-read',
+      validation_status: 'confirmed',
+    });
+  });
+
+  it('marks OpenAI validator context-limit failures uncertain without retrying', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock
+        .mockImplementationOnce(() => ({
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                const error = new Error('context_length_exceeded: prompt is too large');
+                (error as Error & { status: number }).status = 400;
+                throw error;
+              },
+            };
+          },
+          close: closeMock,
+        }))
+        .mockImplementationOnce(() => ({
+          async *[Symbol.asyncIterator]() {
+            const responseText = JSON.stringify({
+              validation_status: 'confirmed',
+              final_confidence: 0.89,
+              grounding_evidence: {
+                checked_files: ['src/api/service.ts'],
+                checked_symbols: [],
+                related_context: 'The second issue still ran.',
+                reasoning: 'The runtime continued after the oversized issue.',
+              },
+            });
+
+            yield {
+              type: 'assistant.text',
+              text: responseText,
+            };
+
+            yield {
+              type: 'result',
+              status: 'success',
+              usage: {
+                inputTokens: 6,
+                outputTokens: 5,
+              },
+              text: responseText,
+            };
+          },
+          close: closeMock,
+        })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: true,
+      maxChallengeRounds: 5,
+      language: 'en',
+    });
+
+    validator.enqueue({
+      id: 'issue-too-large',
+      file: 'src/api/service.ts',
+      line_start: 10,
+      line_end: 12,
+      category: 'logic',
+      severity: 'error',
+      title: 'Oversized validation context',
+      description: 'The issue requires too much context.',
+      code_snippet: 'x'.repeat(20000),
+      confidence: 0.9,
+      source_agent: 'logic-reviewer',
+    });
+
+    validator.enqueue({
+      id: 'issue-after-large',
+      file: 'src/api/service.ts',
+      line_start: 20,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush();
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.issues).toHaveLength(2);
+    expect(result.issues[0]).toMatchObject({
+      id: 'issue-too-large',
+      validation_status: 'uncertain',
+      grounding_evidence: {
+        related_context: expect.stringContaining('context_length_exceeded'),
+      },
+    });
+    expect(result.issues[1]).toMatchObject({
+      id: 'issue-after-large',
+      validation_status: 'confirmed',
+    });
+  });
+
   it('closes the runtime prompt stream after the final queued issue is validated', async () => {
     let secondPromptResult: { done: boolean; value?: unknown | 'timeout' } | undefined;
 

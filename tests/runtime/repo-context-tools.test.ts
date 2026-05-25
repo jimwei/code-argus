@@ -59,4 +59,39 @@ describe('repo context tools', () => {
     });
     expect(globResult.content[0]?.text).toContain('src/components/App.test.tsx');
   });
+
+  it('defaults Read to an issue-focused window when focus options match the file', async () => {
+    const repoPath = await createTempRepo('argus-repo-focused-read');
+    await mkdir(join(repoPath, 'src'), { recursive: true });
+    await writeFile(
+      join(repoPath, 'src', 'large.ts'),
+      Array.from({ length: 120 }, (_, index) => `line ${index + 1}`).join('\n')
+    );
+
+    const tools = createRepoContextTools(repoPath, {
+      defaultReadLimit: 100,
+      maxReadLimit: 50,
+      focusedReadWindow: {
+        filePath: 'src/large.ts',
+        lineStart: 60,
+        lineEnd: 62,
+        contextLines: 5,
+      },
+    });
+
+    const focusedRead = await tools[0]!.execute({
+      file_path: 'src/large.ts',
+    });
+    expect(focusedRead.content[0]?.text).toContain('Lines: 55-67');
+    expect(focusedRead.content[0]?.text).toContain('55\tline 55');
+    expect(focusedRead.content[0]?.text).toContain('67\tline 67');
+    expect(focusedRead.content[0]?.text).not.toContain('54\tline 54');
+
+    const explicitRead = await tools[0]!.execute({
+      file_path: 'src/large.ts',
+      offset: 1,
+      limit: 2,
+    });
+    expect(explicitRead.content[0]?.text).toContain('Lines: 1-2');
+  });
 });
