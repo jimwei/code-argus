@@ -1198,6 +1198,178 @@ describe('runtime execution', () => {
     ]);
   });
 
+  it('falls back to stateless replay when store=false previous_response_id cannot find reasoning items', async () => {
+    const nonPersistedReasoningError = Object.assign(
+      new Error(
+        "404 Item with id 'rs_1' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input."
+      ),
+      {
+        status: 404,
+        error: {
+          message:
+            "Item with id 'rs_1' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+          type: 'not_found_error',
+        },
+      }
+    );
+
+    const createMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_1',
+          status: 'completed',
+          output_text: '',
+          output: [
+            {
+              id: 'rs_1',
+              type: 'reasoning',
+              summary: [],
+            },
+            {
+              id: 'fc_1',
+              type: 'function_call',
+              call_id: 'call_1',
+              name: 'report_issue',
+              arguments: JSON.stringify({
+                file: 'src/api/service.ts',
+                line_start: 18,
+                line_end: 21,
+                title: 'Missing error handling',
+              }),
+              status: 'completed',
+            },
+          ],
+          usage: {
+            input_tokens: 8,
+            output_tokens: 3,
+          },
+        })
+      )
+      .mockRejectedValueOnce(nonPersistedReasoningError)
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_2',
+          status: 'completed',
+          output_text: 'Done',
+          output: [
+            {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Done',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 11,
+            output_tokens: 7,
+          },
+        })
+      );
+
+    const executeTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text' as const, text: 'Issue recorded' }],
+    });
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.5',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.5',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const execution = runtime.execute({
+      prompt: 'Review this diff',
+      cwd: 'C:\\repo',
+      maxTurns: 6,
+      tools: [
+        {
+          name: 'report_issue',
+          description: 'Capture an issue',
+          inputSchema: {
+            file: z.string(),
+            line_start: z.number(),
+            line_end: z.number(),
+            title: z.string(),
+          },
+          execute: executeTool,
+        },
+      ],
+    });
+
+    const events = [];
+    for await (const event of execution) {
+      events.push(event);
+    }
+
+    expect(createMock).toHaveBeenCalledTimes(3);
+    const statelessInput = createMock.mock.calls[2]?.[0]?.input;
+    expect(statelessInput).toEqual(
+      expect.arrayContaining([
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Review this diff' }],
+        },
+        expect.objectContaining({
+          id: 'fc_1',
+          type: 'function_call',
+          call_id: 'call_1',
+          name: 'report_issue',
+        }),
+        {
+          type: 'function_call_output',
+          call_id: 'call_1',
+          output: 'Issue recorded',
+        },
+      ])
+    );
+    expect(
+      Array.isArray(statelessInput) &&
+        statelessInput.some((item) => item.type === 'reasoning' && item.id === 'rs_1')
+    ).toBe(false);
+
+    expect(events).toEqual([
+      {
+        type: 'activity',
+        event: 'function_call:report_issue',
+      },
+      {
+        type: 'assistant.text',
+        text: 'Done',
+      },
+      {
+        type: 'result',
+        status: 'success',
+        text: 'Done',
+        usage: {
+          inputTokens: 11,
+          outputTokens: 7,
+        },
+      },
+    ]);
+  });
+
   it('supports async prompt streams for multi-turn OpenAI Responses sessions', async () => {
     const createMock = vi
       .fn()
@@ -1712,6 +1884,102 @@ describe('runtime execution', () => {
       text: 'runtime text output',
       usage: {
         inputTokens: 12,
+        outputTokens: 4,
+      },
+    });
+  });
+
+  it('retries OpenAI text generation without max_output_tokens when the endpoint rejects that parameter', async () => {
+    const maxOutputTokensError = Object.assign(new Error('400 status code (no body)'), {
+      status: 400,
+    });
+
+    const createMock = vi
+      .fn()
+      .mockRejectedValueOnce(maxOutputTokensError)
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_text_no_max_1',
+          status: 'completed',
+          output_text: 'runtime text output',
+          output: [
+            {
+              id: 'msg_no_max_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'runtime text output',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 14,
+            output_tokens: 4,
+          },
+        })
+      );
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const result = await runtime.generateText({
+      model: 'gpt-5-mini',
+      maxOutputTokens: 1024,
+      prompt: 'Return JSON only',
+    });
+
+    expect(createMock).toHaveBeenCalledTimes(2);
+    expect(createMock).toHaveBeenNthCalledWith(1, {
+      model: 'gpt-5-mini',
+      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Return JSON only' }],
+        },
+      ],
+      max_output_tokens: 1024,
+      stream: true,
+    });
+    expect(createMock).toHaveBeenNthCalledWith(2, {
+      model: 'gpt-5-mini',
+      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Return JSON only' }],
+        },
+      ],
+      stream: true,
+    });
+    expect(result).toEqual({
+      text: 'runtime text output',
+      usage: {
+        inputTokens: 14,
         outputTokens: 4,
       },
     });

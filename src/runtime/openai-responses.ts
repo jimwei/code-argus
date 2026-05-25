@@ -274,6 +274,25 @@ function containsFunctionCallOutputItems(
   return Array.isArray(input) && input.some(isFunctionCallOutputItem);
 }
 
+function isReasoningItem(item: unknown): item is MutableJsonObject {
+  return isPlainObject(item) && item.type === 'reasoning';
+}
+
+function hasEncryptedReasoningContent(item: MutableJsonObject): boolean {
+  return typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;
+}
+
+function shouldOmitFromStatelessReplay(item: OpenAIResponseInputItem): boolean {
+  // Plain reasoning item IDs are not durable when store=false/ZDR; only encrypted reasoning can be replayed.
+  return isReasoningItem(item) && !hasEncryptedReasoningContent(item);
+}
+
+function buildReplayableStatelessConversationItems(
+  conversationItems: OpenAIResponseInputItem[]
+): OpenAIResponseInputItem[] {
+  return conversationItems.filter((item) => !shouldOmitFromStatelessReplay(item));
+}
+
 function getFunctionCallReferenceIds(item: OpenAIFunctionCallItem): string[] {
   const ids = new Set<string>();
 
@@ -318,11 +337,13 @@ function buildStatelessConversationInput(
   mode: Exclude<OpenAIConversationContinuationMode, 'managed'>,
   conversationItems: OpenAIResponseInputItem[]
 ): OpenAIResponseInputItem[] {
+  const replayableItems = buildReplayableStatelessConversationItems(conversationItems);
+
   if (mode === 'stateless_item_reference') {
-    return buildItemReferenceToolContinuationInput(conversationItems);
+    return buildItemReferenceToolContinuationInput(replayableItems);
   }
 
-  return [...conversationItems];
+  return replayableItems;
 }
 
 function isToolContinuationGatewayFailure(error: unknown): boolean {
@@ -361,6 +382,24 @@ function isPreviousResponseIdUnsupportedError(error: unknown): boolean {
   );
 }
 
+function isNonPersistedItemReferenceError(error: unknown): boolean {
+  if (getOpenAIErrorStatus(error) !== 404) {
+    return false;
+  }
+
+  const message = getOpenAIErrorMessage(error)?.toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes('item with id') &&
+    message.includes('not found') &&
+    (message.includes('items are not persisted') ||
+      (message.includes('store') && message.includes('false')))
+  );
+}
+
 function isItemReferenceRequiredError(error: unknown): boolean {
   const message = getOpenAIErrorMessage(error)?.toLowerCase();
   if (!message) {
@@ -371,6 +410,23 @@ function isItemReferenceRequiredError(error: unknown): boolean {
     message.includes('function_call_output') &&
     message.includes('item_reference') &&
     message.includes('call_id')
+  );
+}
+
+function isMaxOutputTokensUnsupportedError(error: unknown): boolean {
+  if (getOpenAIErrorStatus(error) !== 400) {
+    return false;
+  }
+
+  const message = getOpenAIErrorMessage(error)?.toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes('max_output_tokens') ||
+    message.includes('max output tokens') ||
+    message.includes('status code (no body)')
   );
 }
 
@@ -850,15 +906,31 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
   }
 
   async generateText(options: RuntimeGenerateTextOptions): Promise<RuntimeGenerateTextResult> {
-    const response = await createOpenAIStreamSnapshotForUserPrompt(
-      this.client,
-      {
-        model: options.model || this.config.models.main,
-        prompt: options.prompt,
-        ...(options.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}),
-      },
-      options.abortController?.signal
-    );
+    const request = {
+      model: options.model || this.config.models.main,
+      prompt: options.prompt,
+      ...(options.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}),
+    };
+
+    let response: OpenAIResponse;
+    try {
+      response = await createOpenAIStreamSnapshotForUserPrompt(
+        this.client,
+        request,
+        options.abortController?.signal
+      );
+    } catch (error) {
+      if (!request.max_output_tokens || !isMaxOutputTokensUnsupportedError(error)) {
+        throw error;
+      }
+
+      const { max_output_tokens: _maxOutputTokens, ...requestWithoutMaxOutputTokens } = request;
+      response = await createOpenAIStreamSnapshotForUserPrompt(
+        this.client,
+        requestWithoutMaxOutputTokens,
+        options.abortController?.signal
+      );
+    }
 
     const error = getResponseError(response);
     if (error) {
@@ -960,6 +1032,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                   continuationMode === 'managed' &&
                   previousResponseId &&
                   (isPreviousResponseIdUnsupportedError(error) ||
+                    isNonPersistedItemReferenceError(error) ||
                     (isFunctionCallOutputInput(input) && isToolContinuationGatewayFailure(error)));
 
                 if (shouldFallbackToStatelessReplay) {
