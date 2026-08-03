@@ -4,6 +4,8 @@ import type { ArgusRuntimeConfig, ArgusRuntimeType } from '../config/env.js';
 
 export interface RuntimeUsage {
   inputTokens: number;
+  /** Input tokens served from the provider prompt cache, when reported. */
+  cachedInputTokens?: number;
   outputTokens: number;
 }
 

@@ -468,7 +468,7 @@ describe('runtime execution', () => {
             input_tokens: 11,
             output_tokens: 7,
             total_tokens: 18,
-            input_tokens_details: { cached_tokens: 0 },
+            input_tokens_details: { cached_tokens: 5 },
             output_tokens_details: { reasoning_tokens: 0 },
           },
         })
@@ -597,6 +597,7 @@ describe('runtime execution', () => {
         text: 'Done',
         usage: {
           inputTokens: 11,
+          cachedInputTokens: 5,
           outputTokens: 7,
         },
       },

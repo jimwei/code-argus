@@ -395,6 +395,23 @@ build/**
 
 With `--json-logs`, progress and the final report are emitted to `stderr` as NDJSON:
 
+The final report metadata includes provider prompt-cache usage when the runtime reports it:
+
+```json
+{
+  "metadata": {
+    "input_tokens_used": 120000,
+    "cached_input_tokens_used": 80000,
+    "output_tokens_used": 6000,
+    "tokens_used": 126000
+  }
+}
+```
+
+`cachedInputTokens` is omitted from runtime events when the provider does not report a positive
+cached-token count. The final aggregated metadata always includes `cached_input_tokens_used`, with
+`0` used when no cache usage was reported.
+
 ```bash
 argus review /repo feature main --json-logs
 ```

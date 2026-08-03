@@ -57,9 +57,11 @@ function normalizeAssistantMessage(message: SDKAssistantMessage): RuntimeEvent[]
 }
 
 function normalizeResultMessage(message: SDKResultMessage): RuntimeResultEvent {
+  const cachedInputTokens = message.usage?.cache_read_input_tokens ?? 0;
   const usage = message.usage
     ? {
         inputTokens: message.usage.input_tokens,
+        ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
         outputTokens: message.usage.output_tokens,
       }
     : undefined;
@@ -210,10 +212,13 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     return {
       text: extractClaudeText(response as { content: unknown[] }),
       usage: response.usage
-        ? {
-            inputTokens: response.usage.input_tokens,
-            outputTokens: response.usage.output_tokens,
-          }
+          ? {
+              inputTokens: response.usage.input_tokens,
+              ...(response.usage.cache_read_input_tokens
+                ? { cachedInputTokens: response.usage.cache_read_input_tokens }
+                : {}),
+              outputTokens: response.usage.output_tokens,
+            }
         : undefined,
     };
   }

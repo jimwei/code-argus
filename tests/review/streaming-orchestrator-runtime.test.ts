@@ -82,6 +82,7 @@ describe('streaming orchestrator runtime bridge', () => {
             status: 'success',
             usage: {
               inputTokens: 11,
+              cachedInputTokens: 5,
               outputTokens: 7,
             },
             text: 'Done',
@@ -149,6 +150,7 @@ describe('streaming orchestrator runtime bridge', () => {
     ).toEqual(['report_issue', 'Read', 'Grep', 'Glob']);
     expect(queryMock).not.toHaveBeenCalled();
     expect(result.tokens).toBe(18);
+    expect(result.cachedInputTokensUsed).toBe(5);
     expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(1);
     expect((orchestrator as any).rawIssuesForSkipMode[0]).toMatchObject({
       file: 'src/api/service.ts',

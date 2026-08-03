@@ -87,6 +87,7 @@ export async function executeFixVerifier(
   const screeningResults: ScreeningResult[] = [];
   const verificationResults: FixVerificationResult[] = [];
   let inputTokensUsed = 0;
+  let cachedInputTokensUsed = 0;
   let outputTokensUsed = 0;
   let tokensUsed = 0;
   const langLabel = (options.language ?? 'zh') === 'en' ? 'English' : 'Chinese';
@@ -274,6 +275,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
 
       if (event.usage) {
         inputTokensUsed = event.usage.inputTokens;
+        cachedInputTokensUsed = event.usage.cachedInputTokens ?? 0;
         outputTokensUsed = event.usage.outputTokens;
         tokensUsed = inputTokensUsed + outputTokensUsed;
       }
@@ -347,6 +349,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
     results: verificationResults,
     verification_time_ms: Date.now() - startTime,
     input_tokens_used: inputTokensUsed,
+    cached_input_tokens_used: cachedInputTokensUsed,
     output_tokens_used: outputTokensUsed,
     tokens_used: tokensUsed,
   };

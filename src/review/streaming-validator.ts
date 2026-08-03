@@ -227,6 +227,8 @@ interface FileSession {
   tokensUsed: number;
   /** Input tokens used by this session */
   inputTokensUsed: number;
+  /** Cached input tokens used by this session */
+  cachedInputTokensUsed: number;
   /** Output tokens used by this session */
   outputTokensUsed: number;
   /** Validated issues from this session */
@@ -387,6 +389,7 @@ export class StreamingValidator {
     issues: ValidatedIssue[];
     tokensUsed: number;
     inputTokensUsed: number;
+    cachedInputTokensUsed: number;
     outputTokensUsed: number;
   }> {
     this.markAgentsComplete();
@@ -439,12 +442,14 @@ export class StreamingValidator {
     const allIssues: ValidatedIssue[] = [];
     let totalTokens = 0;
     let totalInputTokens = 0;
+    let totalCachedInputTokens = 0;
     let totalOutputTokens = 0;
 
     for (const session of this.sessions.values()) {
       allIssues.push(...session.results);
       totalTokens += session.tokensUsed;
       totalInputTokens += session.inputTokensUsed;
+      totalCachedInputTokens += session.cachedInputTokensUsed;
       totalOutputTokens += session.outputTokensUsed;
     }
 
@@ -457,6 +462,7 @@ export class StreamingValidator {
     return {
       issues: allIssues,
       inputTokensUsed: totalInputTokens,
+      cachedInputTokensUsed: totalCachedInputTokens,
       outputTokensUsed: totalOutputTokens,
       tokensUsed: totalTokens,
     };
@@ -485,6 +491,7 @@ export class StreamingValidator {
         isClosed: false,
         tokensUsed: 0,
         inputTokensUsed: 0,
+        cachedInputTokensUsed: 0,
         outputTokensUsed: 0,
         results: [],
       };
@@ -1061,9 +1068,11 @@ export class StreamingValidator {
           }
 
           const inputTokens = event.usage?.inputTokens ?? 0;
+          const cachedInputTokens = event.usage?.cachedInputTokens ?? 0;
           const outputTokens = event.usage?.outputTokens ?? 0;
           const turnTokens = inputTokens + outputTokens;
           session.inputTokensUsed += inputTokens;
+          session.cachedInputTokensUsed += cachedInputTokens;
           session.outputTokensUsed += outputTokens;
           session.tokensUsed += turnTokens;
 
@@ -1284,6 +1293,7 @@ export class StreamingValidator {
       isClosed: false,
       tokensUsed: 0,
       inputTokensUsed: 0,
+      cachedInputTokensUsed: 0,
       outputTokensUsed: 0,
       results: [],
       crashRetryCount: retryCount,
@@ -1296,6 +1306,7 @@ export class StreamingValidator {
       recoverySession.results = [...oldSession.results];
       recoverySession.tokensUsed = oldSession.tokensUsed;
       recoverySession.inputTokensUsed = oldSession.inputTokensUsed;
+      recoverySession.cachedInputTokensUsed = oldSession.cachedInputTokensUsed;
       recoverySession.outputTokensUsed = oldSession.outputTokensUsed;
     }
 

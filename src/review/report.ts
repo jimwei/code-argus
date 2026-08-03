@@ -106,6 +106,7 @@ const TRANSLATIONS = {
     // Metadata
     'Review Time': '审查时间',
     'Tokens Used': '使用的令牌数',
+    'Cached Input Tokens': '缓存输入令牌数',
     'Agents Used': '使用的代理',
 
     // Checklist results
@@ -330,6 +331,7 @@ export function generateReport(
     metadata: metadata || {
       review_time_ms: 0,
       input_tokens_used: 0,
+      cached_input_tokens_used: 0,
       output_tokens_used: 0,
       tokens_used: 0,
       agents_used: [] as AgentType[],
@@ -543,6 +545,9 @@ export function formatAsMarkdown(report: ReviewReport, options?: ReportOptions):
     lines.push(`## ${translate('Metadata', lang)}`);
     lines.push('');
     lines.push(`- **${translate('Review Time', lang)}**: ${report.metadata.review_time_ms}ms`);
+    lines.push(
+      `- **${translate('Cached Input Tokens', lang)}**: ${report.metadata.cached_input_tokens_used}`
+    );
     lines.push(`- **${translate('Tokens Used', lang)}**: ${report.metadata.tokens_used}`);
     lines.push(
       `- **${translate('Agents Used', lang)}**: ${report.metadata.agents_used.join(', ')}`

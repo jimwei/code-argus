@@ -303,6 +303,8 @@ export interface CustomAgentResult {
    * Input tokens used
    */
   input_tokens_used: number;
+  /** Input tokens served from the provider prompt cache */
+  cached_input_tokens_used: number;
 
   /**
    * Output tokens used

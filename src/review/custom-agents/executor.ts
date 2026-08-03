@@ -246,6 +246,7 @@ export async function executeCustomAgent(
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
   let inputTokensUsed = 0;
+  let cachedInputTokensUsed = 0;
   let outputTokensUsed = 0;
   let tokensUsed = 0;
   let execution: RuntimeExecution | null = null;
@@ -286,6 +287,7 @@ export async function executeCustomAgent(
 
       if (event.usage) {
         inputTokensUsed = event.usage.inputTokens;
+        cachedInputTokensUsed = event.usage.cachedInputTokens ?? 0;
         outputTokensUsed = event.usage.outputTokens;
         tokensUsed = inputTokensUsed + outputTokensUsed;
       }
@@ -300,6 +302,7 @@ export async function executeCustomAgent(
       agent_name: agent.name,
       issues,
       input_tokens_used: inputTokensUsed,
+      cached_input_tokens_used: cachedInputTokensUsed,
       output_tokens_used: outputTokensUsed,
       tokens_used: tokensUsed,
       execution_time_ms: Date.now() - startTime,
@@ -327,6 +330,7 @@ export async function executeCustomAgent(
       agent_name: agent.name,
       issues,
       input_tokens_used: inputTokensUsed,
+      cached_input_tokens_used: cachedInputTokensUsed,
       output_tokens_used: outputTokensUsed,
       tokens_used: tokensUsed,
       execution_time_ms: Date.now() - startTime,
