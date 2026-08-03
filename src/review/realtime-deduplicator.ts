@@ -41,6 +41,8 @@ export interface DeduplicationCheckResult {
   usedLLM: boolean;
   /** Input tokens used (if LLM was called) */
   inputTokensUsed: number;
+  /** Input tokens served from the provider prompt cache */
+  cachedInputTokensUsed: number;
   /** Output tokens used (if LLM was called) */
   outputTokensUsed: number;
   /** Tokens used (if LLM was called) */
@@ -59,6 +61,7 @@ export class RealtimeDeduplicator {
   private runtime?: Pick<AgentRuntime, 'generateText'>;
   private acceptedIssues: RawIssue[] = [];
   private totalInputTokensUsed = 0;
+  private totalCachedInputTokensUsed = 0;
   private totalOutputTokensUsed = 0;
   private totalTokensUsed = 0;
   private duplicatesFound = 0;
@@ -109,6 +112,7 @@ export class RealtimeDeduplicator {
         isDuplicate: false,
         usedLLM: false,
         inputTokensUsed: 0,
+        cachedInputTokensUsed: 0,
         outputTokensUsed: 0,
         tokensUsed: 0,
       };
@@ -123,6 +127,7 @@ export class RealtimeDeduplicator {
 
     const llmResult = await this.checkWithLLM(issue, potentialDuplicates);
     this.totalInputTokensUsed += llmResult.inputTokensUsed;
+    this.totalCachedInputTokensUsed += llmResult.cachedInputTokensUsed;
     this.totalOutputTokensUsed += llmResult.outputTokensUsed;
     this.totalTokensUsed += llmResult.tokensUsed;
 
@@ -208,6 +213,7 @@ export class RealtimeDeduplicator {
         });
 
         const inputTokensUsed = response.usage?.inputTokens ?? 0;
+        const cachedInputTokensUsed = response.usage?.cachedInputTokens ?? 0;
         const outputTokensUsed = response.usage?.outputTokens ?? 0;
         const tokensUsed = inputTokensUsed + outputTokensUsed;
         const resultText = response.text;
@@ -221,6 +227,7 @@ export class RealtimeDeduplicator {
           resultText,
           potentialDuplicates,
           inputTokensUsed,
+          cachedInputTokensUsed,
           outputTokensUsed
         );
       } catch (error) {
@@ -257,6 +264,7 @@ export class RealtimeDeduplicator {
       isDuplicate: false,
       usedLLM: true,
       inputTokensUsed: 0,
+      cachedInputTokensUsed: 0,
       outputTokensUsed: 0,
       tokensUsed: 0,
     };
@@ -389,6 +397,7 @@ Output JSON only:
     responseText: string,
     potentialDuplicates: RawIssue[],
     inputTokensUsed: number,
+    cachedInputTokensUsed: number,
     outputTokensUsed: number
   ): DeduplicationCheckResult {
     const tokensUsed = inputTokensUsed + outputTokensUsed;
@@ -409,6 +418,7 @@ Output JSON only:
           isDuplicate: false,
           usedLLM: true,
           inputTokensUsed,
+          cachedInputTokensUsed,
           outputTokensUsed,
           tokensUsed,
         };
@@ -428,6 +438,7 @@ Output JSON only:
           isDuplicate: false,
           usedLLM: true,
           inputTokensUsed,
+          cachedInputTokensUsed,
           outputTokensUsed,
           tokensUsed,
         };
@@ -439,6 +450,7 @@ Output JSON only:
         reason: parsed.reason,
         usedLLM: true,
         inputTokensUsed,
+        cachedInputTokensUsed,
         outputTokensUsed,
         tokensUsed,
       };
@@ -452,6 +464,7 @@ Output JSON only:
         isDuplicate: false,
         usedLLM: true,
         inputTokensUsed,
+        cachedInputTokensUsed,
         outputTokensUsed,
         tokensUsed,
       };
@@ -472,6 +485,7 @@ Output JSON only:
     accepted: number;
     deduplicated: number;
     inputTokensUsed: number;
+    cachedInputTokensUsed: number;
     outputTokensUsed: number;
     tokensUsed: number;
   } {
@@ -479,6 +493,7 @@ Output JSON only:
       accepted: this.acceptedIssues.length,
       deduplicated: this.duplicatesFound,
       inputTokensUsed: this.totalInputTokensUsed,
+      cachedInputTokensUsed: this.totalCachedInputTokensUsed,
       outputTokensUsed: this.totalOutputTokensUsed,
       tokensUsed: this.totalTokensUsed,
     };

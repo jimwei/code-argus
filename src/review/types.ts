@@ -368,6 +368,8 @@ export interface FixVerificationSummary {
   verification_time_ms: number;
   /** Input tokens used for verification */
   input_tokens_used: number;
+  /** Input tokens served from the provider prompt cache */
+  cached_input_tokens_used: number;
   /** Output tokens used for verification */
   output_tokens_used: number;
   /** Tokens used for verification */
@@ -460,6 +462,8 @@ export interface ReviewMetadata {
   review_time_ms: number;
   /** Total input tokens used */
   input_tokens_used: number;
+  /** Total input tokens served from the provider prompt cache */
+  cached_input_tokens_used: number;
   /** Total output tokens used */
   output_tokens_used: number;
   /** Total tokens used */
@@ -504,6 +508,8 @@ export interface AgentResult {
   checklist: ChecklistItem[];
   /** Input tokens used by this agent */
   input_tokens_used: number;
+  /** Input tokens served from the provider prompt cache */
+  cached_input_tokens_used: number;
   /** Output tokens used by this agent */
   output_tokens_used: number;
   /** Tokens used by this agent */

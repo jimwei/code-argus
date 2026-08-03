@@ -187,6 +187,7 @@ describe('generateReport', () => {
     expect(report.issues).toHaveLength(1);
     expect(report.checklist).toHaveLength(1);
     expect(report.metrics).toBeDefined();
+    expect(report.metadata.cached_input_tokens_used).toBe(0);
   });
 
   it('preserves split token metadata alongside the total', () => {
@@ -201,6 +202,7 @@ describe('generateReport', () => {
       {
         review_time_ms: 3210,
         input_tokens_used: 120,
+        cached_input_tokens_used: 80,
         output_tokens_used: 45,
         tokens_used: 165,
         agents_used: ['logic-reviewer'],
@@ -210,6 +212,7 @@ describe('generateReport', () => {
 
     expect(report.metadata.review_time_ms).toBe(3210);
     expect(report.metadata.input_tokens_used).toBe(120);
+    expect(report.metadata.cached_input_tokens_used).toBe(80);
     expect(report.metadata.output_tokens_used).toBe(45);
     expect(report.metadata.tokens_used).toBe(165);
     expect(report.metadata.agents_used).toEqual(['logic-reviewer']);
@@ -256,6 +259,7 @@ describe('formatAsMarkdown', () => {
     expect(md).toContain('## Issues');
     expect(md).toContain('Test Error');
     expect(md).toContain('## Metrics');
+    expect(md).toContain('Cached Input Tokens');
   });
 
   it('should include checklist section', () => {

@@ -400,6 +400,22 @@ build/**
 
 启用 `--json-logs` 后，Argus 会把进度和最终报告以 NDJSON 形式输出到 `stderr`，方便 CI/CD 或平台侧消费。
 
+当运行时提供商报告了提示词缓存用量时，最终报告的 metadata 会包含单独的缓存 Token：
+
+```json
+{
+  "metadata": {
+    "input_tokens_used": 120000,
+    "cached_input_tokens_used": 80000,
+    "output_tokens_used": 6000,
+    "tokens_used": 126000
+  }
+}
+```
+
+如果提供商没有报告正数的缓存 Token，runtime 事件会省略 `cachedInputTokens`；最终聚合报告
+始终包含 `cached_input_tokens_used`，未报告缓存用量时该字段为 `0`。
+
 ```bash
 argus review /repo feature main --json-logs
 ```

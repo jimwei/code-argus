@@ -20,6 +20,9 @@ type OpenAIResponse = {
   output_text?: string;
   usage?: {
     input_tokens: number;
+    input_tokens_details?: {
+      cached_tokens?: number;
+    };
     output_tokens: number;
   };
   error?: {
@@ -492,8 +495,10 @@ function normalizeUsage(usage: OpenAIResponse['usage'] | undefined): RuntimeUsag
     return undefined;
   }
 
+  const cachedInputTokens = usage.input_tokens_details?.cached_tokens ?? 0;
   return {
     inputTokens: usage.input_tokens,
+    ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
     outputTokens: usage.output_tokens,
   };
 }

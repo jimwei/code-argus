@@ -231,6 +231,7 @@ export class StreamingReviewOrchestrator {
   async review(input: OrchestratorInput): Promise<ReviewReport> {
     const startTime = Date.now();
     let inputTokensUsed = 0;
+    let cachedInputTokensUsed = 0;
     let outputTokensUsed = 0;
     let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
@@ -619,6 +620,7 @@ export class StreamingReviewOrchestrator {
       } else if (fixVerifierSettled.value) {
         this.fixVerificationResults = fixVerifierSettled.value;
         inputTokensUsed += this.fixVerificationResults.input_tokens_used;
+        cachedInputTokensUsed += this.fixVerificationResults.cached_input_tokens_used;
         outputTokensUsed += this.fixVerificationResults.output_tokens_used;
         tokensUsed += this.fixVerificationResults.tokens_used;
         const fv = this.fixVerificationResults;
@@ -634,9 +636,11 @@ export class StreamingReviewOrchestrator {
         checklists,
         tokens: agentTokens,
         inputTokensUsed: agentInputTokens,
+        cachedInputTokensUsed: agentCachedInputTokens,
         outputTokensUsed: agentOutputTokens,
       } = builtInResult;
       inputTokensUsed += agentInputTokens;
+      cachedInputTokensUsed += agentCachedInputTokens;
       outputTokensUsed += agentOutputTokens;
       tokensUsed += agentTokens;
 
@@ -650,8 +654,13 @@ export class StreamingReviewOrchestrator {
           (sum, r) => sum + r.output_tokens_used,
           0
         );
+        const customAgentCachedInputTokens = customAgentResults.reduce(
+          (sum, r) => sum + r.cached_input_tokens_used,
+          0
+        );
         const customAgentTokens = customAgentResults.reduce((sum, r) => sum + r.tokens_used, 0);
         inputTokensUsed += customAgentInputTokens;
+        cachedInputTokensUsed += customAgentCachedInputTokens;
         outputTokensUsed += customAgentOutputTokens;
         tokensUsed += customAgentTokens;
 
@@ -689,6 +698,7 @@ export class StreamingReviewOrchestrator {
           const validationResult = await this.streamingValidator.flush();
           validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
           validationInputTokens = validationResult.inputTokensUsed;
+          cachedInputTokensUsed += validationResult.cachedInputTokensUsed;
           validationOutputTokens = validationResult.outputTokensUsed;
           validationTokens = validationResult.tokensUsed;
           inputTokensUsed += validationInputTokens;
@@ -705,9 +715,11 @@ export class StreamingReviewOrchestrator {
         // Get deduplication stats
         const dedupStats = this.realtimeDeduplicator?.getStats();
         const dedupInputTokens = dedupStats?.inputTokensUsed || 0;
+        const dedupCachedInputTokens = dedupStats?.cachedInputTokensUsed || 0;
         const dedupOutputTokens = dedupStats?.outputTokensUsed || 0;
         const dedupTokens = dedupStats?.tokensUsed || 0;
         inputTokensUsed += dedupInputTokens;
+        cachedInputTokensUsed += dedupCachedInputTokens;
         outputTokensUsed += dedupOutputTokens;
         tokensUsed += dedupTokens;
 
@@ -778,6 +790,7 @@ export class StreamingReviewOrchestrator {
       const metadata = {
         review_time_ms: Date.now() - startTime,
         input_tokens_used: inputTokensUsed,
+        cached_input_tokens_used: cachedInputTokensUsed,
         output_tokens_used: outputTokensUsed,
         tokens_used: tokensUsed,
         agents_used: agentsToRun,
@@ -833,6 +846,7 @@ export class StreamingReviewOrchestrator {
   async reviewByRefs(input: ReviewInput): Promise<ReviewReport> {
     const startTime = Date.now();
     let inputTokensUsed = 0;
+    let cachedInputTokensUsed = 0;
     let outputTokensUsed = 0;
     let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
@@ -1189,6 +1203,7 @@ export class StreamingReviewOrchestrator {
           metadata: {
             review_time_ms: Date.now() - startTime,
             input_tokens_used: 0,
+            cached_input_tokens_used: 0,
             output_tokens_used: 0,
             tokens_used: 0,
             agents_used: [],
@@ -1338,6 +1353,7 @@ export class StreamingReviewOrchestrator {
       } else if (fixVerifierSettled.value) {
         this.fixVerificationResults = fixVerifierSettled.value;
         inputTokensUsed += this.fixVerificationResults.input_tokens_used;
+        cachedInputTokensUsed += this.fixVerificationResults.cached_input_tokens_used;
         outputTokensUsed += this.fixVerificationResults.output_tokens_used;
         tokensUsed += this.fixVerificationResults.tokens_used;
         const fv = this.fixVerificationResults;
@@ -1353,9 +1369,11 @@ export class StreamingReviewOrchestrator {
         checklists,
         tokens: agentTokens,
         inputTokensUsed: agentInputTokens,
+        cachedInputTokensUsed: agentCachedInputTokens,
         outputTokensUsed: agentOutputTokens,
       } = builtInResult;
       inputTokensUsed += agentInputTokens;
+      cachedInputTokensUsed += agentCachedInputTokens;
       outputTokensUsed += agentOutputTokens;
       tokensUsed += agentTokens;
 
@@ -1369,8 +1387,13 @@ export class StreamingReviewOrchestrator {
           (sum, r) => sum + r.output_tokens_used,
           0
         );
+        const customAgentCachedInputTokens = customAgentResults.reduce(
+          (sum, r) => sum + r.cached_input_tokens_used,
+          0
+        );
         const customAgentTokens = customAgentResults.reduce((sum, r) => sum + r.tokens_used, 0);
         inputTokensUsed += customAgentInputTokens;
+        cachedInputTokensUsed += customAgentCachedInputTokens;
         outputTokensUsed += customAgentOutputTokens;
         tokensUsed += customAgentTokens;
 
@@ -1408,6 +1431,7 @@ export class StreamingReviewOrchestrator {
           const validationResult = await this.streamingValidator.flush();
           validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
           validationInputTokens = validationResult.inputTokensUsed;
+          cachedInputTokensUsed += validationResult.cachedInputTokensUsed;
           validationOutputTokens = validationResult.outputTokensUsed;
           validationTokens = validationResult.tokensUsed;
           inputTokensUsed += validationInputTokens;
@@ -1424,9 +1448,11 @@ export class StreamingReviewOrchestrator {
         // Get deduplication stats
         const dedupStats = this.realtimeDeduplicator?.getStats();
         const dedupInputTokens = dedupStats?.inputTokensUsed || 0;
+        const dedupCachedInputTokens = dedupStats?.cachedInputTokensUsed || 0;
         const dedupOutputTokens = dedupStats?.outputTokensUsed || 0;
         const dedupTokens = dedupStats?.tokensUsed || 0;
         inputTokensUsed += dedupInputTokens;
+        cachedInputTokensUsed += dedupCachedInputTokens;
         outputTokensUsed += dedupOutputTokens;
         tokensUsed += dedupTokens;
 
@@ -1497,6 +1523,7 @@ export class StreamingReviewOrchestrator {
       const metadata = {
         review_time_ms: Date.now() - startTime,
         input_tokens_used: inputTokensUsed,
+        cached_input_tokens_used: cachedInputTokensUsed,
         output_tokens_used: outputTokensUsed,
         tokens_used: tokensUsed,
         agents_used: agentsToRun,
@@ -2005,11 +2032,13 @@ export class StreamingReviewOrchestrator {
     checklists: ChecklistItem[];
     tokens: number;
     inputTokensUsed: number;
+    cachedInputTokensUsed: number;
     outputTokensUsed: number;
   }> {
     const standardsText = standardsToText(context.standards);
     let totalTokens = 0;
     let totalInputTokens = 0;
+    let totalCachedInputTokens = 0;
     let totalOutputTokens = 0;
     const allChecklists: ChecklistItem[] = [];
 
@@ -2150,6 +2179,7 @@ export class StreamingReviewOrchestrator {
       if (res.success) {
         totalTokens += res.result.tokensUsed;
         totalInputTokens += res.result.inputTokensUsed;
+        totalCachedInputTokens += res.result.cachedInputTokensUsed;
         totalOutputTokens += res.result.outputTokensUsed;
         allChecklists.push(...res.result.checklists);
 
@@ -2184,6 +2214,7 @@ export class StreamingReviewOrchestrator {
     return {
       checklists: allChecklists,
       inputTokensUsed: totalInputTokens,
+      cachedInputTokensUsed: totalCachedInputTokens,
       outputTokensUsed: totalOutputTokens,
       tokens: totalTokens,
     };
@@ -2436,6 +2467,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
   ): Promise<{
     tokensUsed: number;
     inputTokensUsed: number;
+    cachedInputTokensUsed: number;
     outputTokensUsed: number;
     checklists: ChecklistItem[];
   }> {
@@ -2482,6 +2514,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     const runtimeTools = runtimeToolsFactory(agentType);
 
     let inputTokensUsed = 0;
+    let cachedInputTokensUsed = 0;
     let outputTokensUsed = 0;
     let tokensUsed = 0;
     let turnCount = 0;
@@ -2510,9 +2543,11 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         }
 
         const inputTokens = event.usage?.inputTokens ?? 0;
+        const cachedInputTokens = event.usage?.cachedInputTokens ?? 0;
         const outputTokens = event.usage?.outputTokens ?? 0;
         if (event.usage) {
           inputTokensUsed = inputTokens;
+          cachedInputTokensUsed = cachedInputTokens;
           outputTokensUsed = outputTokens;
           tokensUsed = inputTokensUsed + outputTokensUsed;
         }
@@ -2547,7 +2582,13 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         console.log(`[StreamingOrchestrator] Agent ${agentType} aborted by user`);
-        return { tokensUsed, inputTokensUsed, outputTokensUsed, checklists: [] };
+        return {
+          tokensUsed,
+          inputTokensUsed,
+          cachedInputTokensUsed,
+          outputTokensUsed,
+          checklists: [],
+        };
       }
       console.error(`[StreamingOrchestrator] Agent ${agentType} threw error:`, error);
       throw error;
@@ -2574,6 +2615,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     return {
       tokensUsed,
       inputTokensUsed,
+      cachedInputTokensUsed,
       outputTokensUsed,
       checklists: [],
     };
@@ -2653,6 +2695,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     // Collect results from all segments
     let totalTokens = 0;
     let totalInputTokens = 0;
+    let totalCachedInputTokens = 0;
     let totalOutputTokens = 0;
     const allChecklists: ChecklistItem[] = [];
     const failedSegments: string[] = [];
@@ -2661,6 +2704,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       if (result) {
         totalTokens += result.tokens;
         totalInputTokens += result.inputTokensUsed;
+        totalCachedInputTokens += result.cachedInputTokensUsed;
         totalOutputTokens += result.outputTokensUsed;
         allChecklists.push(...result.checklists);
       } else if (error) {
@@ -2690,6 +2734,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         const validationResult = await this.streamingValidator.flush();
         validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
         totalInputTokens += validationResult.inputTokensUsed;
+        totalCachedInputTokens += validationResult.cachedInputTokensUsed;
         totalOutputTokens += validationResult.outputTokensUsed;
         totalTokens += validationResult.tokensUsed;
       } finally {
@@ -2700,6 +2745,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       const rejected = validatedIssues.filter((i) => i.validation_status === 'rejected').length;
       const dedupStats = this.realtimeDeduplicator?.getStats();
       totalInputTokens += dedupStats?.inputTokensUsed || 0;
+      totalCachedInputTokens += dedupStats?.cachedInputTokensUsed || 0;
       totalOutputTokens += dedupStats?.outputTokensUsed || 0;
       totalTokens += dedupStats?.tokensUsed || 0;
       this.progress.success(`验证完成: ${confirmed} 确认, ${rejected} 拒绝`);
@@ -2746,6 +2792,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     const metadata = {
       review_time_ms: endTime - startTime,
       input_tokens_used: totalInputTokens,
+      cached_input_tokens_used: totalCachedInputTokens,
       output_tokens_used: totalOutputTokens,
       tokens_used: totalTokens,
       agents_used: agentsToRun,
