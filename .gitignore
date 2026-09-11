@@ -6,6 +6,9 @@ yarn.lock
 dist/
 *.tsbuildinfo
 
+# Local package tarballs produced by `pnpm pack` / upgrade-pr-manager-code-argus-version.sh
+code-argus-*.tgz
+
 # Environment
 .env
 .env.local

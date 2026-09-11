@@ -1799,6 +1799,135 @@ describe('runtime execution', () => {
     });
   });
 
+  it('forwards the global reasoning effort to OpenAI Responses text generation', async () => {
+    const createMock = vi.fn().mockResolvedValue(
+      createOpenAIResponseStream({
+        id: 'resp_reasoning_text',
+        status: 'completed',
+        output_text: 'runtime text output',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'runtime text output',
+                annotations: [],
+              },
+            ],
+          },
+        ],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 4,
+        },
+      })
+    );
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.5',
+          light: 'gpt-5.5',
+          validator: 'gpt-5.5',
+        },
+        reasoningEffort: 'high',
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    await runtime.generateText({ prompt: 'Return JSON only' });
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5.5',
+        reasoning: { effort: 'high' },
+      })
+    );
+  });
+
+  it('forwards the global reasoning effort to OpenAI Responses execution turns', async () => {
+    const createMock = vi.fn().mockResolvedValue(
+      createOpenAIResponseStream({
+        id: 'resp_reasoning_exec',
+        status: 'completed',
+        output_text: 'Done',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Done',
+                annotations: [],
+              },
+            ],
+          },
+        ],
+        usage: {
+          input_tokens: 6,
+          output_tokens: 2,
+        },
+      })
+    );
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.5',
+          light: 'gpt-5.5',
+          validator: 'gpt-5.5',
+        },
+        reasoningEffort: 'xhigh',
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const execution = runtime.execute({
+      prompt: 'Review this diff',
+      cwd: 'C:\\repo',
+      maxTurns: 2,
+    });
+
+    for await (const event of execution) {
+      if (event.type === 'result') {
+        break;
+      }
+    }
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5.5',
+        reasoning: { effort: 'xhigh' },
+      }),
+      expect.any(Object)
+    );
+  });
+
   it('retries OpenAI text generation with plain string input when the endpoint rejects message-list input', async () => {
     const incompatibleInputError = Object.assign(new Error('input must be a string'), {
       status: 400,
