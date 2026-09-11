@@ -162,9 +162,11 @@ export OPENAI_BASE_URL=https://your-openai-compatible-endpoint
 Shared model-related environment variables:
 
 ```bash
+export ARGUS_OPENAI_MODEL=gpt-5
 export ARGUS_MODEL=gpt-5
 export ARGUS_LIGHT_MODEL=gpt-5-mini
 export ARGUS_VALIDATOR_MODEL=gpt-5
+export ARGUS_REASONING_EFFORT=medium
 ```
 
 You can also persist the default main model:
@@ -177,16 +179,21 @@ Notes:
 
 - `model` is a shared fallback and is not provider-specific
 - `api-key` and `base-url` in config remain Claude-compatible fields
-- When using `openai-responses`, explicitly setting `ARGUS_MODEL` is recommended
+- When using `openai-responses`, `ARGUS_OPENAI_MODEL` takes precedence over `ARGUS_MODEL`
+  and becomes the source for the main/light/validator slots unless a slot override is set
+- `ARGUS_REASONING_EFFORT` is a single global value passed to every OpenAI Responses
+  request (`minimal`, `low`, `medium`, `high`, ...); unset keeps the provider default
 
 ### Environment variable summary
 
 | Purpose               | Variables                                       |
 | --------------------- | ----------------------------------------------- |
 | Runtime selection     | `ARGUS_RUNTIME`                                 |
+| OpenAI shared model   | `ARGUS_OPENAI_MODEL`                            |
 | Main model            | `ARGUS_MODEL`                                   |
 | Light model           | `ARGUS_LIGHT_MODEL`                             |
 | Validator model       | `ARGUS_VALIDATOR_MODEL`                         |
+| Reasoning effort      | `ARGUS_REASONING_EFFORT`                        |
 | Claude API key        | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
 | Claude OAuth or proxy | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
 | Claude base URL       | `ARGUS_ANTHROPIC_BASE_URL`                      |

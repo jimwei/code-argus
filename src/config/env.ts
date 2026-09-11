@@ -33,6 +33,11 @@ export interface ArgusRuntimeConfig {
     light: string;
     validator: string;
   };
+  /**
+   * Single global reasoning effort forwarded to the OpenAI Responses runtime.
+   * Read from ARGUS_REASONING_EFFORT; unset means "let the provider decide".
+   */
+  reasoningEffort?: string;
   claude?: ClaudeAuthConfig;
   openai?: OpenAIAuthConfig;
 }
@@ -128,13 +133,28 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
 function getMainModel(runtime: ArgusRuntimeType): string {
   const config = loadConfig();
 
+  if (runtime === 'claude-agent') {
+    return (
+      process.env.ARGUS_MODEL ||
+      process.env.ARGUS_ANTHROPIC_MODEL ||
+      process.env.ANTHROPIC_MODEL ||
+      config.model ||
+      DEFAULT_AGENT_MODEL
+    );
+  }
+
   return (
-    process.env.ARGUS_MODEL ||
-    (runtime === 'claude-agent'
-      ? process.env.ARGUS_ANTHROPIC_MODEL || process.env.ANTHROPIC_MODEL || config.model
-      : config.model) ||
-    DEFAULT_AGENT_MODEL
+    process.env.ARGUS_OPENAI_MODEL || process.env.ARGUS_MODEL || config.model || DEFAULT_AGENT_MODEL
   );
+}
+
+/**
+ * Single global reasoning effort for the OpenAI Responses runtime.
+ * Kept as a raw string so new provider values pass through untouched.
+ */
+export function getReasoningEffort(): string | undefined {
+  const effort = process.env.ARGUS_REASONING_EFFORT?.trim();
+  return effort ? effort : undefined;
 }
 
 export function loadArgusRuntimeConfig(): ArgusRuntimeConfig {
@@ -142,6 +162,7 @@ export function loadArgusRuntimeConfig(): ArgusRuntimeConfig {
   const mainModel = getMainModel(runtime);
   const lightModel = process.env.ARGUS_LIGHT_MODEL || mainModel || DEFAULT_LIGHT_MODEL;
   const validatorModel = process.env.ARGUS_VALIDATOR_MODEL || mainModel;
+  const reasoningEffort = getReasoningEffort();
 
   if (runtime === 'claude-agent') {
     return {
@@ -151,6 +172,7 @@ export function loadArgusRuntimeConfig(): ArgusRuntimeConfig {
         light: lightModel,
         validator: validatorModel,
       },
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       claude: getClaudeAuthConfig(),
     };
   }
@@ -162,6 +184,7 @@ export function loadArgusRuntimeConfig(): ArgusRuntimeConfig {
       light: lightModel,
       validator: validatorModel,
     },
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     openai: getOpenAIAuthConfig(),
   };
 }

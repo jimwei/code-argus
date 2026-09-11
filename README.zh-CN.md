@@ -162,9 +162,11 @@ export OPENAI_BASE_URL=https://your-openai-compatible-endpoint
 共享模型相关环境变量：
 
 ```bash
+export ARGUS_OPENAI_MODEL=gpt-5
 export ARGUS_MODEL=gpt-5
 export ARGUS_LIGHT_MODEL=gpt-5-mini
 export ARGUS_VALIDATOR_MODEL=gpt-5
+export ARGUS_REASONING_EFFORT=medium
 ```
 
 也可以把主模型保存到配置文件：
@@ -177,17 +179,21 @@ argus config set model gpt-5
 
 - `model` 是共享回退项，不区分 Claude / OpenAI
 - `api-key` 和 `base-url` 目前仍是 Claude 兼容字段
-- 使用 `openai-responses` 时，建议显式设置 `ARGUS_MODEL` 或 `argus config set model ...`
-- 如果 OpenAI 运行时没有显式模型，当前实现会继续回退到项目默认主模型常量；为了避免 Provider 与模型不匹配，实际使用时应始终设置模型
+- 使用 `openai-responses` 时，`ARGUS_OPENAI_MODEL` 优先于 `ARGUS_MODEL`，并作为
+  main/light/validator 三个模型槽位的默认来源（个别槽位显式覆盖时以覆盖值为准）
+- `ARGUS_REASONING_EFFORT` 是单一全局值，会传递给每一个 OpenAI Responses 请求
+  （`minimal`、`low`、`medium`、`high` 等）；不设置则沿用 Provider 默认值
 
 ### 环境变量总表
 
 | 目的                    | 环境变量                                        |
 | ----------------------- | ----------------------------------------------- |
 | 运行时切换              | `ARGUS_RUNTIME`                                 |
+| OpenAI 共享模型         | `ARGUS_OPENAI_MODEL`                            |
 | 主模型                  | `ARGUS_MODEL`                                   |
 | 轻量模型                | `ARGUS_LIGHT_MODEL`                             |
 | 验证模型                | `ARGUS_VALIDATOR_MODEL`                         |
+| 推理强度                | `ARGUS_REASONING_EFFORT`                        |
 | Claude API Key          | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
 | Claude OAuth / 兼容代理 | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
 | Claude Base URL         | `ARGUS_ANTHROPIC_BASE_URL`                      |

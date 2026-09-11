@@ -46,6 +46,8 @@ describe('runtime-aware env configuration', () => {
     delete process.env.ANTHROPIC_MODEL;
     delete process.env.ARGUS_OPENAI_API_KEY;
     delete process.env.ARGUS_OPENAI_BASE_URL;
+    delete process.env.ARGUS_OPENAI_MODEL;
+    delete process.env.ARGUS_REASONING_EFFORT;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
   });
@@ -102,6 +104,56 @@ describe('runtime-aware env configuration', () => {
     expect(getRuntimeModel('light')).toBe('gpt-5.3-codex');
     expect(getRuntimeModel('validator')).toBe('gpt-5.3-codex');
     expect(getModel()).toBe('gpt-5.3-codex');
+  });
+
+  it('prefers ARGUS_OPENAI_MODEL over ARGUS_MODEL for the openai runtime', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_MODEL = 'gpt-5.5';
+    process.env.ARGUS_MODEL = 'stale-shared-model';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+
+    expect(loadArgusRuntimeConfig().models).toEqual({
+      main: 'gpt-5.5',
+      light: 'gpt-5.5',
+      validator: 'gpt-5.5',
+    });
+  });
+
+  it('keeps explicit per-slot model overrides on the openai runtime', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_MODEL = 'gpt-5.5';
+    process.env.ARGUS_LIGHT_MODEL = 'gpt-5-mini';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+
+    expect(loadArgusRuntimeConfig().models).toEqual({
+      main: 'gpt-5.5',
+      light: 'gpt-5-mini',
+      validator: 'gpt-5.5',
+    });
+  });
+
+  it('ignores ARGUS_OPENAI_MODEL on the claude runtime', () => {
+    process.env.ARGUS_RUNTIME = 'claude-agent';
+    process.env.ARGUS_OPENAI_MODEL = 'gpt-5.5';
+    process.env.ARGUS_MODEL = 'claude-main';
+    process.env.ARGUS_ANTHROPIC_API_KEY = 'claude-key';
+
+    expect(loadArgusRuntimeConfig().models.main).toBe('claude-main');
+  });
+
+  it('exposes ARGUS_REASONING_EFFORT as a single global value', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_REASONING_EFFORT = ' high ';
+
+    expect(loadArgusRuntimeConfig().reasoningEffort).toBe('high');
+  });
+
+  it('omits reasoning effort when ARGUS_REASONING_EFFORT is unset', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+
+    expect(loadArgusRuntimeConfig().reasoningEffort).toBeUndefined();
   });
 
   it('initializes Anthropic provider env from the runtime config', () => {

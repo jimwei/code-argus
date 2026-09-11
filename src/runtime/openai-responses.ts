@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type { ResponseInputItem, ResponseStreamEvent } from 'openai/resources/responses/responses';
+import type { Reasoning } from 'openai/resources/shared';
 import { z, toJSONSchema } from 'zod';
 
 import type { ArgusRuntimeConfig } from '../config/env.js';
@@ -73,6 +74,7 @@ type OpenAIResponseRequest = {
   tools?: OpenAIRequestTool[];
   parallel_tool_calls?: false;
   max_output_tokens?: number;
+  reasoning?: Reasoning | null;
 };
 
 type OpenAIResponseStream = AsyncIterable<ResponseStreamEvent> & {
@@ -84,6 +86,22 @@ type MutableJsonObject = Record<string, any>;
 
 const DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS =
   'Follow the user instructions and tool definitions exactly.';
+
+/**
+ * Builds the `reasoning` request fragment from the single global
+ * ARGUS_REASONING_EFFORT value. Empty/undefined leaves the provider default.
+ */
+function buildReasoningRequest(effort: string | undefined): { reasoning?: Reasoning } {
+  if (!effort) {
+    return {};
+  }
+
+  return {
+    reasoning: {
+      effort: effort as Reasoning['effort'],
+    },
+  };
+}
 
 function isPlainObject(value: unknown): value is JsonSchema {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -911,10 +929,12 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
   }
 
   async generateText(options: RuntimeGenerateTextOptions): Promise<RuntimeGenerateTextResult> {
+    const reasoningRequest = buildReasoningRequest(this.config.reasoningEffort);
     const request = {
       model: options.model || this.config.models.main,
       prompt: options.prompt,
       ...(options.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}),
+      ...reasoningRequest,
     };
 
     let response: OpenAIResponse;
@@ -956,6 +976,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
   execute(options: RuntimeExecuteOptions): RuntimeExecution {
     const client = this.client;
     const defaultModel = this.config.models.main;
+    const reasoningRequest = buildReasoningRequest(this.config.reasoningEffort);
     const abortController = options.abortController ?? new AbortController();
     const ownsAbortController = !options.abortController;
     const runtimeTools = options.tools ?? [];
@@ -1010,6 +1031,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                       parallel_tool_calls: false as const,
                     }
                   : {}),
+                ...reasoningRequest,
               };
 
               try {
@@ -1026,6 +1048,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                           ...(request.parallel_tool_calls !== undefined
                             ? { parallel_tool_calls: request.parallel_tool_calls }
                             : {}),
+                          ...(request.reasoning ? { reasoning: request.reasoning } : {}),
                           prompt: input,
                         },
                         abortController.signal
