@@ -30,6 +30,8 @@ AI 驱动的自动化代码审查 CLI，提供多 Agent 编排，并同时支持
 
 ## 安装
 
+需要 Node.js 22 或更高版本（OpenAI Responses 运行时依赖 `openai` v7，该 SDK 要求 Node 22+）。
+
 ### 全局安装
 
 ```bash

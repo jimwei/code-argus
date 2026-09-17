@@ -30,6 +30,9 @@ This branch adds the first production-ready dual runtime foundation:
 
 ## Installation
 
+Requires Node.js 22 or later (the OpenAI Responses runtime depends on `openai` v7,
+which requires Node 22+).
+
 ### Global install
 
 ```bash
