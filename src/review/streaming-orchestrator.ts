@@ -159,6 +159,8 @@ export class StreamingReviewOrchestrator {
   private fixVerificationResults?: FixVerificationSummary;
   /** Track issue count per agent for progress reporting */
   private issueCountByAgent: Map<string, number> = new Map();
+  /** Track report_issue invocations per agent attempt (before dedup/filtering) */
+  private issueCountByInvocation: Map<string, number> = new Map();
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -223,6 +225,39 @@ export class StreamingReviewOrchestrator {
    */
   getEmitter(): ReviewEventEmitter | undefined {
     return this.progress.getEmitter?.();
+  }
+
+  private getReviewerTurnMultiplier(agentType: AgentType): number {
+    switch (agentType) {
+      case 'logic-reviewer':
+      case 'performance-reviewer':
+        return 1.5;
+      case 'security-reviewer':
+        return 1.2;
+      default:
+        return 1.0;
+    }
+  }
+
+  private getAgentMaxTurns(
+    agentType: AgentType,
+    baseTurns: number,
+    attempt: number,
+    zeroIssueMaxTurnsRetry: boolean
+  ): number {
+    const scaledTurns = Math.ceil(baseTurns * this.getReviewerTurnMultiplier(agentType));
+    const retryAdjustedTurns =
+      attempt > 1 && zeroIssueMaxTurnsRetry ? Math.ceil(scaledTurns * 1.25) : scaledTurns;
+
+    return Math.max(24, Math.min(500, retryAdjustedTurns));
+  }
+
+  private getInvocationIssueCount(invocationKey: string): number {
+    return this.issueCountByInvocation.get(invocationKey) || 0;
+  }
+
+  private createInvocationKey(agentType: AgentType): string {
+    return `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
   /**
@@ -421,6 +456,7 @@ export class StreamingReviewOrchestrator {
       this.autoRejectedIssues = [];
       this.rawIssuesForSkipMode = [];
       this.issueCountByAgent.clear();
+      this.issueCountByInvocation.clear();
 
       await this.attachDependencyContext(context, reviewRepoPath, diffFiles);
 
@@ -1093,6 +1129,7 @@ export class StreamingReviewOrchestrator {
       this.autoRejectedIssues = [];
       this.rawIssuesForSkipMode = [];
       this.issueCountByAgent.clear();
+      this.issueCountByInvocation.clear();
 
       await this.attachDependencyContext(context, reviewRepoPath, diffFiles);
 
@@ -2106,11 +2143,28 @@ export class StreamingReviewOrchestrator {
 
     const agentPromises = agentsToRun.map(async (agentType) => {
       const startTime = Date.now();
+      const invocationKey = this.createInvocationKey(agentType as AgentType);
       let lastError: unknown = null;
+      let zeroIssueMaxTurnsRetry = false;
 
       // Retry loop for transient failures
       for (let attempt = 1; attempt <= MAX_AGENT_RETRIES; attempt++) {
+        const agentMaxTurns = this.getAgentMaxTurns(
+          agentType as AgentType,
+          dynamicMaxTurns,
+          attempt,
+          zeroIssueMaxTurnsRetry
+        );
+
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Agent ${agentType} maxTurns: ${agentMaxTurns} ` +
+              `(attempt=${attempt}, zeroIssueMaxTurnsRetry=${zeroIssueMaxTurnsRetry})`
+          );
+        }
+
         try {
+          this.issueCountByInvocation.set(invocationKey, 0);
           const result = await this.runStreamingAgent(
             agentType as AgentType,
             context,
@@ -2118,7 +2172,8 @@ export class StreamingReviewOrchestrator {
             runtime,
             runtimeTools,
             reviewRepoPath,
-            dynamicMaxTurns
+            agentMaxTurns,
+            invocationKey
           );
           const elapsed = Date.now() - startTime;
 
@@ -2132,6 +2187,7 @@ export class StreamingReviewOrchestrator {
           lastError = error;
           const errorMsg = error instanceof Error ? error.message : String(error);
           const errorStack = error instanceof Error ? error.stack : undefined;
+          zeroIssueMaxTurnsRetry = errorMsg.includes('reached maxTurns with 0 reported issues');
 
           // Log error details (will be output as JSON in json-logs mode)
           console.error(
@@ -2282,7 +2338,7 @@ export class StreamingReviewOrchestrator {
     changedLinesByFile?: Map<string, Set<number>>,
     whitespaceOnlyLinesByFile?: Map<string, Set<number>>,
     additionalTools: RuntimeToolDefinition[] = []
-  ): (agentType: AgentType) => RuntimeToolDefinition[] {
+  ): (agentType: AgentType, invocationKey: string) => RuntimeToolDefinition[] {
     const validator = this.streamingValidator;
     const deduplicator = this.realtimeDeduplicator;
     const verbose = this.options.verbose;
@@ -2290,7 +2346,7 @@ export class StreamingReviewOrchestrator {
     const progress = this.progress;
     const langLabel = this.options.language === 'en' ? 'English' : 'Chinese';
 
-    return (agentType: AgentType): RuntimeToolDefinition[] => [
+    return (agentType: AgentType, invocationKey: string): RuntimeToolDefinition[] => [
       {
         name: 'report_issue',
         description: `Report a discovered code issue. Call this for EACH issue found during review.
@@ -2318,6 +2374,12 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           }
 
           const issueId = `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+          // Count the report_issue invocation itself, not the deduplicated or
+          // filtered outcome: an agent that only produced duplicates still did
+          // meaningful work and must not be retried as a zero-issue run.
+          const currentInvocationCount = this.issueCountByInvocation.get(invocationKey) || 0;
+          this.issueCountByInvocation.set(invocationKey, currentInvocationCount + 1);
 
           if (agentType === 'style-reviewer' && args.category === 'style' && changedLinesByFile) {
             const changedLines = changedLinesByFile.get(args.file);
@@ -2461,9 +2523,10 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     context: ReviewContext,
     standardsText: string,
     runtime: AgentRuntime,
-    runtimeToolsFactory: (agentType: AgentType) => RuntimeToolDefinition[],
+    runtimeToolsFactory: (agentType: AgentType, invocationKey: string) => RuntimeToolDefinition[],
     reviewRepoPath: string,
-    maxTurns: number = 30
+    maxTurns: number = 30,
+    invocationKey: string = 'default'
   ): Promise<{
     tokensUsed: number;
     inputTokensUsed: number;
@@ -2511,7 +2574,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     });
 
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
-    const runtimeTools = runtimeToolsFactory(agentType);
+    const runtimeTools = runtimeToolsFactory(agentType, invocationKey);
 
     let inputTokensUsed = 0;
     let cachedInputTokensUsed = 0;
@@ -2560,7 +2623,19 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         }
 
         if (event.status === 'error_max_turns') {
-          const issueCount = this.issueCountByAgent.get(agentType) || 0;
+          const issueCount = this.getInvocationIssueCount(invocationKey);
+
+          // A session that exhausted its turns without emitting a single issue
+          // is an incomplete review, not a clean result. Throw so the retry
+          // loop can run again with a larger turn budget; if every attempt
+          // fails, the agent is reported as failed and the review will not be
+          // downgraded into a false "no issues found" success.
+          if (issueCount === 0) {
+            throw new Error(
+              `Agent ${agentType} reached maxTurns with 0 reported issues (maxTurns=${maxTurns}, turns=${turnCount})`
+            );
+          }
+
           console.warn(
             `[StreamingOrchestrator] Agent ${agentType} reached maxTurns limit (${maxTurns} turns). Treating as partial success with ${issueCount} issues already reported. Tokens: input=${inputTokens}, output=${outputTokens}, turns=${turnCount}`
           );
