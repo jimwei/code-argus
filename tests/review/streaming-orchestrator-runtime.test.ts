@@ -162,3 +162,193 @@ describe('streaming orchestrator runtime bridge', () => {
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
 });
+
+const minimalReviewContext = {
+  repoPath: 'C:\\repo',
+  diff: {
+    diff: '+const ready = true',
+  },
+  fileAnalyses: [],
+  standards: {
+    source: [],
+  },
+  diffFiles: [],
+};
+
+function createMaxTurnsRuntime(options: { callReportIssue?: boolean } = {}) {
+  return {
+    kind: 'openai-responses',
+    config: {
+      runtime: 'openai-responses',
+      models: { main: 'gpt-5.3-codex' },
+    },
+    execute: (execOptions: {
+      tools?: Array<{ execute: (args: Record<string, unknown>) => Promise<unknown> }>;
+    }) => ({
+      async *[Symbol.asyncIterator]() {
+        if (options.callReportIssue) {
+          await execOptions.tools?.[0]?.execute({
+            file: 'src/api/service.ts',
+            line_start: 18,
+            line_end: 21,
+            severity: 'warning',
+            category: 'logic',
+            title: 'Missing error handling',
+            description: 'The new API path swallows failures.',
+            suggestion: 'Handle and surface network failures.',
+            confidence: 0.9,
+          });
+        }
+
+        yield {
+          type: 'result',
+          status: 'error_max_turns',
+          usage: {
+            inputTokens: 11,
+            cachedInputTokens: 5,
+            outputTokens: 7,
+          },
+          text: 'Partial summary',
+          error: 'max turns reached',
+        };
+      },
+      close: async () => undefined,
+    }),
+  };
+}
+
+describe('streaming orchestrator max-turn handling', () => {
+  beforeEach(() => {
+    createRuntimeFromEnvMock.mockReset();
+    executeMock.mockReset();
+    closeMock.mockClear();
+  });
+
+  it('fails a max-turn run that reported zero issues so it can be retried', async () => {
+    const orchestrator = new StreamingReviewOrchestrator({
+      skipValidation: true,
+      progressMode: 'silent',
+    });
+
+    await expect(
+      (orchestrator as any).runStreamingAgent(
+        'security-reviewer',
+        minimalReviewContext,
+        '',
+        createMaxTurnsRuntime(),
+        () => [],
+        'C:\\repo',
+        15,
+        'security-invocation-1'
+      )
+    ).rejects.toThrow(/reached maxTurns with 0 reported issues/);
+  });
+
+  it('keeps already reported issues as a partial success on max-turn exhaustion', async () => {
+    const orchestrator = new StreamingReviewOrchestrator({
+      skipValidation: true,
+      progressMode: 'silent',
+    });
+    const toolsFactory = (agentType: string, invocationKey: string) =>
+      (orchestrator as any).createReportIssueRuntimeTools()(agentType, invocationKey);
+
+    const result = await (orchestrator as any).runStreamingAgent(
+      'logic-reviewer',
+      minimalReviewContext,
+      '',
+      createMaxTurnsRuntime({ callReportIssue: true }),
+      toolsFactory,
+      'C:\\repo',
+      24,
+      'logic-invocation-1'
+    );
+
+    expect(result.tokensUsed).toBe(18);
+    expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(1);
+    expect((orchestrator as any).getInvocationIssueCount('logic-invocation-1')).toBe(1);
+  });
+
+  it('treats a deduplicated report as output instead of a zero-issue run', async () => {
+    const orchestrator = new StreamingReviewOrchestrator({
+      skipValidation: true,
+      progressMode: 'silent',
+    });
+    (orchestrator as any).realtimeDeduplicator = {
+      checkAndAdd: async () => ({
+        isDuplicate: true,
+        duplicateOf: { title: 'Existing issue' },
+        reason: 'same root cause',
+      }),
+    };
+    const toolsFactory = (agentType: string, invocationKey: string) =>
+      (orchestrator as any).createReportIssueRuntimeTools()(agentType, invocationKey);
+
+    const result = await (orchestrator as any).runStreamingAgent(
+      'logic-reviewer',
+      minimalReviewContext,
+      '',
+      createMaxTurnsRuntime({ callReportIssue: true }),
+      toolsFactory,
+      'C:\\repo',
+      24,
+      'dedup-invocation-1'
+    );
+
+    expect(result.tokensUsed).toBe(18);
+    expect((orchestrator as any).getInvocationIssueCount('dedup-invocation-1')).toBe(1);
+    expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(0);
+  });
+
+  it('retries a zero-issue max-turn agent with a larger budget and emits an agent error', async () => {
+    const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: { main: 'gpt-5.3-codex' },
+      },
+      execute: executeMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            status: 'error_max_turns',
+            usage: {
+              inputTokens: 5,
+              cachedInputTokens: 0,
+              outputTokens: 1,
+            },
+            text: '',
+            error: 'max turns reached',
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const orchestrator = new StreamingReviewOrchestrator({
+      skipValidation: true,
+      progressMode: 'auto',
+      onEvent: (event: any) => events.push(event),
+    });
+
+    await expect(
+      (orchestrator as any).runAgentsWithStreaming(minimalReviewContext, 'C:\\repo', [
+        'security-reviewer',
+      ])
+    ).rejects.toThrow(/Review failed: 1 agent\(s\) failed after 2 retries/);
+
+    const maxTurnsPerAttempt = executeMock.mock.calls.map(
+      (call) => (call[0] as { maxTurns?: number }).maxTurns
+    );
+    expect(maxTurnsPerAttempt).toEqual([29, 37]);
+    expect(
+      events.find(
+        (event) =>
+          event.type === 'agent:complete' &&
+          event.data?.agent === 'security-reviewer' &&
+          event.data?.status === 'error'
+      )
+    ).toBeDefined();
+  });
+});
