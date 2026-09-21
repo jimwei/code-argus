@@ -94,6 +94,7 @@ const DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS =
  * 没有任何可交付的文本。重试时把预算提升到这个下限。
  */
 const ESCALATED_MAX_OUTPUT_TOKENS_FLOOR = 2048;
+const ESCALATED_MAX_OUTPUT_TOKENS_CEILING = 8192;
 
 /**
  * Builds the `reasoning` request fragment from the single global
@@ -868,15 +869,38 @@ function isOutputBudgetExhausted(response: OpenAIResponse): boolean {
 }
 
 /**
- * 预算耗尽重试时使用的 max_output_tokens：调用方预算低于下限时提升到下限。
- * 调用方已经给出不低于下限（或非法值）的预算时不重试，避免把大预算翻倍后超出 provider 限制。
+ * 预算耗尽重试时使用的 max_output_tokens：在 [2048, 8192] 本地策略区间内按调用方预算翻倍。
+ * 已达本地上限、或调用方预算非法（非正整数）时返回 undefined 表示不重试，
+ * 避免基于错误配置或超出本地保护的数值再发一次请求；实际上限仍以 provider 为准。
  */
 function escalateMaxOutputTokens(maxOutputTokens: number): number | undefined {
-  if (!Number.isFinite(maxOutputTokens) || maxOutputTokens >= ESCALATED_MAX_OUTPUT_TOKENS_FLOOR) {
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) {
     return undefined;
   }
 
-  return ESCALATED_MAX_OUTPUT_TOKENS_FLOOR;
+  const escalated = Math.min(
+    ESCALATED_MAX_OUTPUT_TOKENS_CEILING,
+    Math.max(ESCALATED_MAX_OUTPUT_TOKENS_FLOOR, maxOutputTokens * 2)
+  );
+
+  return escalated > maxOutputTokens ? escalated : undefined;
+}
+
+/**
+ * 预算耗尽或空响应时保留 status/reason 与已消耗的 token，便于线上定位是预算不足还是上游异常。
+ */
+function buildNoTextError(
+  response: OpenAIResponse,
+  extra: { attempts: number; tokensUsed: number },
+  cause?: unknown
+): Error {
+  const status = response.status ?? 'unknown';
+  const reason = response.incomplete_details?.reason ?? 'unknown';
+
+  return new Error(
+    `OpenAI Responses stream completed without text output (status=${status}, reason=${reason}, attempts=${extra.attempts}, tokensUsed=${extra.tokensUsed})`,
+    cause === undefined ? undefined : { cause }
+  );
 }
 
 /**
@@ -900,6 +924,10 @@ function mergeUsage(
     ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
     outputTokens: first.outputTokens + second.outputTokens,
   };
+}
+
+function totalTokens(usage: RuntimeUsage | undefined): number {
+  return usage ? usage.inputTokens + usage.outputTokens : 0;
 }
 
 function isFunctionCallItem(item: unknown): item is OpenAIFunctionCallItem {
@@ -996,6 +1024,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
 
     let response: OpenAIResponse;
     let sentMaxOutputTokens = Boolean(request.max_output_tokens);
+    let retriedOutputBudget = false;
     try {
       response = await createOpenAIStreamSnapshotForUserPrompt(
         this.client,
@@ -1030,14 +1059,32 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     if (!text && escalatedMaxOutputTokens !== undefined && isOutputBudgetExhausted(response)) {
       // 推理长度波动会让同一请求偶尔吃光输出预算；升档重试一次，避免整条调用直接失败。
       spentUsage = normalizeUsage(response.usage);
-      response = await createOpenAIStreamSnapshotForUserPrompt(
-        this.client,
-        {
-          ...request,
-          max_output_tokens: escalatedMaxOutputTokens,
-        },
-        options.abortController?.signal
-      );
+      const exhaustedResponse = response;
+      retriedOutputBudget = true;
+      try {
+        response = await createOpenAIStreamSnapshotForUserPrompt(
+          this.client,
+          {
+            ...request,
+            max_output_tokens: escalatedMaxOutputTokens,
+          },
+          options.abortController?.signal
+        );
+      } catch (retryFailure) {
+        // 上游拒绝更大的预算时不再发第三次请求，保留原始的“无文本”失败语义。
+        if (isMaxOutputTokensUnsupportedError(retryFailure)) {
+          throw buildNoTextError(
+            exhaustedResponse,
+            {
+              attempts: 2,
+              tokensUsed: totalTokens(spentUsage),
+            },
+            retryFailure
+          );
+        }
+
+        throw retryFailure;
+      }
 
       const retryError = getResponseError(response);
       if (retryError) {
@@ -1048,7 +1095,10 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     }
 
     if (!text) {
-      throw new Error('OpenAI Responses stream completed without text output');
+      throw buildNoTextError(response, {
+        attempts: retriedOutputBudget ? 2 : 1,
+        tokensUsed: totalTokens(spentUsage) + totalTokens(normalizeUsage(response.usage)),
+      });
     }
 
     return {

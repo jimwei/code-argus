@@ -2244,13 +2244,20 @@ describe('runtime execution', () => {
       } as any
     );
 
-    await expect(
-      runtime.generateText({
+    const error = await runtime
+      .generateText({
         model: 'gpt-5-mini',
         maxOutputTokens: 1024,
         prompt: 'Return JSON only',
       })
-    ).rejects.toThrow('OpenAI Responses stream completed without text output');
+      .then(
+        () => undefined,
+        (thrown: Error) => thrown
+      );
+
+    expect(error?.message).toContain('OpenAI Responses stream completed without text output');
+    expect(error?.message).toContain('reason=max_output_tokens');
+    expect(error?.message).toContain('attempts=2');
     expect(createMock).toHaveBeenCalledTimes(2);
   });
 
@@ -2427,16 +2434,96 @@ describe('runtime execution', () => {
     expect(result.text).toBe('runtime text output');
   });
 
-  it('does not escalate a max_output_tokens budget that already meets the escalation floor', async () => {
+  it('escalates the realtime deduplication budget when the floor budget is exhausted', async () => {
+    const createMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_dedup_budget_1',
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+          output: [{ id: 'rs_dedup_1', type: 'reasoning', summary: [] }],
+          usage: {
+            input_tokens: 600,
+            output_tokens: 2048,
+          },
+        })
+      )
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_dedup_budget_2',
+          status: 'completed',
+          output_text: '{"is_duplicate":false}',
+          output: [
+            {
+              id: 'msg_dedup_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: '{"is_duplicate":false}',
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 600,
+            output_tokens: 25,
+          },
+        })
+      );
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const result = await runtime.generateText({
+      model: 'gpt-5-mini',
+      maxOutputTokens: 2048,
+      prompt: 'Return JSON only',
+    });
+
+    expect(createMock).toHaveBeenCalledTimes(2);
+    expect(createMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ max_output_tokens: 4096 })
+    );
+    expect(result.text).toBe('{"is_duplicate":false}');
+    expect(result.usage).toEqual({
+      inputTokens: 1200,
+      outputTokens: 2073,
+    });
+  });
+
+  it('does not escalate a max_output_tokens budget that already reached the escalation ceiling', async () => {
     const createMock = vi.fn().mockResolvedValue(
       createOpenAIResponseStream({
-        id: 'resp_budget_at_floor_1',
+        id: 'resp_budget_at_ceiling_1',
         status: 'incomplete',
         incomplete_details: { reason: 'max_output_tokens' },
-        output: [{ id: 'rs_at_floor_1', type: 'reasoning', summary: [] }],
+        output: [{ id: 'rs_at_ceiling_1', type: 'reasoning', summary: [] }],
         usage: {
           input_tokens: 10,
-          output_tokens: 4096,
+          output_tokens: 8192,
         },
       })
     );
@@ -2461,14 +2548,80 @@ describe('runtime execution', () => {
       } as any
     );
 
-    await expect(
-      runtime.generateText({
+    const error = await runtime
+      .generateText({
         model: 'gpt-5-mini',
-        maxOutputTokens: 4096,
+        maxOutputTokens: 8192,
         prompt: 'Return JSON only',
       })
-    ).rejects.toThrow('OpenAI Responses stream completed without text output');
+      .then(
+        () => undefined,
+        (thrown: Error) => thrown
+      );
+
+    expect(error?.message).toContain('OpenAI Responses stream completed without text output');
+    expect(error?.message).toContain('attempts=1');
+    expect(error?.message).toContain('tokensUsed=8202');
     expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the exhausted attempt context when the escalated budget is rejected', async () => {
+    const maxOutputTokensError = Object.assign(new Error('400 status code (no body)'), {
+      status: 400,
+    });
+
+    const createMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_escalate_rejected_1',
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+          output: [{ id: 'rs_rejected_1', type: 'reasoning', summary: [] }],
+          usage: {
+            input_tokens: 400,
+            output_tokens: 2048,
+          },
+        })
+      )
+      .mockRejectedValueOnce(maxOutputTokensError);
+
+    const runtime = new OpenAIResponsesRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const error = await runtime
+      .generateText({
+        model: 'gpt-5-mini',
+        maxOutputTokens: 2048,
+        prompt: 'Return JSON only',
+      })
+      .then(
+        () => undefined,
+        (thrown: Error) => thrown
+      );
+
+    expect(error?.message).toContain('reason=max_output_tokens');
+    expect(error?.message).toContain('attempts=2');
+    expect(error?.message).toContain('tokensUsed=2448');
+    expect((error as (Error & { cause?: unknown }) | undefined)?.cause).toBe(maxOutputTokensError);
+    expect(createMock).toHaveBeenCalledTimes(2);
   });
 
   it('reports completed OpenAI stream turns with no text or tool calls as an error', async () => {
