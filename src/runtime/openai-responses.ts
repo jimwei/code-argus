@@ -19,6 +19,7 @@ type OpenAIResponse = {
   status?: string | null;
   output?: unknown[];
   output_text?: string;
+  incomplete_details?: { reason?: string } | null;
   usage?: {
     input_tokens: number;
     input_tokens_details?: {
@@ -86,6 +87,14 @@ type MutableJsonObject = Record<string, any>;
 
 const DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS =
   'Follow the user instructions and tool definitions exactly.';
+
+/**
+ * Reasoning 模型把 reasoning token 计入 max_output_tokens。预算耗尽时上游会把请求标记为
+ * incomplete（`incomplete_details.reason=max_output_tokens`）并且只返回 reasoning 内容，
+ * 没有任何可交付的文本。重试时把预算提升到这个下限。
+ */
+const ESCALATED_MAX_OUTPUT_TOKENS_FLOOR = 2048;
+const ESCALATED_MAX_OUTPUT_TOKENS_CEILING = 8192;
 
 /**
  * Builds the `reasoning` request fragment from the single global
@@ -536,6 +545,7 @@ function mergeResponseSnapshot(
   merged.status = response.status ?? merged.status;
   merged.usage = response.usage ?? merged.usage;
   merged.error = response.error ?? merged.error;
+  merged.incomplete_details = response.incomplete_details ?? merged.incomplete_details;
 
   if (typeof response.output_text === 'string') {
     merged.output_text = response.output_text;
@@ -845,6 +855,81 @@ function getResponseText(response: OpenAIResponse): string | undefined {
   return texts.length > 0 ? texts.join('') : undefined;
 }
 
+/**
+ * 判断一次 Responses 调用是否因为输出预算被 reasoning token 吃光而没有文本。
+ * 有明确的 reason 时以它为准，避免把 content_filter 之类的终止原因当成预算不足重试。
+ */
+function isOutputBudgetExhausted(response: OpenAIResponse): boolean {
+  const reason = response.incomplete_details?.reason;
+  if (typeof reason === 'string' && reason.length > 0) {
+    return reason === 'max_output_tokens';
+  }
+
+  return response.status === 'incomplete';
+}
+
+/**
+ * 预算耗尽重试时使用的 max_output_tokens：在 [2048, 8192] 本地策略区间内按调用方预算翻倍。
+ * 已达本地上限、或调用方预算非法（非正整数）时返回 undefined 表示不重试，
+ * 避免基于错误配置或超出本地保护的数值再发一次请求；实际上限仍以 provider 为准。
+ */
+function escalateMaxOutputTokens(maxOutputTokens: number): number | undefined {
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) {
+    return undefined;
+  }
+
+  const escalated = Math.min(
+    ESCALATED_MAX_OUTPUT_TOKENS_CEILING,
+    Math.max(ESCALATED_MAX_OUTPUT_TOKENS_FLOOR, maxOutputTokens * 2)
+  );
+
+  return escalated > maxOutputTokens ? escalated : undefined;
+}
+
+/**
+ * 预算耗尽或空响应时保留 status/reason 与已消耗的 token，便于线上定位是预算不足还是上游异常。
+ */
+function buildNoTextError(
+  response: OpenAIResponse,
+  extra: { attempts: number; tokensUsed: number },
+  cause?: unknown
+): Error {
+  const status = response.status ?? 'unknown';
+  const reason = response.incomplete_details?.reason ?? 'unknown';
+
+  return new Error(
+    `OpenAI Responses stream completed without text output (status=${status}, reason=${reason}, attempts=${extra.attempts}, tokensUsed=${extra.tokensUsed})`,
+    cause === undefined ? undefined : { cause }
+  );
+}
+
+/**
+ * 被放弃的尝试同样消耗 token，统计时与最终响应合并，避免少报成本。
+ */
+function mergeUsage(
+  first: RuntimeUsage | undefined,
+  second: RuntimeUsage | undefined
+): RuntimeUsage | undefined {
+  if (!first) {
+    return second;
+  }
+
+  if (!second) {
+    return first;
+  }
+
+  const cachedInputTokens = (first.cachedInputTokens ?? 0) + (second.cachedInputTokens ?? 0);
+  return {
+    inputTokens: first.inputTokens + second.inputTokens,
+    ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
+    outputTokens: first.outputTokens + second.outputTokens,
+  };
+}
+
+function totalTokens(usage: RuntimeUsage | undefined): number {
+  return usage ? usage.inputTokens + usage.outputTokens : 0;
+}
+
 function isFunctionCallItem(item: unknown): item is OpenAIFunctionCallItem {
   return Boolean(
     item &&
@@ -938,6 +1023,8 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     };
 
     let response: OpenAIResponse;
+    let sentMaxOutputTokens = Boolean(request.max_output_tokens);
+    let retriedOutputBudget = false;
     try {
       response = await createOpenAIStreamSnapshotForUserPrompt(
         this.client,
@@ -949,6 +1036,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
         throw error;
       }
 
+      sentMaxOutputTokens = false;
       const { max_output_tokens: _maxOutputTokens, ...requestWithoutMaxOutputTokens } = request;
       response = await createOpenAIStreamSnapshotForUserPrompt(
         this.client,
@@ -962,14 +1050,60 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
       throw new Error(error);
     }
 
-    const text = getResponseText(response);
+    let text = getResponseText(response);
+    let spentUsage: RuntimeUsage | undefined;
+    const escalatedMaxOutputTokens = sentMaxOutputTokens
+      ? escalateMaxOutputTokens(options.maxOutputTokens ?? 0)
+      : undefined;
+
+    if (!text && escalatedMaxOutputTokens !== undefined && isOutputBudgetExhausted(response)) {
+      // 推理长度波动会让同一请求偶尔吃光输出预算；升档重试一次，避免整条调用直接失败。
+      spentUsage = normalizeUsage(response.usage);
+      const exhaustedResponse = response;
+      retriedOutputBudget = true;
+      try {
+        response = await createOpenAIStreamSnapshotForUserPrompt(
+          this.client,
+          {
+            ...request,
+            max_output_tokens: escalatedMaxOutputTokens,
+          },
+          options.abortController?.signal
+        );
+      } catch (retryFailure) {
+        // 上游拒绝更大的预算时不再发第三次请求，保留原始的“无文本”失败语义。
+        if (isMaxOutputTokensUnsupportedError(retryFailure)) {
+          throw buildNoTextError(
+            exhaustedResponse,
+            {
+              attempts: 2,
+              tokensUsed: totalTokens(spentUsage),
+            },
+            retryFailure
+          );
+        }
+
+        throw retryFailure;
+      }
+
+      const retryError = getResponseError(response);
+      if (retryError) {
+        throw new Error(retryError);
+      }
+
+      text = getResponseText(response);
+    }
+
     if (!text) {
-      throw new Error('OpenAI Responses stream completed without text output');
+      throw buildNoTextError(response, {
+        attempts: retriedOutputBudget ? 2 : 1,
+        tokensUsed: totalTokens(spentUsage) + totalTokens(normalizeUsage(response.usage)),
+      });
     }
 
     return {
       text,
-      usage: normalizeUsage(response.usage),
+      usage: mergeUsage(spentUsage, normalizeUsage(response.usage)),
     };
   }
 
