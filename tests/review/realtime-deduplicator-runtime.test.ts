@@ -89,6 +89,7 @@ describe('realtime deduplicator runtime bridge', () => {
       expect.objectContaining({
         model: 'runtime-light-model',
         prompt: expect.stringContaining('NEW ISSUE'),
+        maxOutputTokens: 2048,
       })
     );
     expect(anthropicCreateMock).not.toHaveBeenCalled();

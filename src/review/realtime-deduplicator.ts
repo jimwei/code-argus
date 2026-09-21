@@ -208,7 +208,8 @@ export class RealtimeDeduplicator {
       try {
         const response = await this.getRuntime().generateText({
           model,
-          maxOutputTokens: 1024,
+          // 只需「是/否」的 JSON，但 reasoning 模型的推理过程同样占用输出预算
+          maxOutputTokens: 2048,
           prompt,
         });
 
