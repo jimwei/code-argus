@@ -167,7 +167,7 @@ describe('repo context tools', () => {
     await writeFile(join(repoPath, 'public', 'iconfont.js'), `TOKEN_NEEDLE ${'g'.repeat(5000)}`);
     await writeFile(
       join(repoPath, 'src', 'huge-data.ts'),
-      `TOKEN_NEEDLE ${'h'.repeat(400 * 1024)}`
+      `TOKEN_NEEDLE ${'h'.repeat(2 * 1024 * 1024)}`
     );
     await writeFile(join(repoPath, 'src', 'app.ts'), 'const TOKEN_NEEDLE = 1;');
 
@@ -253,6 +253,21 @@ describe('repo context tools', () => {
 
     expect(text).toContain('[line clipped]');
     expect(text).toContain('offset=2');
+  });
+
+  it('keeps indexing files that stay under the 1 MB retrieval limit', async () => {
+    const repoPath = await createTempRepo('argus-repo-under-limit');
+    await mkdir(join(repoPath, 'src'), { recursive: true });
+    await writeFile(
+      join(repoPath, 'src', 'big-but-searchable.ts'),
+      `LIMIT_NEEDLE ${'k'.repeat(900 * 1024)}`
+    );
+
+    const tools = createRepoContextTools(repoPath);
+    const text = (await tools[1]!.execute({ pattern: 'LIMIT_NEEDLE' })).content[0]?.text ?? '';
+
+    expect(text).toContain('src/big-but-searchable.ts:1');
+    expect(text).not.toContain('were skipped during scanning');
   });
 
   it('does not split surrogate pairs when truncating Grep match lines', async () => {

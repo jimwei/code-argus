@@ -22,7 +22,7 @@ const DEFAULT_GREP_BYTE_LIMIT = 48 * 1024;
 const MAX_GREP_BYTE_LIMIT = 256 * 1024;
 const DEFAULT_GREP_LINE_CHAR_LIMIT = 400;
 const MAX_GREP_LINE_CHAR_LIMIT = 4000;
-const DEFAULT_MAX_INDEXED_FILE_BYTES = 256 * 1024;
+const DEFAULT_MAX_INDEXED_FILE_BYTES = 1024 * 1024;
 const MAX_MAX_INDEXED_FILE_BYTES = 8 * 1024 * 1024;
 const STAT_CONCURRENCY = 32;
 const IGNORED_DIRS = new Set(['.git', 'node_modules', '.worktrees']);
@@ -162,6 +162,14 @@ function truncateToByteLength(text: string, maxBytes: number): string {
   // The cut can land inside a multi-byte code point; drop the partial tail so
   // CJK lines do not end with a replacement character.
   return decoded.endsWith('\uFFFD') ? decoded.slice(0, -1) : decoded;
+}
+
+function formatByteSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+  }
+
+  return `${Math.round(bytes / 1024)} KB`;
 }
 
 function truncateToCharLength(text: string, maxChars: number): string {
@@ -503,9 +511,9 @@ export function createRepoContextTools(
     },
     {
       name: 'Grep',
-      description: `Search repository files for matching text or regex patterns and return matching lines with file and line numbers. Generated bundles, lockfiles, binary assets, and files larger than ${Math.round(
-        fileFilters.maxFileBytes / 1024
-      )} KB are skipped; long match lines are truncated and the total output is capped at roughly ${Math.round(
+      description: `Search repository files for matching text or regex patterns and return matching lines with file and line numbers. Generated bundles, lockfiles, binary assets, and files larger than ${formatByteSize(
+        fileFilters.maxFileBytes
+      )} are skipped; long match lines are truncated and the total output is capped at roughly ${Math.round(
         grepByteLimit / 1024
       )} KB.`,
       inputSchema: {

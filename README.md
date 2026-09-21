@@ -405,11 +405,11 @@ build/**
 
 Agents explore the repository with the built-in `Read`, `Grep`, and `Glob` tools. Every tool result is replayed to the model on later turns, so these tools are bounded by default to keep one oversized file from exhausting the provider context window:
 
-| Tool          | Default limit                                                                                                              |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `Read`        | ~64 KB per call; oversized lines are clipped and the result reports the next `offset` to continue from                     |
-| `Grep`        | ~48 KB per call; matched lines are truncated to 400 characters                                                             |
-| `Grep`/`Glob` | generated bundles (`*.min.js`, `iconfont.js`, `*.map`), lockfiles, binary assets, and files larger than 256 KB are skipped |
+| Tool          | Default limit                                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `Read`        | ~64 KB per call; oversized lines are clipped and the result reports the next `offset` to continue from                   |
+| `Grep`        | ~48 KB per call; matched lines are truncated to 400 characters                                                           |
+| `Grep`/`Glob` | generated bundles (`*.min.js`, `iconfont.js`, `*.map`), lockfiles, binary assets, and files larger than 1 MB are skipped |
 
 `Read` still opens an excluded file when its path is requested explicitly, the returned content is just bounded. Embedders can override the budgets with `createRepoContextTools(repoPath, { readByteLimit, grepByteLimit, grepLineCharLimit, maxIndexedFileBytes, excludedFilePatterns })`.
 
