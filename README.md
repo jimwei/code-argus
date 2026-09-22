@@ -565,7 +565,8 @@ MIT
 Security reviewers focus on concrete security regressions and assess whether they can
 finish after an initial eight context-tool calls. A completed review may legitimately
 find zero issues. Unresolved material hypotheses must be reported through
-`report_incomplete`; this fails the attempt rather than presenting a clean review.
+`report_incomplete`; the reviewer keeps the findings it already reported, the agent is
+marked incomplete, and the review is not rated as clean.
 
 For built-in reviewers using `openai-responses`, each request includes its remaining
 budget. The final three requests are reserved for reporting and completion: `Read`,

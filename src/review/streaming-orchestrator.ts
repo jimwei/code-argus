@@ -2670,9 +2670,6 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           tokensUsed = inputTokensUsed + outputTokensUsed;
         }
 
-        if (incompleteReason) {
-          throw new Error(`Agent ${agentType} review incomplete: ${incompleteReason}`);
-        }
         if (event.status === 'success') {
           console.log(
             `[Agent-Detail] ${agentType} FinalResult Tokens: input=${inputTokens}, output=${outputTokens}, total=${tokensUsed}, turns=${turnCount}`
@@ -2740,6 +2737,16 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     console.log(
       `[Agent-Summary] ${agentType} completed: turns=${turnCount}, totalTokens=${tokensUsed}`
     );
+
+    if (incompleteReason) {
+      // An incomplete declaration is a coverage signal, not a fatal error: keep the findings the
+      // agent already reported and mark the agent as incomplete so the review is not rated clean.
+      console.warn(
+        `[StreamingOrchestrator] Agent ${agentType} declared an incomplete review: ${incompleteReason}`
+      );
+      this.progress.warn(`Agent ${agentType} 未能完成审核: ${incompleteReason}`);
+      this.progress.agent(agentType, 'error', `incomplete: ${incompleteReason}`);
+    }
 
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Agent ${agentType} completed`);

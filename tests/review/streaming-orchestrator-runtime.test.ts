@@ -398,10 +398,12 @@ it('carries bounded exploration evidence into a retry instead of restarting blin
   expect(attempts).toBe(2);
 });
 
-it('does not accept an explicitly incomplete review as a clean result', async () => {
+it('keeps findings and marks the agent incomplete instead of failing the review', async () => {
+  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
   const orchestrator = new StreamingReviewOrchestrator({
     skipValidation: true,
     progressMode: 'auto',
+    onEvent: (event: any) => events.push(event),
   });
   const runtime = {
     kind: 'openai-responses',
@@ -409,23 +411,90 @@ it('does not accept an explicitly incomplete review as a clean result', async ()
     execute: (options: any) => ({
       async *[Symbol.asyncIterator]() {
         await options.tools
+          .find((t: any) => t.name === 'report_issue')
+          .execute({
+            file: 'src/auth.ts',
+            line_start: 10,
+            line_end: 10,
+            severity: 'warning',
+            category: 'security',
+            title: 'Missing authorization check',
+            description: 'The endpoint does not verify permissions.',
+            suggestion: 'Check permissions before writing.',
+            confidence: 0.9,
+          });
+        await options.tools
           .find((t: any) => t.name === 'report_incomplete')
           .execute({ reason: 'Missing authorization implementation' });
-        yield { type: 'result', status: 'success', text: 'Could not finish.' };
+        yield { type: 'result', status: 'success', text: 'Partial review.' };
       },
       close: closeMock,
     }),
   };
-  await expect(
-    (orchestrator as any).runStreamingAgent(
-      'security-reviewer',
-      minimalReviewContext,
-      '',
-      runtime,
-      (orchestrator as any).createReportIssueRuntimeTools(),
-      '.',
-      29,
-      'incomplete-test'
+
+  const result = await (orchestrator as any).runStreamingAgent(
+    'security-reviewer',
+    minimalReviewContext,
+    '',
+    runtime,
+    (orchestrator as any).createReportIssueRuntimeTools(),
+    '.',
+    29,
+    'incomplete-test'
+  );
+
+  // The attempt itself succeeds so already reported findings are kept, and the price is a
+  // visible agent error that keeps the review from being rated clean.
+  expect(result).toBeTruthy();
+  expect(
+    events.find(
+      (event) =>
+        event.type === 'agent:complete' &&
+        event.data?.status === 'error' &&
+        String(event.data?.error ?? '').includes('Missing authorization implementation')
     )
-  ).rejects.toThrow('Missing authorization implementation');
+  ).toBeDefined();
+});
+
+it('does not fail the whole review when an agent declares a review incomplete', async () => {
+  const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+
+  createRuntimeFromEnvMock.mockReturnValue({
+    kind: 'openai-responses',
+    config: {
+      runtime: 'openai-responses',
+      models: { main: 'test' },
+    },
+    execute: executeMock.mockImplementation((options: any) => ({
+      async *[Symbol.asyncIterator]() {
+        await options.tools
+          .find((t: any) => t.name === 'report_incomplete')
+          .execute({ reason: 'Could not confirm the permission model' });
+        yield { type: 'result', status: 'success', text: 'Partial review.' };
+      },
+      close: closeMock,
+    })),
+  });
+
+  const orchestrator = new StreamingReviewOrchestrator({
+    skipValidation: true,
+    progressMode: 'auto',
+    onEvent: (event: any) => events.push(event),
+  });
+
+  const aggregated = await (orchestrator as any).runAgentsWithStreaming(
+    minimalReviewContext,
+    'C:\\repo',
+    ['security-reviewer']
+  );
+
+  expect(aggregated).toBeTruthy();
+  expect(
+    events.find(
+      (event) =>
+        event.type === 'agent:complete' &&
+        event.data?.status === 'error' &&
+        String(event.data?.error ?? '').includes('Could not confirm the permission model')
+    )
+  ).toBeDefined();
 });
