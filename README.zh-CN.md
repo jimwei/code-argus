@@ -404,6 +404,18 @@ build/**
 !critical.test.ts
 ```
 
+### 仓库上下文工具的输出上限
+
+Agent 使用内置的 `Read`、`Grep`、`Glob` 工具浏览仓库。每次工具结果都会在后续轮次重复发送给模型，因此这些工具默认带有限额，避免单个超大文件直接撑爆模型上下文：
+
+| 工具          | 默认限制                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| `Read`        | 单次约 64 KB；超长行会被截断，并在结果中给出继续读取的 `offset`                            |
+| `Grep`        | 单次约 48 KB；单条匹配行截断到 400 字符                                                    |
+| `Grep`/`Glob` | 跳过生成物（`*.min.js`、`iconfont.js`、`*.map`）、锁文件、二进制资源，以及大于 1 MB 的文件 |
+
+显式指定路径时 `Read` 仍可打开被排除的文件，只是返回内容受限。以库的方式内嵌审查引擎时，可以通过 `createRepoContextTools(repoPath, { readByteLimit, grepByteLimit, grepLineCharLimit, maxIndexedFileBytes, excludedFilePatterns })` 覆盖这些默认值。
+
 ## JSON 事件流
 
 启用 `--json-logs` 后，Argus 会把进度和最终报告以 NDJSON 形式输出到 `stderr`，方便 CI/CD 或平台侧消费。
