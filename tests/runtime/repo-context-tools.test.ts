@@ -233,6 +233,31 @@ describe('repo context tools', () => {
     const globText = (await tools[2]!.execute({ pattern: 'public/**' })).content[0]?.text ?? '';
     expect(globText).toContain('No files matched');
     expect(globText).toContain('skipped');
+
+    // An explicit path is the escape hatch: it bypasses the listing filters.
+    const explicitGrep =
+      (await tools[1]!.execute({ pattern: 'ICON_GLYPH_TOKEN', path: 'public/iconfont.js' }))
+        .content[0]?.text ?? '';
+    expect(explicitGrep).toContain('public/iconfont.js:1');
+  });
+
+  it('accepts a file path for Grep and Glob instead of failing with ENOTDIR', async () => {
+    const repoPath = await createTempRepo('argus-repo-file-path');
+    await mkdir(join(repoPath, 'src'), { recursive: true });
+    await writeFile(join(repoPath, 'src', 'app.ts'), 'const FILE_PATH_NEEDLE = 1;\n');
+    await writeFile(join(repoPath, 'src', 'other.ts'), 'const OTHER_NEEDLE = 1;\n');
+
+    const tools = createRepoContextTools(repoPath);
+
+    const grepText =
+      (await tools[1]!.execute({ pattern: 'NEEDLE', path: 'src/app.ts' })).content[0]?.text ?? '';
+    expect(grepText).toContain('src/app.ts:1');
+    expect(grepText).not.toContain('other.ts');
+
+    const globText =
+      (await tools[2]!.execute({ pattern: '**/*.ts', path: 'src/app.ts' })).content[0]?.text ?? '';
+    expect(globText).toContain('src/app.ts');
+    expect(globText).not.toContain('other.ts');
   });
 
   it('reports truncation when the byte budget blocks the first match', async () => {

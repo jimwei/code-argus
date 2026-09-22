@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { lstat, readdir, readFile, stat } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 
 import { Minimatch } from 'minimatch';
@@ -284,6 +284,19 @@ async function collectFiles(
   let excludedCount = 0;
   const isExcluded = filters.isExcluded;
 
+  const startStat = await lstat(startAbsolutePath);
+  // The repository root itself may be reached through a symlink or junction, so walk it as
+  // given. Symlinked paths below the root stay refused, matching the walker's policy of
+  // never following symlinked entries.
+  if (startStat.isSymbolicLink() && startAbsolutePath !== root) {
+    return { files: [], skippedCount: 0 };
+  }
+  if (startStat.isFile()) {
+    // An explicit file path bypasses the listing filters; the caller asked for it and the
+    // output caps still bound the result.
+    return { files: [toRepoRelativePath(root, startAbsolutePath)], skippedCount: 0 };
+  }
+
   async function walk(currentPath: string): Promise<void> {
     const entries = await readdir(currentPath, { withFileTypes: true });
 
@@ -523,7 +536,7 @@ export function createRepoContextTools(
         path: z
           .string()
           .optional()
-          .describe('Optional repository-relative subdirectory to search in'),
+          .describe('Optional repository-relative file or directory to search in'),
         glob: z.string().optional().describe('Optional glob pattern to filter candidate files'),
         ignore_case: z.boolean().optional().describe('Whether to search case-insensitively'),
         max_results: z
@@ -552,7 +565,8 @@ export function createRepoContextTools(
 
         for (const file of files) {
           const candidatePath =
-            startPath === '.'
+            startPath === '.' ||
+            resolveRepoPath(repoPath, startPath) === resolveRepoPath(repoPath, file)
               ? file
               : normalizePath(
                   relative(resolveRepoPath(repoPath, startPath), resolveRepoPath(repoPath, file))
@@ -643,7 +657,7 @@ export function createRepoContextTools(
         path: z
           .string()
           .optional()
-          .describe('Optional repository-relative subdirectory to search in'),
+          .describe('Optional repository-relative file or directory to search in'),
         max_results: z
           .number()
           .int()
@@ -658,7 +672,8 @@ export function createRepoContextTools(
         const patternMatcher = new Minimatch(args.pattern, MINIMATCH_OPTIONS);
         const matches = files.filter((file) => {
           const candidatePath =
-            startPath === '.'
+            startPath === '.' ||
+            resolveRepoPath(repoPath, startPath) === resolveRepoPath(repoPath, file)
               ? file
               : normalizePath(
                   relative(resolveRepoPath(repoPath, startPath), resolveRepoPath(repoPath, file))
