@@ -152,6 +152,7 @@ describe('streaming validator runtime bridge', () => {
     expect(queryMock).not.toHaveBeenCalled();
 
     const runtimeOptions = executeMock.mock.calls[0]?.[0];
+    expect(runtimeOptions).not.toHaveProperty('completionBudget');
     expect(runtimeOptions.prompt).toEqual(
       expect.objectContaining({
         [Symbol.asyncIterator]: expect.any(Function),

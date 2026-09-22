@@ -2719,3 +2719,70 @@ describe('runtime execution', () => {
     expect(createMock).not.toHaveBeenCalled();
   });
 });
+
+describe('review completion budget', () => {
+  const config: ArgusRuntimeConfig = {
+    runtime: 'openai-responses',
+    models: { main: 'test', light: 'test', validator: 'test' },
+    openai: { apiKey: 'test', source: 'argus' },
+  };
+  const finalResponse = () =>
+    createOpenAIResponseStream({
+      id: 'done',
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Reviewed the changes; no issues found.' }],
+        },
+      ],
+    });
+  it('does not turn a successful final allowed request into max-turn failure', async () => {
+    const create = vi.fn().mockImplementation(finalResponse);
+    const runtime = new OpenAIResponsesRuntime(config, { responses: { create } } as any);
+    const events = [];
+    for await (const event of runtime.execute({ prompt: 'Review', cwd: '.', maxTurns: 1 }))
+      events.push(event);
+    expect(events.filter((e) => e.type === 'result').map((e) => e.status)).toEqual(['success']);
+  });
+  it('reserves closing requests for reporting and refuses late exploration even if the provider requests it', async () => {
+    const read = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'evidence' }] }));
+    const create = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        createOpenAIResponseStream({
+          id: 'r1',
+          status: 'completed',
+          output: [{ type: 'function_call', name: 'Read', call_id: 'c1', arguments: '{}' }],
+        })
+      )
+      .mockImplementationOnce(() =>
+        createOpenAIResponseStream({
+          id: 'r2',
+          status: 'completed',
+          output: [{ type: 'function_call', name: 'Read', call_id: 'c2', arguments: '{}' }],
+        })
+      )
+      .mockImplementationOnce(finalResponse);
+    const runtime = new OpenAIResponsesRuntime(config, { responses: { create } } as any);
+    const events = [];
+    for await (const event of runtime.execute({
+      prompt: 'Review',
+      cwd: '.',
+      maxTurns: 3,
+      completionBudget: { reserveTurns: 2, toolNames: ['report_issue', 'report_incomplete'] },
+      tools: [
+        { name: 'Read', description: 'read', inputSchema: {}, execute: read },
+        { name: 'report_issue', description: 'report', inputSchema: {}, execute: read },
+      ],
+    } as any))
+      events.push(event);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![0].instructions).toContain('3 requests remaining');
+    expect(create.mock.calls[1]![0].tools.map((t: any) => t.name)).toEqual(['report_issue']);
+    expect(create.mock.calls[1]![0].instructions).toContain('report_incomplete');
+    expect(JSON.stringify(create.mock.calls[2]![0].input)).toContain('closing phase');
+    expect(events.filter((e) => e.type === 'result').map((e) => e.status)).toEqual(['success']);
+  });
+});

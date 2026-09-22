@@ -135,6 +135,7 @@ describe('fix verifier runtime bridge', () => {
     expect(queryMock).not.toHaveBeenCalled();
 
     const runtimeOptions = executeMock.mock.calls[0]?.[0];
+    expect(runtimeOptions).not.toHaveProperty('completionBudget');
     expect(runtimeOptions.prompt).toContain('Fix Verification Specialist');
     expect(runtimeOptions.prompt).toContain('issue-1');
     expect(runtimeOptions.prompt).toContain('fetch("/api/service")');

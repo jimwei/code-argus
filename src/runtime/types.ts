@@ -34,6 +34,8 @@ export interface RuntimeExecuteOptions {
   abortController?: AbortController;
   tools?: RuntimeToolDefinition<any>[];
   toolNamespace?: string;
+  /** Reviewer-only closing phase; validators and other runtime users opt out. */
+  completionBudget?: { reserveTurns: number; toolNames: string[] };
 }
 
 export interface RuntimeGenerateTextOptions {

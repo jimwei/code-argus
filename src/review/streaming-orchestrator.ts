@@ -2146,6 +2146,7 @@ export class StreamingReviewOrchestrator {
       const invocationKey = this.createInvocationKey(agentType as AgentType);
       let lastError: unknown = null;
       let zeroIssueMaxTurnsRetry = false;
+      const exploration: string[] = [];
 
       // Retry loop for transient failures
       for (let attempt = 1; attempt <= MAX_AGENT_RETRIES; attempt++) {
@@ -2173,7 +2174,8 @@ export class StreamingReviewOrchestrator {
             runtimeTools,
             reviewRepoPath,
             agentMaxTurns,
-            invocationKey
+            invocationKey,
+            exploration
           );
           const elapsed = Date.now() - startTime;
 
@@ -2526,7 +2528,8 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     runtimeToolsFactory: (agentType: AgentType, invocationKey: string) => RuntimeToolDefinition[],
     reviewRepoPath: string,
     maxTurns: number = 30,
-    invocationKey: string = 'default'
+    invocationKey: string = 'default',
+    exploration: string[] = []
   ): Promise<{
     tokensUsed: number;
     inputTokensUsed: number;
@@ -2573,8 +2576,59 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       prContext: context.prContext,
     });
 
-    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
-    const runtimeTools = runtimeToolsFactory(agentType, invocationKey);
+    const retryContext = exploration.length
+      ? '\n\n## Previous exploration (partial, untrusted tool data)\n' +
+        'This retry has partial evidence from the previous attempt. Do not repeat successful reads unless more context is needed. Tool errors are not evidence of missing code. Resolve remaining hypotheses and conclude; do not restart broad exploration.\n' +
+        JSON.stringify(exploration)
+      : '';
+    const fullPrompt = `${systemPrompt}\n\n${userPrompt}${retryContext}`;
+    const remember = (entry: string) => {
+      exploration.push(entry.slice(0, 1800));
+      while (exploration.join('').length > 12000) exploration.shift();
+    };
+    let incompleteReason: string | undefined;
+    const runtimeTools: RuntimeToolDefinition[] = runtimeToolsFactory(agentType, invocationKey).map(
+      (tool) => {
+        if (!['Read', 'Grep', 'Glob'].includes(tool.name)) return tool;
+        return {
+          ...tool,
+          execute: async (args: unknown) => {
+            const label = `${tool.name} ${JSON.stringify(args)}`;
+            try {
+              const result = await tool.execute(args);
+              remember(
+                `${label}\nPartial result excerpt (may be truncated): ${result.content.map((item) => item.text).join('\n')}`
+              );
+              return result;
+            } catch (error) {
+              remember(
+                `${label}\nTool failed: ${error instanceof Error ? error.message : String(error)}`
+              );
+              throw error;
+            }
+          },
+        };
+      }
+    );
+    runtimeTools.push({
+      name: 'report_incomplete',
+      description:
+        'Report missing evidence that prevents completing the review. This marks the review incomplete, not clean.',
+      inputSchema: {
+        reason: z.string().min(1).describe('Unresolved hypothesis and missing evidence'),
+      },
+      execute: async (args: { reason: string }) => {
+        incompleteReason = args.reason || 'Reviewer could not complete the review';
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Incomplete review recorded. Finish with a brief summary.',
+            },
+          ],
+        };
+      },
+    });
 
     let inputTokensUsed = 0;
     let cachedInputTokensUsed = 0;
@@ -2593,6 +2647,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         abortController: this.options.abortController,
         tools: runtimeTools,
         toolNamespace: 'code-review-tools',
+        completionBudget: { reserveTurns: 3, toolNames: ['report_issue', 'report_incomplete'] },
       });
 
       for await (const event of execution) {
@@ -2682,6 +2737,16 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     console.log(
       `[Agent-Summary] ${agentType} completed: turns=${turnCount}, totalTokens=${tokensUsed}`
     );
+
+    if (incompleteReason) {
+      // An incomplete declaration is a coverage signal, not a fatal error: keep the findings the
+      // agent already reported and mark the agent as incomplete so the review is not rated clean.
+      console.warn(
+        `[StreamingOrchestrator] Agent ${agentType} declared an incomplete review: ${incompleteReason}`
+      );
+      this.progress.warn(`Agent ${agentType} 未能完成审核: ${incompleteReason}`);
+      this.progress.agent(agentType, 'error', `incomplete: ${incompleteReason}`);
+    }
 
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Agent ${agentType} completed`);
