@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 
-import { minimatch } from 'minimatch';
+import { Minimatch } from 'minimatch';
 import { z } from 'zod';
 
 import type { RuntimeToolDefinition } from './types.js';
@@ -137,11 +137,13 @@ function createGlobMatcher(patterns: readonly string[]): (relativePath: string) 
   const combinedPattern = buildCombinedGlobPattern(patterns);
 
   if (combinedPattern !== undefined) {
-    return (relativePath: string) => minimatch(relativePath, combinedPattern, MINIMATCH_OPTIONS);
+    // Compile once: calling minimatch() would re-parse the pattern for every file.
+    const combined = new Minimatch(combinedPattern, MINIMATCH_OPTIONS);
+    return (relativePath: string) => combined.match(relativePath);
   }
 
-  return (relativePath: string) =>
-    patterns.some((pattern) => minimatch(relativePath, pattern, MINIMATCH_OPTIONS));
+  const compiled = patterns.map((pattern) => new Minimatch(pattern, MINIMATCH_OPTIONS));
+  return (relativePath: string) => compiled.some((matcher) => matcher.match(relativePath));
 }
 
 function byteLengthOf(text: string): number {
@@ -219,7 +221,7 @@ function toRepoRelativePath(repoPath: string, absolutePath: string): string {
 }
 
 interface RepoFileFilters {
-  excludedFilePatterns: readonly string[];
+  isExcluded: (relativePath: string) => boolean;
   maxFileBytes: number;
 }
 
@@ -280,7 +282,7 @@ async function collectFiles(
   const startAbsolutePath = resolveRepoPath(root, startPath);
   const matched: string[] = [];
   let excludedCount = 0;
-  const isExcluded = createGlobMatcher(filters.excludedFilePatterns);
+  const isExcluded = filters.isExcluded;
 
   async function walk(currentPath: string): Promise<void> {
     const entries = await readdir(currentPath, { withFileTypes: true });
@@ -393,15 +395,15 @@ export function createRepoContextTools(
     DEFAULT_GREP_LINE_CHAR_LIMIT,
     MAX_GREP_LINE_CHAR_LIMIT
   );
+  const isExcludedFile = createGlobMatcher(excludedFilePatterns);
   const fileFilters: RepoFileFilters = {
-    excludedFilePatterns,
+    isExcluded: isExcludedFile,
     maxFileBytes: clamp(
       options.maxIndexedFileBytes,
       DEFAULT_MAX_INDEXED_FILE_BYTES,
       MAX_MAX_INDEXED_FILE_BYTES
     ),
   };
-  const isExcludedFile = createGlobMatcher(excludedFilePatterns);
   const fileListCache = new Map<string, Promise<CollectedFiles>>();
 
   const listRepoFiles = (startPath: string = '.'): Promise<CollectedFiles> => {
@@ -535,6 +537,7 @@ export function createRepoContextTools(
         const startPath = args.path || '.';
         const { files, skippedCount } = await listRepoFiles(startPath);
         const globPattern = args.glob || '**/*';
+        const globMatcher = new Minimatch(globPattern, MINIMATCH_OPTIONS);
         const maxResults = clamp(args.max_results, DEFAULT_GREP_RESULTS, MAX_GREP_RESULTS);
         const regex = buildSearchRegex(args.pattern, args.ignore_case ?? false);
         const matches: string[] = [];
@@ -555,7 +558,7 @@ export function createRepoContextTools(
                   relative(resolveRepoPath(repoPath, startPath), resolveRepoPath(repoPath, file))
                 );
 
-          if (!minimatch(candidatePath, globPattern, { dot: true, matchBase: true })) {
+          if (!globMatcher.match(candidatePath)) {
             continue;
           }
 
@@ -652,6 +655,7 @@ export function createRepoContextTools(
         const startPath = args.path || '.';
         const { files, skippedCount } = await listRepoFiles(startPath);
         const maxResults = clamp(args.max_results, DEFAULT_GLOB_RESULTS, MAX_GLOB_RESULTS);
+        const patternMatcher = new Minimatch(args.pattern, MINIMATCH_OPTIONS);
         const matches = files.filter((file) => {
           const candidatePath =
             startPath === '.'
@@ -660,7 +664,7 @@ export function createRepoContextTools(
                   relative(resolveRepoPath(repoPath, startPath), resolveRepoPath(repoPath, file))
                 );
 
-          return minimatch(candidatePath, args.pattern, { dot: true, matchBase: true });
+          return patternMatcher.match(candidatePath);
         });
         const skippedNote =
           skippedCount > 0

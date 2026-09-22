@@ -2,9 +2,28 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRepoContextTools } from '../../src/runtime/repo-context-tools.js';
+
+const minimatchCompilations = vi.hoisted(() => ({ total: 0, exclusion: 0 }));
+
+vi.mock('minimatch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('minimatch')>();
+
+  class CountingMinimatch extends actual.Minimatch {
+    constructor(...args: ConstructorParameters<typeof actual.Minimatch>) {
+      minimatchCompilations.total += 1;
+      const [pattern] = args;
+      if (typeof pattern === 'string' && pattern.includes('iconfont.js')) {
+        minimatchCompilations.exclusion += 1;
+      }
+      super(...args);
+    }
+  }
+
+  return { ...actual, Minimatch: CountingMinimatch };
+});
 
 const tempDirs: string[] = [];
 
@@ -268,6 +287,26 @@ describe('repo context tools', () => {
 
     expect(text).toContain('src/big-but-searchable.ts:1');
     expect(text).not.toContain('were skipped during scanning');
+  });
+
+  it('compiles the exclusion patterns once per tool instance instead of once per file', async () => {
+    const repoPath = await createTempRepo('argus-repo-exclusion-compile');
+    await mkdir(join(repoPath, 'src'), { recursive: true });
+    await mkdir(join(repoPath, 'public'), { recursive: true });
+    for (let index = 0; index < 12; index += 1) {
+      await writeFile(join(repoPath, 'src', `file${index}.ts`), `export const value${index} = 1;`);
+    }
+    await writeFile(join(repoPath, 'public', 'iconfont.js'), 'ICON_GLYPH = 1;');
+
+    minimatchCompilations.total = 0;
+    minimatchCompilations.exclusion = 0;
+
+    const tools = createRepoContextTools(repoPath);
+    await tools[2]!.execute({ pattern: '**/*.ts' });
+
+    // 1 exclusion pattern + 1 caller glob; a per-file regression would be ~13.
+    expect(minimatchCompilations.exclusion).toBe(1);
+    expect(minimatchCompilations.total).toBeLessThan(4);
   });
 
   it('does not split surrogate pairs when truncating Grep match lines', async () => {
