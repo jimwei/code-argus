@@ -147,7 +147,7 @@ describe('streaming orchestrator runtime bridge', () => {
     );
     expect(
       executeMock.mock.calls[0]?.[0]?.tools?.map((tool: { name: string }) => tool.name)
-    ).toEqual(['report_issue', 'Read', 'Grep', 'Glob']);
+    ).toEqual(['report_issue', 'Read', 'Grep', 'Glob', 'report_incomplete']);
     expect(queryMock).not.toHaveBeenCalled();
     expect(result.tokens).toBe(18);
     expect(result.cachedInputTokensUsed).toBe(5);
@@ -351,4 +351,81 @@ describe('streaming orchestrator max-turn handling', () => {
       )
     ).toBeDefined();
   });
+});
+
+it('carries bounded exploration evidence into a retry instead of restarting blind', async () => {
+  executeMock.mockReset();
+  let attempts = 0;
+  executeMock.mockImplementation((options) => ({
+    async *[Symbol.asyncIterator]() {
+      attempts++;
+      if (attempts === 1) {
+        try {
+          await options.tools
+            .find((t: any) => t.name === 'Read')
+            .execute({ file_path: 'missing/PivotFieldData.java' });
+        } catch {
+          /* recorded */
+        }
+        yield { type: 'result', status: 'error_max_turns' };
+      } else {
+        expect(options.prompt).toContain('Previous exploration');
+        expect(options.prompt).toContain('missing/PivotFieldData.java');
+        expect(options.prompt).toContain('Tool failed');
+        expect(options.completionBudget).toEqual({
+          reserveTurns: 3,
+          toolNames: ['report_issue', 'report_incomplete'],
+        });
+        yield { type: 'result', status: 'success', text: 'No security issues.' };
+      }
+    },
+    close: closeMock,
+  }));
+  createRuntimeFromEnvMock.mockReturnValue({
+    kind: 'openai-responses',
+    config: { models: { main: 'test' } },
+    execute: executeMock,
+  });
+  const orchestrator = new StreamingReviewOrchestrator({
+    skipValidation: true,
+    progressMode: 'auto',
+  });
+  await (orchestrator as any).runAgentsWithStreaming(
+    minimalReviewContext,
+    'C:\\nonexistent-review-repo',
+    ['security-reviewer']
+  );
+  expect(attempts).toBe(2);
+});
+
+it('does not accept an explicitly incomplete review as a clean result', async () => {
+  const orchestrator = new StreamingReviewOrchestrator({
+    skipValidation: true,
+    progressMode: 'auto',
+  });
+  const runtime = {
+    kind: 'openai-responses',
+    config: { models: { main: 'test' } },
+    execute: (options: any) => ({
+      async *[Symbol.asyncIterator]() {
+        await options.tools
+          .find((t: any) => t.name === 'report_incomplete')
+          .execute({ reason: 'Missing authorization implementation' });
+        yield { type: 'result', status: 'success', text: 'Could not finish.' };
+      },
+      close: closeMock,
+    }),
+  };
+  await expect(
+    (orchestrator as any).runStreamingAgent(
+      'security-reviewer',
+      minimalReviewContext,
+      '',
+      runtime,
+      (orchestrator as any).createReportIssueRuntimeTools(),
+      '.',
+      29,
+      'incomplete-test'
+    )
+  ).rejects.toThrow('Missing authorization implementation');
 });

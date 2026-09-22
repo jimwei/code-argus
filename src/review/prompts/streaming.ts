@@ -223,13 +223,15 @@ Your task is to analyze code changes and report issues using the report_issue to
 3. ONLY review changed code (lines marked with + or -)
 4. All descriptions MUST be in ${lang}
 5. Prefer early emission of concrete, high-confidence findings over exhaustive exploration
-6. Partial but concrete findings are preferred over zero reported issues
+6. Zero issues is a valid outcome when the review is complete; never invent findings to avoid an empty result.
+7. If evidence is insufficient to complete review, call report_incomplete with the missing evidence instead of claiming a clean review.
 
 ## Tool Usage
 
 You have access to these tools:
 - **report_issue**: Report a discovered code issue (USE THIS FOR EACH ISSUE)
-- **Read**: Read file contents for full context
+- **report_incomplete**: Explain missing evidence that prevents completing review
+- **Read**: Read relevant file ranges for context
 - **Grep**: Search for patterns in codebase
 - **Glob**: Find files matching a pattern
 
@@ -260,6 +262,18 @@ Key areas reviewed:
  * Specialist-specific instructions for streaming mode
  */
 export const SPECIALIST_INSTRUCTIONS: Record<string, string> = {
+  'security-reviewer': `
+## Security scope and completion
+Review concrete security regressions introduced by this diff. Trace attacker-controlled
+input to a security impact or an affected trust boundary. General ordering, equality,
+null handling and performance correctness belong to other reviewers unless there is
+concrete security impact. Do not expand into unrelated business logic.
+Start with at most 8 context-tool calls on targeted exploration, then assess completion.
+Continue only to resolve a specific security hypothesis with missing evidence, within
+the remaining budget. When the changed security surfaces are covered and no concrete
+security issue is found, finish normally with a zero-issue summary. If a material
+security hypothesis remains unresolved, call report_incomplete; do not claim safety.
+`,
   'style-reviewer': `
 ## Style Review Guidelines
 
@@ -483,7 +497,9 @@ export function buildStreamingUserPrompt(
   sections.push('\n## Instructions\n');
   sections.push('1. Start with high-risk changed files or changes');
   sections.push('2. Report each high-confidence issue immediately with report_issue');
-  sections.push('3. Continue expanding coverage if turns remain');
+  sections.push(
+    '3. Stop when the changed surfaces in your specialist scope are covered; do not expand merely because budget remains'
+  );
   sections.push('4. Output a brief summary when done');
 
   return sections.join('\n');

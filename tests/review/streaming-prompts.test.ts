@@ -87,7 +87,7 @@ describe('streaming max-turn reduction prompts', () => {
     expect(toolInstructions).toMatch(/one by one/i);
     expect(systemPrompt).toMatch(/report issues immediately/i);
     expect(systemPrompt).toMatch(/do not output json/i);
-    expect(systemPrompt).toMatch(/partial but concrete findings/i);
+    expect(systemPrompt).toMatch(/zero issues is a valid outcome/i);
   });
 
   it('compresses style reviewer context deterministically', () => {
@@ -156,4 +156,12 @@ describe('streaming max-turn reduction prompts', () => {
     expect(securityPrompt).not.toContain('#### PR-4');
     expect(securityPrompt).toContain('rule 11');
   });
+});
+
+it('gives security reviewers a bounded security scope and a valid zero-issue exit', () => {
+  const prompt = buildStreamingUserPrompt('security-reviewer', { diff: '+ restoreOrder();' });
+  expect(prompt).toContain('attacker-controlled');
+  expect(prompt).toContain('8 context-tool calls');
+  expect(prompt).toContain('report_incomplete');
+  expect(prompt).not.toContain('Continue expanding coverage if turns remain');
 });

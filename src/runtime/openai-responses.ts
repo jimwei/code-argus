@@ -1147,8 +1147,23 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               : buildStatelessConversationInput(continuationMode, conversationItems);
           let lastText: string | undefined;
           let lastUsage: RuntimeUsage | undefined;
+          let promptFinished = false;
 
           while (remainingTurns > 0 && !closed) {
+            const closing = Boolean(
+              options.completionBudget && remainingTurns <= options.completionBudget.reserveTurns
+            );
+            const allowedTools = closing
+              ? openAITools?.filter((tool) =>
+                  options.completionBudget!.toolNames.includes(tool.name)
+                )
+              : openAITools;
+            const budgetInstructions = options.completionBudget
+              ? `${DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS}\nReview budget: ${remainingTurns} requests remaining (including this request). ` +
+                (closing
+                  ? 'The closing phase has begun. Stop context exploration. Report concrete findings already supported by evidence, then finish with a brief summary. Zero issues is valid when review is complete. If evidence is insufficient to complete the review, call report_incomplete with the missing evidence; do not claim a clean review.'
+                  : `Reserve the last ${options.completionBudget.reserveTurns} requests for reporting and completion. Stay within your specialist scope.`)
+              : undefined;
             remainingTurns--;
 
             let response: OpenAIResponse;
@@ -1159,9 +1174,10 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                 ...(continuationMode === 'managed' && previousResponseId
                   ? { previous_response_id: previousResponseId }
                   : {}),
-                ...(openAITools
+                ...(budgetInstructions ? { instructions: budgetInstructions } : {}),
+                ...(allowedTools
                   ? {
-                      tools: openAITools,
+                      tools: allowedTools,
                       parallel_tool_calls: false as const,
                     }
                   : {}),
@@ -1175,6 +1191,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                         client,
                         {
                           model: request.model,
+                          ...(request.instructions ? { instructions: request.instructions } : {}),
                           ...(request.previous_response_id
                             ? { previous_response_id: request.previous_response_id }
                             : {}),
@@ -1240,6 +1257,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             const functionCalls = responseOutputItems.filter(
               (item): item is OpenAIFunctionCallItem => isFunctionCallItem(item)
             );
+            if (functionCalls.length === 0) promptFinished = true;
             if (response.status === 'completed' && !responseText && functionCalls.length === 0) {
               yield {
                 type: 'result',
@@ -1270,6 +1288,15 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                 event: `function_call:${functionCall.name}`,
               };
 
+              if (closing && !options.completionBudget!.toolNames.includes(functionCall.name)) {
+                toolOutputs.push({
+                  type: 'function_call_output',
+                  call_id: functionCall.call_id,
+                  output:
+                    'Context tools are unavailable in the closing phase. Finish from existing evidence or call report_incomplete.',
+                });
+                continue;
+              }
               const runtimeTool = toolsByName.get(functionCall.name);
               if (!runtimeTool) {
                 toolOutputs.push({
@@ -1305,7 +1332,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                 : buildStatelessConversationInput(continuationMode, conversationItems);
           }
 
-          if (!closed && remainingTurns === 0) {
+          if (!closed && remainingTurns === 0 && !promptFinished) {
             yield {
               type: 'result',
               status: 'error_max_turns',

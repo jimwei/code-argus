@@ -563,3 +563,11 @@ git commit -m "docs: update documentation"
 ## License
 
 MIT
+
+## 审核收尾与重试预算
+
+安全 reviewer 只追查具体安全回归，先用最多 8 次上下文工具调用判断是否可以完成；确实没有问题时可以正常输出零问题。仍有重要假设缺乏证据时，必须调用 `report_incomplete`，该次尝试会失败，不会标记为审核通过。
+
+内置 reviewer 使用 `openai-responses` 时，每次请求都会收到剩余预算；最后 3 次请求仅保留 `report_issue`、`report_incomplete`，关闭 `Read`、`Grep`、`Glob` 以预留收尾空间。验证器和其他 runtime 调用方不启用此阶段。最后一轮正常结束不会再额外产生轮数耗尽错误。
+
+重试会带上上次上下文调用的有限结果摘录和错误（JSON 编码前总计最多 12,000 字符），这些记录明确标为不完整证据，帮助避免从头重复探索。`Grep.path` 同时支持仓库相对目录和单文件路径，仍遵守 glob 过滤。

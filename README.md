@@ -559,3 +559,22 @@ Common types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore
 ## License
 
 MIT
+
+## Reviewer completion and retry budgets
+
+Security reviewers focus on concrete security regressions and assess whether they can
+finish after an initial eight context-tool calls. A completed review may legitimately
+find zero issues. Unresolved material hypotheses must be reported through
+`report_incomplete`; this fails the attempt rather than presenting a clean review.
+
+For built-in reviewers using `openai-responses`, each request includes its remaining
+budget. The final three requests are reserved for reporting and completion: `Read`,
+`Grep`, and `Glob` are unavailable in that phase, while `report_issue` and
+`report_incomplete` remain available. Validators and other runtime consumers do not
+use this reviewer-only closing phase. Success on the last allowed request is terminal
+and is not followed by a spurious max-turn error.
+
+Retries receive bounded, explicitly partial excerpts of previous context-tool results
+and errors (up to 12,000 characters before JSON encoding), so they can focus on the
+remaining evidence instead of restarting broad exploration. `Grep.path` accepts either
+a repository-relative directory or a single file and still honors the glob filter.
