@@ -443,6 +443,27 @@ function isItemReferenceRequiredError(error: unknown): boolean {
   );
 }
 
+/**
+ * 上游只接受工具调用与工具输出成对出现，无法通过 previous_response_id 找到对应的
+ * function_call 时会返回 400（"No tool call found for tool output with call_id ..."）。
+ * 这类网关必须退化为无状态重放：把 function_call 和 function_call_output 一起发回去。
+ */
+function isOrphanedToolOutputError(error: unknown): boolean {
+  const status = getOpenAIErrorStatus(error);
+  // 网关也可能把这条校验错误放进 SSE 的 error 事件，此时抛出的 Error 上没有 status，
+  // 因此只在状态码存在且不是 400 时排除。
+  if (status !== undefined && status !== 400) {
+    return false;
+  }
+
+  const message = getOpenAIErrorMessage(error)?.toLowerCase();
+  if (!message) {
+    return false;
+  }
+
+  return message.includes('no tool call found for') && message.includes('call_id');
+}
+
 function isMaxOutputTokensUnsupportedError(error: unknown): boolean {
   if (getOpenAIErrorStatus(error) !== 400) {
     return false;
@@ -1209,10 +1230,15 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               } catch (error) {
                 const shouldFallbackToStatelessReplay =
                   continuationMode === 'managed' &&
-                  previousResponseId &&
-                  (isPreviousResponseIdUnsupportedError(error) ||
-                    isNonPersistedItemReferenceError(error) ||
-                    (isFunctionCallOutputInput(input) && isToolContinuationGatewayFailure(error)));
+                  ((previousResponseId &&
+                    (isPreviousResponseIdUnsupportedError(error) ||
+                      isNonPersistedItemReferenceError(error))) ||
+                    // 只带工具输出的续链请求即使没有 previous_response_id（上游只在
+                    // response.created 给 id 时会出现）也可能被网关以同一条 400 拒绝，
+                    // 本地已有完整历史，可以直接降级为无状态重放。
+                    (isFunctionCallOutputInput(input) &&
+                      (isToolContinuationGatewayFailure(error) ||
+                        isOrphanedToolOutputError(error))));
 
                 if (shouldFallbackToStatelessReplay) {
                   continuationMode = 'stateless_full';
