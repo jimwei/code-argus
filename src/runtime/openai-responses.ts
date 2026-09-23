@@ -89,6 +89,14 @@ const DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS =
   'Follow the user instructions and tool definitions exactly.';
 
 /**
+ * 收尾阶段的提示语。它必须出现在 input 的末尾而不是 instructions 里：
+ * 上游（OpenAI / DeepSeek / 网关）按「前缀完全一致」判定 prompt cache 命中，
+ * instructions 排在 payload 最前面，任何一轮改动都会让整段上下文重新计费。
+ */
+const COMPLETION_BUDGET_CLOSING_NOTE =
+  'The closing phase has begun. Stop context exploration. Report concrete findings already supported by evidence, then finish with a brief summary. Zero issues is valid when review is complete. If evidence is insufficient to complete the review, call report_incomplete with the missing evidence; do not claim a clean review.';
+
+/**
  * Reasoning 模型把 reasoning token 计入 max_output_tokens。预算耗尽时上游会把请求标记为
  * incomplete（`incomplete_details.reason=max_output_tokens`）并且只返回 reasoning 内容，
  * 没有任何可交付的文本。重试时把预算提升到这个下限。
@@ -262,6 +270,45 @@ function createUserMessageInput(prompt: string): OpenAIResponseInputItem {
       },
     ],
   };
+}
+
+/**
+ * 会话级固定 instructions：整轮 review 里每个请求都发同一份字节，
+ * 这样 instructions + tools 组成的前缀才能稳定命中上游 prompt cache。
+ */
+function buildStableBudgetInstructions(totalTurns: number, reserveTurns: number): string {
+  return (
+    `${DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS}\n` +
+    `Review budget: ${totalTurns} requests for this review. ` +
+    `Reserve the last ${reserveTurns} requests for reporting and completion. ` +
+    'Stay within your specialist scope. ' +
+    'If evidence is insufficient to complete the review, call report_incomplete instead of claiming a clean review.'
+  );
+}
+
+/**
+ * 每轮变化的预算提示。只允许追加在 input 末尾：
+ * 前缀不变 → 已缓存上下文继续命中，只有新增的尾部需要重新计费。
+ */
+function buildTurnBudgetNote(
+  remainingTurns: number,
+  reserveTurns: number,
+  closing: boolean
+): string {
+  return (
+    `Review budget: ${remainingTurns} requests remaining (including this request). ` +
+    (closing
+      ? COMPLETION_BUDGET_CLOSING_NOTE
+      : `Reserve the last ${reserveTurns} requests for reporting and completion. Stay within your specialist scope.`)
+  );
+}
+
+function appendTurnNote(input: OpenAIResponseInput, note: string): OpenAIResponseInput {
+  if (typeof input === 'string') {
+    return `${input}\n\n${note}`;
+  }
+
+  return [...input, createUserMessageInput(note)];
 }
 
 function buildUserPromptInputVariants(
@@ -1147,6 +1194,14 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
           }))
         : undefined;
 
+    const totalTurns = Math.max(options.maxTurns, 1);
+    const completionBudget = options.completionBudget;
+    // 前缀缓存：instructions 与 tools 在整个会话里保持字节一致，
+    // 逐轮变化的预算提示只追加到 input 末尾。
+    const stableInstructions = completionBudget
+      ? buildStableBudgetInstructions(totalTurns, completionBudget.reserveTurns)
+      : undefined;
+
     let closed = false;
 
     return {
@@ -1154,7 +1209,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
         const conversationItems: OpenAIResponseInputItem[] = [];
         let previousResponseId: string | undefined;
         let continuationMode: OpenAIConversationContinuationMode = 'managed';
-        let remainingTurns = Math.max(options.maxTurns, 1);
+        let remainingTurns = totalTurns;
 
         for await (const promptInput of iteratePromptInputs(options.prompt)) {
           if (closed) {
@@ -1172,33 +1227,26 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
 
           while (remainingTurns > 0 && !closed) {
             const closing = Boolean(
-              options.completionBudget && remainingTurns <= options.completionBudget.reserveTurns
+              completionBudget && remainingTurns <= completionBudget.reserveTurns
             );
-            const allowedTools = closing
-              ? openAITools?.filter((tool) =>
-                  options.completionBudget!.toolNames.includes(tool.name)
-                )
-              : openAITools;
-            const budgetInstructions = options.completionBudget
-              ? `${DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS}\nReview budget: ${remainingTurns} requests remaining (including this request). ` +
-                (closing
-                  ? 'The closing phase has begun. Stop context exploration. Report concrete findings already supported by evidence, then finish with a brief summary. Zero issues is valid when review is complete. If evidence is insufficient to complete the review, call report_incomplete with the missing evidence; do not claim a clean review.'
-                  : `Reserve the last ${options.completionBudget.reserveTurns} requests for reporting and completion. Stay within your specialist scope.`)
+            const turnBudgetNote = completionBudget
+              ? buildTurnBudgetNote(remainingTurns, completionBudget.reserveTurns, closing)
               : undefined;
             remainingTurns--;
 
             let response: OpenAIResponse;
             while (true) {
+              const requestInput = turnBudgetNote ? appendTurnNote(input, turnBudgetNote) : input;
               const request = {
                 model: options.model || defaultModel,
-                input,
+                input: requestInput,
                 ...(continuationMode === 'managed' && previousResponseId
                   ? { previous_response_id: previousResponseId }
                   : {}),
-                ...(budgetInstructions ? { instructions: budgetInstructions } : {}),
-                ...(allowedTools
+                ...(stableInstructions ? { instructions: stableInstructions } : {}),
+                ...(openAITools
                   ? {
-                      tools: allowedTools,
+                      tools: openAITools,
                       parallel_tool_calls: false as const,
                     }
                   : {}),
@@ -1221,7 +1269,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                             ? { parallel_tool_calls: request.parallel_tool_calls }
                             : {}),
                           ...(request.reasoning ? { reasoning: request.reasoning } : {}),
-                          prompt: input,
+                          prompt: typeof requestInput === 'string' ? requestInput : input,
                         },
                         abortController.signal
                       )
@@ -1314,7 +1362,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                 event: `function_call:${functionCall.name}`,
               };
 
-              if (closing && !options.completionBudget!.toolNames.includes(functionCall.name)) {
+              if (closing && !completionBudget!.toolNames.includes(functionCall.name)) {
                 toolOutputs.push({
                   type: 'function_call_output',
                   call_id: functionCall.call_id,

@@ -97,6 +97,30 @@ function cloneValue<T>(value: T): T {
 const DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS =
   'Follow the user instructions and tool definitions exactly.';
 
+/** 把 string / message-list 两种 input 形态都归一成纯文本，便于断言前缀与末尾提示。 */
+function requestInputText(input: unknown): string {
+  if (typeof input === 'string') {
+    return input;
+  }
+
+  if (Array.isArray(input)) {
+    return input
+      .map((item: any) => {
+        if (typeof item?.content === 'string') {
+          return item.content;
+        }
+        if (Array.isArray(item?.content)) {
+          return item.content.map((part: any) => part?.text ?? '').join('');
+        }
+        return '';
+      })
+      .filter((text) => text.length > 0)
+      .join('\n');
+  }
+
+  return '';
+}
+
 function createOpenAIResponseStream(
   response: MockOpenAIResponse,
   options: { textChunks?: string[] } = {}
@@ -3216,10 +3240,88 @@ describe('review completion budget', () => {
     } as any))
       events.push(event);
     expect(read).toHaveBeenCalledTimes(1);
-    expect(create.mock.calls[0]![0].instructions).toContain('3 requests remaining');
-    expect(create.mock.calls[1]![0].tools.map((t: any) => t.name)).toEqual(['report_issue']);
+    // 预算提示走 input 末尾，instructions 全程不变（否则上游前缀缓存会整体失效）
+    expect(create.mock.calls[0]![0].instructions).toBe(create.mock.calls[1]![0].instructions);
+    expect(create.mock.calls[0]![0].instructions).not.toContain('requests remaining');
     expect(create.mock.calls[1]![0].instructions).toContain('report_incomplete');
+    // 工具定义不在中途裁剪
+    expect(create.mock.calls[0]![0].tools.map((t: any) => t.name)).toEqual([
+      'Read',
+      'report_issue',
+    ]);
+    expect(create.mock.calls[1]![0].tools.map((t: any) => t.name)).toEqual([
+      'Read',
+      'report_issue',
+    ]);
     expect(JSON.stringify(create.mock.calls[2]![0].input)).toContain('closing phase');
     expect(events.filter((e) => e.type === 'result').map((e) => e.status)).toEqual(['success']);
+  });
+
+  it('keeps the prompt prefix byte-identical across turns so the provider cache can hit', async () => {
+    const read = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'evidence' }] }));
+    const create = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        createOpenAIResponseStream({
+          id: 'r1',
+          status: 'completed',
+          output: [{ type: 'function_call', name: 'Read', call_id: 'c1', arguments: '{}' }],
+        })
+      )
+      .mockImplementationOnce(() =>
+        createOpenAIResponseStream({
+          id: 'r2',
+          status: 'completed',
+          output: [{ type: 'function_call', name: 'report_issue', call_id: 'c2', arguments: '{}' }],
+        })
+      )
+      .mockImplementationOnce(finalResponse);
+    const runtime = new OpenAIResponsesRuntime(config, { responses: { create } } as any);
+    for await (const _event of runtime.execute({
+      prompt: 'Review',
+      cwd: '.',
+      maxTurns: 4,
+      completionBudget: { reserveTurns: 2, toolNames: ['report_issue', 'report_incomplete'] },
+      tools: [
+        { name: 'Read', description: 'read', inputSchema: {}, execute: read },
+        { name: 'report_issue', description: 'report', inputSchema: {}, execute: read },
+      ],
+    } as any)) {
+      // drain
+    }
+
+    const requests = create.mock.calls.map((call: any[]) => call[0]);
+    expect(requests).toHaveLength(3);
+
+    // 1) instructions 每一轮完全一致，且不再携带逐轮递减的计数
+    expect(new Set(requests.map((request) => request.instructions)).size).toBe(1);
+    for (const request of requests) {
+      expect(request.instructions).not.toContain('requests remaining');
+    }
+
+    // 2) tools 定义每一轮完全一致（收尾轮也不能裁剪，否则前缀缓存同样失效）
+    const toolSignature = requests.map((request) =>
+      JSON.stringify(request.tools.map((tool: any) => tool.name))
+    );
+    expect(new Set(toolSignature).size).toBe(1);
+
+    // 3) 逐轮变化的内容只出现在 input 末尾，且原始 prompt 仍是前缀
+    const firstInput = requestInputText(requests[0].input);
+    expect(firstInput.startsWith('Review')).toBe(true);
+    expect(firstInput.trimEnd().endsWith('Stay within your specialist scope.')).toBe(true);
+    expect(firstInput).toContain('4 requests remaining');
+
+    const secondInput = requests[1].input as Array<Record<string, any>>;
+    expect(Array.isArray(secondInput)).toBe(true);
+    const secondLast = secondInput[secondInput.length - 1];
+    expect(secondLast.type).toBe('message');
+    expect(secondLast.role).toBe('user');
+    expect(JSON.stringify(secondLast.content)).toContain('3 requests remaining');
+    expect(secondInput[0]!.type).toBe('function_call_output');
+
+    // 4) 收尾轮的提示同样落在 input 末尾
+    const closingInput = requests[2].input as Array<Record<string, any>>;
+    const closingLast = closingInput[closingInput.length - 1];
+    expect(JSON.stringify(closingLast)).toContain('closing phase');
   });
 });
