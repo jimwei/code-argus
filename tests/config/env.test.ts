@@ -92,8 +92,20 @@ describe('runtime-aware env configuration', () => {
         apiKey: 'openai-key',
         baseUrl: 'https://openai-proxy.test',
         source: 'argus',
+        supportsMaxOutputTokens: true,
       },
     });
+  });
+
+  it('honours ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS for gateways that reject the parameter', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS = 'false';
+
+    expect(loadArgusRuntimeConfig().openai?.supportsMaxOutputTokens).toBe(false);
+
+    process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS = 'yes';
+    expect(loadArgusRuntimeConfig().openai?.supportsMaxOutputTokens).toBe(true);
   });
 
   it('falls back light and validator models to the main model', () => {

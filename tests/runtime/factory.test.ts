@@ -1,19 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
-
-const { openAIConstructor } = vi.hoisted(() => ({
-  openAIConstructor: vi.fn(),
-}));
-
-vi.mock('openai', () => ({
-  default: class MockOpenAI {
-    constructor(options: unknown) {
-      openAIConstructor(options);
-    }
-  },
-}));
+import { describe, expect, it } from 'vitest';
 
 import { createRuntimeFactory } from '../../src/runtime/factory.js';
 import type { ArgusRuntimeConfig } from '../../src/config/env.js';
+import type { OpenAIResponsesRuntime } from '../../src/runtime/openai-responses.js';
 
 describe('runtime factory', () => {
   it('creates a Claude runtime for claude-agent config', () => {
@@ -36,7 +25,7 @@ describe('runtime factory', () => {
     expect(runtime.config).toEqual(config);
   });
 
-  it('creates an OpenAI runtime for openai-responses config', () => {
+  it('creates a pi-ai backed OpenAI runtime for openai-responses config', () => {
     const config: ArgusRuntimeConfig = {
       runtime: 'openai-responses',
       models: {
@@ -55,9 +44,10 @@ describe('runtime factory', () => {
 
     expect(runtime.kind).toBe('openai-responses');
     expect(runtime.config).toEqual(config);
-    expect(openAIConstructor).toHaveBeenCalledWith({
-      apiKey: 'openai-key',
-      baseURL: 'https://openai-proxy.test',
-    });
+    // 运行时不再持有 OpenAI SDK client，而是把网关配置交给 pi-ai 的模型描述。
+    const model = (runtime as OpenAIResponsesRuntime).model;
+    expect(model.api).toBe('openai-responses');
+    expect(model.id).toBe('gpt-5.3-codex');
+    expect(model.baseUrl).toBe('https://openai-proxy.test/v1');
   });
 });

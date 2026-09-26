@@ -24,6 +24,31 @@ export interface OpenAIAuthConfig {
   apiKey: string;
   baseUrl?: string;
   source: 'argus' | 'openai-api';
+  /**
+   * 部署侧声明网关是否接受 `max_output_tokens`；不接受时由 pi-ai 省略该参数。
+   * 读自 ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS，未设置时按 true 处理。
+   */
+  supportsMaxOutputTokens?: boolean;
+}
+
+/**
+ * 解析布尔型环境变量。取值不合法时回退到默认值，避免拼写错误静默改变行为。
+ */
+function resolveBooleanEnv(raw: string | undefined, fallback: boolean): boolean {
+  const value = raw?.trim().toLowerCase();
+  if (!value) {
+    return fallback;
+  }
+
+  if (['1', 'true', 'yes', 'on'].includes(value)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(value)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 export interface ArgusRuntimeConfig {
@@ -105,12 +130,17 @@ function getClaudeAuthConfig(): ClaudeAuthConfig {
 }
 
 function getOpenAIAuthConfig(): OpenAIAuthConfig {
+  const supportsMaxOutputTokens = resolveBooleanEnv(
+    process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS,
+    true
+  );
   const argusApiKey = process.env.ARGUS_OPENAI_API_KEY;
   if (argusApiKey) {
     return {
       apiKey: argusApiKey,
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'argus',
+      supportsMaxOutputTokens,
     };
   }
 
@@ -120,6 +150,7 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       apiKey: openaiApiKey,
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'openai-api',
+      supportsMaxOutputTokens,
     };
   }
 

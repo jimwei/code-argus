@@ -1,6 +1,32 @@
-import OpenAI from 'openai';
-import type { ResponseInputItem, ResponseStreamEvent } from 'openai/resources/responses/responses';
-import type { Reasoning } from 'openai/resources/shared';
+/**
+ * OpenAI Responses runtime built on @earendil-works/pi-ai.
+ *
+ * 这个文件以前自己实现了 SSE 解析、流式快照重建、`previous_response_id` 续链、
+ * 无状态重放，以及一大堆网关兼容探测（item reference、孤立 tool output、
+ * `max_output_tokens` 不支持等）。这些现在都由 pi-ai 负责：它每次都以
+ * `store: false` + 完整 transcript 发请求，并在库内完成事件流的组装与错误归一化。
+ *
+ * 本文件只保留编排层需要的东西：
+ * - 工具 schema 转换（zod → JSON Schema → pi-ai Tool）
+ * - turn 循环、maxTurns、收尾阶段（completionBudget）与工具执行
+ * - 输出预算被 reasoning 吃光时的一次升档重试
+ *
+ * `RuntimeEvent` 契约保持不变，orchestrator / validator 无需改动。
+ */
+import { Type } from '@earendil-works/pi-ai';
+import { completeSimple, streamSimple } from '@earendil-works/pi-ai/compat';
+import type {
+  Api,
+  AssistantMessage,
+  AssistantMessageEventStream,
+  Context,
+  Message,
+  Model,
+  SimpleStreamOptions,
+  ThinkingLevel,
+  Tool as PiTool,
+  ToolResultMessage,
+} from '@earendil-works/pi-ai';
 import { z, toJSONSchema } from 'zod';
 
 import type { ArgusRuntimeConfig } from '../config/env.js';
@@ -14,120 +40,98 @@ import type {
   RuntimeUsage,
 } from './types.js';
 
-type OpenAIResponse = {
-  id: string;
-  status?: string | null;
-  output?: unknown[];
-  output_text?: string;
-  incomplete_details?: { reason?: string } | null;
-  usage?: {
-    input_tokens: number;
-    input_tokens_details?: {
-      cached_tokens?: number;
-    };
-    output_tokens: number;
-  };
-  error?: {
-    message?: string;
-  } | null;
-};
-
-type OpenAIFunctionCallItem = {
-  id?: string;
-  type: 'function_call';
-  name: string;
-  call_id: string;
-  arguments: string;
-};
-
-type OpenAIFunctionCallOutputItem = {
-  type: 'function_call_output';
-  call_id: string;
-  output: string;
-};
-
-type OpenAIResponseInputItem = ResponseInputItem;
-
-type OpenAIResponseInput = string | OpenAIResponseInputItem[];
-
-type OpenAIItemReferenceInputItem = {
-  type: 'item_reference';
-  id: string;
-};
-
-type OpenAIUserPromptInputMode = 'message_list' | 'string';
-
-type OpenAIConversationContinuationMode = 'managed' | 'stateless_full' | 'stateless_item_reference';
-
-type OpenAIRequestTool = {
-  type: 'function';
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  strict: true;
-};
-
-type OpenAIResponseRequest = {
-  model: string;
-  instructions?: string;
-  input: OpenAIResponseInput;
-  previous_response_id?: string;
-  tools?: OpenAIRequestTool[];
-  parallel_tool_calls?: false;
-  max_output_tokens?: number;
-  reasoning?: Reasoning | null;
-};
-
-type OpenAIResponseStream = AsyncIterable<ResponseStreamEvent> & {
-  controller?: AbortController;
-};
-
-type JsonSchema = Record<string, unknown>;
-type MutableJsonObject = Record<string, any>;
-
-const DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS =
-  'Follow the user instructions and tool definitions exactly.';
+/** 网关真实上下文长度不可知；pi-ai 用它裁剪 maxTokens。 */
+const DEFAULT_CONTEXT_WINDOW = 200_000;
+/** 未显式指定输出上限时的模型上限（同时是升档重试的天花板）。 */
+const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
 
 /**
- * 收尾阶段的提示语。它必须出现在 input 的末尾而不是 instructions 里：
- * 上游（OpenAI / DeepSeek / 网关）按「前缀完全一致」判定 prompt cache 命中，
- * instructions 排在 payload 最前面，任何一轮改动都会让整段上下文重新计费。
- */
-const COMPLETION_BUDGET_CLOSING_NOTE =
-  'The closing phase has begun. Stop context exploration. Report concrete findings already supported by evidence, then finish with a brief summary. Zero issues is valid when review is complete. If evidence is insufficient to complete the review, call report_incomplete with the missing evidence; do not claim a clean review.';
-
-/**
- * Reasoning 模型把 reasoning token 计入 max_output_tokens。预算耗尽时上游会把请求标记为
- * incomplete（`incomplete_details.reason=max_output_tokens`）并且只返回 reasoning 内容，
- * 没有任何可交付的文本。重试时把预算提升到这个下限。
+ * 推理长度波动会让同一请求偶尔吃光输出预算：上游以 `incomplete`
+ * （`incomplete_details.reason=max_output_tokens`）结束且没有任何文本。
+ * 这里保留改造前的一次升档重试，区间沿用 [2048, 8192]。
  */
 const ESCALATED_MAX_OUTPUT_TOKENS_FLOOR = 2048;
 const ESCALATED_MAX_OUTPUT_TOKENS_CEILING = 8192;
 
+export type PiStreamFn = (
+  model: Model<Api>,
+  context: Context,
+  options?: SimpleStreamOptions
+) => AssistantMessageEventStream;
+
+export type PiCompleteFn = (
+  model: Model<Api>,
+  context: Context,
+  options?: SimpleStreamOptions
+) => Promise<AssistantMessage>;
+
+export interface OpenAIResponsesRuntimeDeps {
+  /** 测试注入点：替换真实的 pi-ai 实现。 */
+  streamSimple?: PiStreamFn;
+  completeSimple?: PiCompleteFn;
+  model?: Model<'openai-responses'>;
+}
+
 /**
- * Builds the `reasoning` request fragment from the single global
- * ARGUS_REASONING_EFFORT value. Empty/undefined leaves the provider default.
+ * 构造 pi-ai 的模型描述。只有显式配置了推理强度才声明 `reasoning`，
+ * 否则 pi-ai 会主动补一个默认 effort，从而覆盖网关自身的默认值。
  */
-function buildReasoningRequest(effort: string | undefined): { reasoning?: Reasoning } {
-  if (!effort) {
-    return {};
-  }
+export function buildPiModel(
+  config: ArgusRuntimeConfig,
+  modelId: string = config.models.main
+): Model<'openai-responses'> {
+  const baseUrl = (config.openai?.baseUrl ?? '').trim().replace(/\/+$/, '');
+  const hasReasoning = Boolean(config.reasoningEffort);
 
   return {
-    reasoning: {
-      effort: effort as Reasoning['effort'],
+    id: modelId,
+    name: modelId,
+    api: 'openai-responses',
+    provider: 'openai',
+    baseUrl: baseUrl
+      ? baseUrl.endsWith('/v1')
+        ? baseUrl
+        : `${baseUrl}/v1`
+      : 'https://api.openai.com/v1',
+    reasoning: hasReasoning,
+    // xhigh/max 只有在 thinkingLevelMap 里显式声明后 pi-ai 才会接受。
+    thinkingLevelMap: { xhigh: 'xhigh', max: 'max' },
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: DEFAULT_CONTEXT_WINDOW,
+    maxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    compat: {
+      // 工具 schema 已由本文件归一化成 strict 形态（见 normalizeToolSchema），
+      // 因此显式要求 pi-ai 发送 strict: true；该开关默认是 false。
+      supportsStrictMode: true,
+      // 部分自建网关（Codex 协议网关）会拒绝 max_output_tokens：由
+      // ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS 声明，默认沿用 OpenAI 行为。
+      supportsMaxOutputTokens: config.openai?.supportsMaxOutputTokens ?? true,
     },
   };
 }
 
-function isPlainObject(value: unknown): value is JsonSchema {
+/**
+ * ARGUS_REASONING_EFFORT → pi-ai thinking level。
+ * pi-ai 的 ThinkingLevel 没有 `off`：`none` 与「未配置」都不传档位，
+ * 两者的差别由 `model.reasoning` 是否声明决定。
+ */
+export function toThinkingLevel(effort: string | undefined): ThinkingLevel | undefined {
+  const trimmed = effort?.trim();
+  if (!trimmed || trimmed === 'none') {
+    return undefined;
+  }
+
+  return trimmed as ThinkingLevel;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function cloneJson<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
+type JsonSchema = Record<string, unknown>;
 
+/** 可选字段在 strict 模式下必须显式允许 null，否则网关会以 400 拒绝。 */
 function makeSchemaNullable(schema: unknown): unknown {
   if (!isPlainObject(schema)) {
     return schema;
@@ -169,6 +173,11 @@ function makeSchemaNullable(schema: unknown): unknown {
   };
 }
 
+/**
+ * OpenAI 的 strict function tool 要求：object schema 上 `additionalProperties: false`、
+ * `required` 覆盖所有字段（可选字段用 nullable 表达），且不能出现 `$schema`。
+ * 这里递归处理 `items`/`anyOf`/`oneOf`/`allOf`；pi-ai 会把 schema 原样放进请求。
+ */
 function normalizeToolSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) {
     return schema.map((entry) => normalizeToolSchema(entry));
@@ -181,11 +190,7 @@ function normalizeToolSchema(schema: unknown): unknown {
   const normalized: JsonSchema = {};
 
   for (const [key, value] of Object.entries(schema)) {
-    if (key === '$schema') {
-      continue;
-    }
-
-    if (key === 'properties') {
+    if (key === '$schema' || key === 'properties') {
       continue;
     }
 
@@ -231,12 +236,21 @@ function normalizeToolSchema(schema: unknown): unknown {
   return normalized;
 }
 
-function buildToolParameters(tool: RuntimeToolDefinition): Record<string, unknown> {
+export function buildToolParameters(tool: RuntimeToolDefinition): Record<string, unknown> {
   return normalizeToolSchema(
     toJSONSchema(z.object(tool.inputSchema), {
       io: 'input',
     })
   ) as Record<string, unknown>;
+}
+
+/** RuntimeToolDefinition → pi-ai Tool（TypeBox 只作为 JSON Schema 的载体）。 */
+export function toPiTool(tool: RuntimeToolDefinition): PiTool {
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: Type.Unsafe(buildToolParameters(tool)),
+  };
 }
 
 function normalizeToolArguments<T>(value: T): T {
@@ -259,758 +273,29 @@ function normalizeToolArguments<T>(value: T): T {
   return value;
 }
 
-function createUserMessageInput(prompt: string): OpenAIResponseInputItem {
-  return {
-    type: 'message',
-    role: 'user',
-    content: [
-      {
-        type: 'input_text',
-        text: prompt,
-      },
-    ],
-  };
+/**
+ * 前缀缓存：instructions 与 tools 在整个会话里保持字节一致，
+ * 逐轮变化的预算提示只追加到 transcript 末尾。
+ */
+export function buildStableBudgetInstructions(totalTurns: number, reserveTurns: number): string {
+  return [
+    'You are one specialist reviewer inside a multi-agent code review pipeline.',
+    `This session has at most ${totalTurns} model turns in total.`,
+    `Reserve the last ${reserveTurns} turns for reporting: stop exploring context once that phase starts.`,
+    'Call report_issue as soon as an issue is supported by evidence; call report_incomplete when the evidence is not sufficient.',
+  ].join('\n');
 }
 
-/**
- * 会话级固定 instructions：整轮 review 里每个请求都发同一份字节，
- * 这样 instructions + tools 组成的前缀才能稳定命中上游 prompt cache。
- */
-function buildStableBudgetInstructions(totalTurns: number, reserveTurns: number): string {
-  return (
-    `${DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS}\n` +
-    `Review budget: ${totalTurns} requests for this review. ` +
-    `Reserve the last ${reserveTurns} requests for reporting and completion. ` +
-    'Stay within your specialist scope. ' +
-    'If evidence is insufficient to complete the review, call report_incomplete instead of claiming a clean review.'
-  );
-}
-
-/**
- * 每轮变化的预算提示。只允许追加在 input 末尾：
- * 前缀不变 → 已缓存上下文继续命中，只有新增的尾部需要重新计费。
- */
-function buildTurnBudgetNote(
+export function buildTurnBudgetNote(
   remainingTurns: number,
   reserveTurns: number,
   closing: boolean
 ): string {
-  return (
-    `Review budget: ${remainingTurns} requests remaining (including this request). ` +
-    (closing
-      ? COMPLETION_BUDGET_CLOSING_NOTE
-      : `Reserve the last ${reserveTurns} requests for reporting and completion. Stay within your specialist scope.`)
-  );
-}
-
-function appendTurnNote(input: OpenAIResponseInput, note: string): OpenAIResponseInput {
-  if (typeof input === 'string') {
-    return `${input}\n\n${note}`;
-  }
-
-  return [...input, createUserMessageInput(note)];
-}
-
-function buildUserPromptInputVariants(
-  prompt: string
-): Array<{ mode: OpenAIUserPromptInputMode; input: OpenAIResponseInput }> {
-  return [
-    {
-      mode: 'message_list',
-      input: [createUserMessageInput(prompt)],
-    },
-    {
-      mode: 'string',
-      input: prompt,
-    },
-  ];
-}
-
-function isFunctionCallOutputItem(item: unknown): item is OpenAIFunctionCallOutputItem {
-  return Boolean(
-    item &&
-      typeof item === 'object' &&
-      'type' in item &&
-      item.type === 'function_call_output' &&
-      'call_id' in item &&
-      typeof item.call_id === 'string' &&
-      'output' in item &&
-      typeof item.output === 'string'
-  );
-}
-
-function isFunctionCallOutputInput(
-  input: OpenAIResponseInput
-): input is OpenAIFunctionCallOutputItem[] {
-  return Array.isArray(input) && input.length > 0 && input.every(isFunctionCallOutputItem);
-}
-
-function containsFunctionCallOutputItems(
-  input: OpenAIResponseInput
-): input is OpenAIResponseInputItem[] {
-  return Array.isArray(input) && input.some(isFunctionCallOutputItem);
-}
-
-function isReasoningItem(item: unknown): item is MutableJsonObject {
-  return isPlainObject(item) && item.type === 'reasoning';
-}
-
-function hasEncryptedReasoningContent(item: MutableJsonObject): boolean {
-  return typeof item.encrypted_content === 'string' && item.encrypted_content.length > 0;
-}
-
-function shouldOmitFromStatelessReplay(item: OpenAIResponseInputItem): boolean {
-  // Plain reasoning item IDs are not durable when store=false/ZDR; only encrypted reasoning can be replayed.
-  return isReasoningItem(item) && !hasEncryptedReasoningContent(item);
-}
-
-function buildReplayableStatelessConversationItems(
-  conversationItems: OpenAIResponseInputItem[]
-): OpenAIResponseInputItem[] {
-  return conversationItems.filter((item) => !shouldOmitFromStatelessReplay(item));
-}
-
-function getFunctionCallReferenceIds(item: OpenAIFunctionCallItem): string[] {
-  const ids = new Set<string>();
-
-  if (typeof item.id === 'string' && item.id.length > 0) {
-    ids.add(item.id);
-  }
-
-  ids.add(item.call_id);
-  return Array.from(ids);
-}
-
-function buildItemReferenceToolContinuationInput(
-  conversationItems: OpenAIResponseInputItem[]
-): OpenAIResponseInputItem[] {
-  const referenceIdsByCallId = new Map<string, string[]>();
-  const transformed: OpenAIResponseInputItem[] = [];
-
-  for (const item of conversationItems) {
-    if (isFunctionCallItem(item)) {
-      referenceIdsByCallId.set(item.call_id, getFunctionCallReferenceIds(item));
-      transformed.push(item);
-      continue;
-    }
-
-    if (isFunctionCallOutputItem(item)) {
-      const referenceIds = referenceIdsByCallId.get(item.call_id) ?? [item.call_id];
-      for (const referenceId of referenceIds) {
-        transformed.push({
-          type: 'item_reference',
-          id: referenceId,
-        } as OpenAIItemReferenceInputItem);
-      }
-    }
-
-    transformed.push(item);
-  }
-
-  return transformed;
-}
-
-function buildStatelessConversationInput(
-  mode: Exclude<OpenAIConversationContinuationMode, 'managed'>,
-  conversationItems: OpenAIResponseInputItem[]
-): OpenAIResponseInputItem[] {
-  const replayableItems = buildReplayableStatelessConversationItems(conversationItems);
-
-  if (mode === 'stateless_item_reference') {
-    return buildItemReferenceToolContinuationInput(replayableItems);
-  }
-
-  return replayableItems;
-}
-
-function isToolContinuationGatewayFailure(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-
-  const status = 'status' in error ? error.status : undefined;
-  const message = 'message' in error ? error.message : undefined;
-  const upstreamError = 'error' in error && isPlainObject(error.error) ? error.error : undefined;
-  const errorType = upstreamError?.type;
-  const errorMessage = upstreamError?.message;
-
-  return (
-    status === 502 &&
-    errorType === 'upstream_error' &&
-    (message === '502 Upstream request failed' || errorMessage === 'Upstream request failed')
-  );
-}
-
-function isPreviousResponseIdUnsupportedError(error: unknown): boolean {
-  if (getOpenAIErrorStatus(error) !== 400) {
-    return false;
-  }
-
-  const message = getOpenAIErrorMessage(error)?.toLowerCase();
-  if (!message) {
-    return false;
-  }
-
-  return (
-    message.includes('previous_response_id') &&
-    (message.includes('websocket v2') ||
-      message.includes('responses websocket') ||
-      message.includes('not supported'))
-  );
-}
-
-function isNonPersistedItemReferenceError(error: unknown): boolean {
-  if (getOpenAIErrorStatus(error) !== 404) {
-    return false;
-  }
-
-  const message = getOpenAIErrorMessage(error)?.toLowerCase();
-  if (!message) {
-    return false;
-  }
-
-  return (
-    message.includes('item with id') &&
-    message.includes('not found') &&
-    (message.includes('items are not persisted') ||
-      (message.includes('store') && message.includes('false')))
-  );
-}
-
-function isItemReferenceRequiredError(error: unknown): boolean {
-  const message = getOpenAIErrorMessage(error)?.toLowerCase();
-  if (!message) {
-    return false;
-  }
-
-  return (
-    message.includes('function_call_output') &&
-    message.includes('item_reference') &&
-    message.includes('call_id')
-  );
-}
-
-/**
- * 上游只接受工具调用与工具输出成对出现，无法通过 previous_response_id 找到对应的
- * function_call 时会返回 400（"No tool call found for tool output with call_id ..."）。
- * 这类网关必须退化为无状态重放：把 function_call 和 function_call_output 一起发回去。
- */
-function isOrphanedToolOutputError(error: unknown): boolean {
-  const status = getOpenAIErrorStatus(error);
-  // 网关也可能把这条校验错误放进 SSE 的 error 事件，此时抛出的 Error 上没有 status，
-  // 因此只在状态码存在且不是 400 时排除。
-  if (status !== undefined && status !== 400) {
-    return false;
-  }
-
-  const message = getOpenAIErrorMessage(error)?.toLowerCase();
-  if (!message) {
-    return false;
-  }
-
-  return message.includes('no tool call found for') && message.includes('call_id');
-}
-
-function isMaxOutputTokensUnsupportedError(error: unknown): boolean {
-  if (getOpenAIErrorStatus(error) !== 400) {
-    return false;
-  }
-
-  const message = getOpenAIErrorMessage(error)?.toLowerCase();
-  if (!message) {
-    return false;
-  }
-
-  return (
-    message.includes('max_output_tokens') ||
-    message.includes('max output tokens') ||
-    message.includes('status code (no body)')
-  );
-}
-
-function getOpenAIErrorStatus(error: unknown): number | undefined {
-  if (!error || typeof error !== 'object' || !('status' in error)) {
-    return undefined;
-  }
-
-  return typeof error.status === 'number' ? error.status : undefined;
-}
-
-function getOpenAIErrorMessage(error: unknown): string | undefined {
-  if (!error || typeof error !== 'object') {
-    return undefined;
-  }
-
-  if ('error' in error && isPlainObject(error.error) && typeof error.error.message === 'string') {
-    return error.error.message;
-  }
-
-  if ('message' in error && typeof error.message === 'string') {
-    return error.message;
-  }
-
-  return undefined;
-}
-
-function isInputCompatibilityError(message: string | undefined): boolean {
-  if (!message) {
-    return false;
-  }
-
-  const normalized = message.toLowerCase();
-  const indicators = [
-    'input must be a list',
-    'input must be an array',
-    'input should be a list',
-    'input should be an array',
-    'input must be a string',
-    'input should be a string',
-    'expected input to be a list',
-    'expected input to be an array',
-    'expected input to be a string',
-    'invalid input type',
-    'input format',
-    'content must be a string',
-    'content should be a string',
-  ];
-
-  return indicators.some((indicator) => normalized.includes(indicator));
-}
-
-function shouldRetryUserPromptAsString(mode: OpenAIUserPromptInputMode, error: unknown): boolean {
-  return (
-    mode === 'message_list' &&
-    getOpenAIErrorStatus(error) === 400 &&
-    isInputCompatibilityError(getOpenAIErrorMessage(error))
-  );
-}
-
-function normalizeUsage(usage: OpenAIResponse['usage'] | undefined): RuntimeUsage | undefined {
-  if (!usage) {
-    return undefined;
-  }
-
-  const cachedInputTokens = usage.input_tokens_details?.cached_tokens ?? 0;
-  return {
-    inputTokens: usage.input_tokens,
-    ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
-    outputTokens: usage.output_tokens,
-  };
-}
-
-function createResponseSnapshot(response: OpenAIResponse): OpenAIResponse {
-  const snapshot = cloneJson(response);
-  snapshot.output = Array.isArray(snapshot.output) ? snapshot.output : [];
-  return snapshot;
-}
-
-function mergeResponseSnapshot(
-  snapshot: OpenAIResponse | undefined,
-  response: OpenAIResponse
-): OpenAIResponse {
-  const merged = snapshot ? cloneJson(snapshot) : createResponseSnapshot(response);
-  merged.id = response.id;
-  merged.status = response.status ?? merged.status;
-  merged.usage = response.usage ?? merged.usage;
-  merged.error = response.error ?? merged.error;
-  merged.incomplete_details = response.incomplete_details ?? merged.incomplete_details;
-
-  if (typeof response.output_text === 'string') {
-    merged.output_text = response.output_text;
-  }
-
-  if (Array.isArray(response.output) && response.output.length > 0) {
-    merged.output = cloneJson(response.output);
-  }
-
-  return merged;
-}
-
-function ensureOutputItem(
-  snapshot: OpenAIResponse,
-  outputIndex: number
-): MutableJsonObject | undefined {
-  if (!Array.isArray(snapshot.output)) {
-    snapshot.output = [];
-  }
-
-  const outputItem = snapshot.output[outputIndex];
-  return isPlainObject(outputItem) ? outputItem : undefined;
-}
-
-function applyOutputItemAdded(snapshot: OpenAIResponse, event: ResponseStreamEvent): void {
-  if (event.type !== 'response.output_item.added') {
-    return;
-  }
-
-  if (!Array.isArray(snapshot.output)) {
-    snapshot.output = [];
-  }
-
-  const item = cloneJson(event.item) as unknown as MutableJsonObject;
-  if (item.type === 'message' && !Array.isArray(item.content)) {
-    item.content = [];
-  }
-  if (item.type === 'function_call' && typeof item.arguments !== 'string') {
-    item.arguments = '';
-  }
-
-  snapshot.output[event.output_index] = item;
-}
-
-function applyContentPartAdded(snapshot: OpenAIResponse, event: ResponseStreamEvent): void {
-  if (event.type !== 'response.content_part.added') {
-    return;
-  }
-
-  const outputItem = ensureOutputItem(snapshot, event.output_index);
-  if (!outputItem || outputItem.type !== 'message') {
-    return;
-  }
-
-  if (!Array.isArray(outputItem.content)) {
-    outputItem.content = [];
-  }
-
-  outputItem.content[event.content_index] = cloneJson(event.part) as unknown as MutableJsonObject;
-}
-
-function ensureOutputTextContent(
-  outputItem: MutableJsonObject,
-  contentIndex: number
-): MutableJsonObject {
-  if (!Array.isArray(outputItem.content)) {
-    outputItem.content = [];
-  }
-
-  let content = outputItem.content[contentIndex];
-  if (!isPlainObject(content) || content.type !== 'output_text') {
-    content = {
-      type: 'output_text',
-      text: '',
-      annotations: [],
-    } satisfies MutableJsonObject;
-    outputItem.content[contentIndex] = content;
-  }
-
-  if (typeof content.text !== 'string') {
-    content.text = '';
-  }
-
-  return content;
-}
-
-function applyOutputTextDelta(snapshot: OpenAIResponse, event: ResponseStreamEvent): void {
-  if (event.type !== 'response.output_text.delta') {
-    return;
-  }
-
-  const outputItem = ensureOutputItem(snapshot, event.output_index);
-  if (!outputItem || outputItem.type !== 'message') {
-    return;
-  }
-
-  const content = ensureOutputTextContent(outputItem, event.content_index);
-  content.text = `${content.text}${event.delta}`;
-}
-
-function applyFunctionCallArgumentsDelta(
-  snapshot: OpenAIResponse,
-  event: ResponseStreamEvent
-): void {
-  if (event.type !== 'response.function_call_arguments.delta') {
-    return;
-  }
-
-  const outputItem = ensureOutputItem(snapshot, event.output_index);
-  if (!outputItem || outputItem.type !== 'function_call') {
-    return;
-  }
-
-  if (typeof outputItem.arguments !== 'string') {
-    outputItem.arguments = '';
-  }
-
-  outputItem.arguments = `${outputItem.arguments}${event.delta}`;
-}
-
-async function createOpenAIStreamSnapshot(
-  client: OpenAI,
-  request: OpenAIResponseRequest,
-  signal?: AbortSignal
-): Promise<OpenAIResponse> {
-  const requestWithDefaults = {
-    instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
-    ...request,
-  };
-
-  const stream = (
-    signal
-      ? await client.responses.create(
-          {
-            ...requestWithDefaults,
-            stream: true,
-          },
-          { signal }
-        )
-      : await client.responses.create({
-          ...requestWithDefaults,
-          stream: true,
-        })
-  ) as OpenAIResponseStream;
-
-  let snapshot: OpenAIResponse | undefined;
-  let sawTerminalEvent = false;
-
-  for await (const event of stream) {
-    switch (event.type) {
-      case 'response.created':
-        snapshot = createResponseSnapshot(event.response as OpenAIResponse);
-        break;
-      case 'response.output_item.added':
-        if (!snapshot) {
-          snapshot = createResponseSnapshot({
-            id: '',
-            output: [],
-          });
-        }
-        applyOutputItemAdded(snapshot, event);
-        break;
-      case 'response.content_part.added':
-        if (!snapshot) {
-          snapshot = createResponseSnapshot({
-            id: '',
-            output: [],
-          });
-        }
-        applyContentPartAdded(snapshot, event);
-        break;
-      case 'response.output_text.delta':
-        if (!snapshot) {
-          snapshot = createResponseSnapshot({
-            id: '',
-            output: [],
-          });
-        }
-        applyOutputTextDelta(snapshot, event);
-        break;
-      case 'response.function_call_arguments.delta':
-        if (!snapshot) {
-          snapshot = createResponseSnapshot({
-            id: '',
-            output: [],
-          });
-        }
-        applyFunctionCallArgumentsDelta(snapshot, event);
-        break;
-      case 'response.completed':
-      case 'response.failed':
-      case 'response.incomplete':
-        snapshot = mergeResponseSnapshot(snapshot, event.response as OpenAIResponse);
-        sawTerminalEvent = true;
-        break;
-      case 'error':
-        throw new Error(event.message);
-      default:
-        break;
-    }
-  }
-
-  if (!snapshot) {
-    throw new Error('OpenAI Responses stream ended without a response');
-  }
-
-  if (!sawTerminalEvent) {
-    throw new Error('OpenAI Responses stream ended before completion');
-  }
-
-  return snapshot;
-}
-
-async function createOpenAIStreamSnapshotForUserPrompt(
-  client: OpenAI,
-  request: Omit<OpenAIResponseRequest, 'input'> & {
-    prompt: string;
-  },
-  signal?: AbortSignal
-): Promise<OpenAIResponse> {
-  let lastError: unknown;
-  const { prompt, ...requestWithoutPrompt } = request;
-
-  for (const variant of buildUserPromptInputVariants(prompt)) {
-    try {
-      return await createOpenAIStreamSnapshot(
-        client,
-        {
-          ...requestWithoutPrompt,
-          input: variant.input,
-        },
-        signal
-      );
-    } catch (error) {
-      if (!shouldRetryUserPromptAsString(variant.mode, error)) {
-        throw error;
-      }
-
-      lastError = error;
-    }
-  }
-
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('OpenAI Responses request failed for all supported input formats');
-}
-
-function normalizeResponseStatus(response: OpenAIResponse): string {
-  switch (response.status) {
-    case 'completed':
-      return 'success';
-    case 'failed':
-      return 'error';
-    case 'incomplete':
-      return 'incomplete';
-    default:
-      return response.status || 'unknown';
-  }
-}
-
-function getResponseError(response: OpenAIResponse): string | undefined {
-  if (response.error?.message) {
-    return response.error.message;
-  }
-
-  if (response.status === 'failed') {
-    return 'OpenAI Responses request failed';
-  }
-
-  return undefined;
-}
-
-function getResponseText(response: OpenAIResponse): string | undefined {
-  if (typeof response.output_text === 'string' && response.output_text.length > 0) {
-    return response.output_text;
-  }
-
-  if (!Array.isArray(response.output)) {
-    return undefined;
-  }
-
-  const texts: string[] = [];
-
-  for (const item of response.output) {
-    if (!item || typeof item !== 'object' || !('type' in item) || item.type !== 'message') {
-      continue;
-    }
-
-    if (!('content' in item) || !Array.isArray(item.content)) {
-      continue;
-    }
-
-    for (const content of item.content) {
-      if (
-        content &&
-        typeof content === 'object' &&
-        'type' in content &&
-        content.type === 'output_text' &&
-        'text' in content &&
-        typeof content.text === 'string'
-      ) {
-        texts.push(content.text);
-      }
-    }
-  }
-
-  return texts.length > 0 ? texts.join('') : undefined;
-}
-
-/**
- * 判断一次 Responses 调用是否因为输出预算被 reasoning token 吃光而没有文本。
- * 有明确的 reason 时以它为准，避免把 content_filter 之类的终止原因当成预算不足重试。
- */
-function isOutputBudgetExhausted(response: OpenAIResponse): boolean {
-  const reason = response.incomplete_details?.reason;
-  if (typeof reason === 'string' && reason.length > 0) {
-    return reason === 'max_output_tokens';
-  }
-
-  return response.status === 'incomplete';
-}
-
-/**
- * 预算耗尽重试时使用的 max_output_tokens：在 [2048, 8192] 本地策略区间内按调用方预算翻倍。
- * 已达本地上限、或调用方预算非法（非正整数）时返回 undefined 表示不重试，
- * 避免基于错误配置或超出本地保护的数值再发一次请求；实际上限仍以 provider 为准。
- */
-function escalateMaxOutputTokens(maxOutputTokens: number): number | undefined {
-  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) {
-    return undefined;
-  }
-
-  const escalated = Math.min(
-    ESCALATED_MAX_OUTPUT_TOKENS_CEILING,
-    Math.max(ESCALATED_MAX_OUTPUT_TOKENS_FLOOR, maxOutputTokens * 2)
-  );
-
-  return escalated > maxOutputTokens ? escalated : undefined;
-}
-
-/**
- * 预算耗尽或空响应时保留 status/reason 与已消耗的 token，便于线上定位是预算不足还是上游异常。
- */
-function buildNoTextError(
-  response: OpenAIResponse,
-  extra: { attempts: number; tokensUsed: number },
-  cause?: unknown
-): Error {
-  const status = response.status ?? 'unknown';
-  const reason = response.incomplete_details?.reason ?? 'unknown';
-
-  return new Error(
-    `OpenAI Responses stream completed without text output (status=${status}, reason=${reason}, attempts=${extra.attempts}, tokensUsed=${extra.tokensUsed})`,
-    cause === undefined ? undefined : { cause }
-  );
-}
-
-/**
- * 被放弃的尝试同样消耗 token，统计时与最终响应合并，避免少报成本。
- */
-function mergeUsage(
-  first: RuntimeUsage | undefined,
-  second: RuntimeUsage | undefined
-): RuntimeUsage | undefined {
-  if (!first) {
-    return second;
-  }
-
-  if (!second) {
-    return first;
-  }
-
-  const cachedInputTokens = (first.cachedInputTokens ?? 0) + (second.cachedInputTokens ?? 0);
-  return {
-    inputTokens: first.inputTokens + second.inputTokens,
-    ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
-    outputTokens: first.outputTokens + second.outputTokens,
-  };
-}
-
-function totalTokens(usage: RuntimeUsage | undefined): number {
-  return usage ? usage.inputTokens + usage.outputTokens : 0;
-}
-
-function isFunctionCallItem(item: unknown): item is OpenAIFunctionCallItem {
-  return Boolean(
-    item &&
-      typeof item === 'object' &&
-      'type' in item &&
-      item.type === 'function_call' &&
-      'name' in item &&
-      typeof item.name === 'string' &&
-      'call_id' in item &&
-      typeof item.call_id === 'string' &&
-      'arguments' in item &&
-      typeof item.arguments === 'string'
-  );
+  const suffix = closing
+    ? 'The closing phase has begun. Stop context exploration. Report concrete findings already supported by evidence, then finish with a brief summary. Zero issues is valid when review is complete. If evidence is insufficient to complete the review, call report_incomplete with the missing evidence; do not claim a clean review.'
+    : `Reserve the last ${reserveTurns} requests for reporting and completion. Stay within your specialist scope.`;
+
+  return `Review budget: ${remainingTurns} requests remaining (including this request). ${suffix}`;
 }
 
 function isAsyncIterablePrompt(
@@ -1061,154 +346,222 @@ function toolResultToOutput(result: Awaited<ReturnType<RuntimeToolDefinition['ex
   return text || 'Tool completed successfully.';
 }
 
+export function extractAssistantText(message: AssistantMessage | undefined): string | undefined {
+  const text = message?.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('');
+
+  return text && text.length > 0 ? text : undefined;
+}
+
+/**
+ * pi-ai 的 `usage.input` 已经扣掉缓存命中，这里加回来以保持改造前
+ * 「input_tokens + output_tokens」的统计口径。
+ */
+export function normalizeUsage(message: AssistantMessage | undefined): RuntimeUsage | undefined {
+  const usage = message?.usage;
+  if (!usage) {
+    return undefined;
+  }
+
+  const cachedInputTokens = usage.cacheRead;
+  return {
+    inputTokens: usage.input + usage.cacheRead + usage.cacheWrite,
+    ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
+    outputTokens: usage.output,
+  };
+}
+
+/**
+ * 判断响应是否因为输出预算被 reasoning token 吃光而截断。
+ * pi-ai 把 `incomplete_details.reason` 保留在 `rawStopReason`（如
+ * `incomplete.max_output_tokens`），比只看 stopReason=length 更精确。
+ */
+export function isOutputBudgetExhausted(message: AssistantMessage): boolean {
+  return message.rawStopReason?.includes('max_output_tokens') ?? false;
+}
+
+/**
+ * 预算耗尽重试时使用的 maxTokens：在 [2048, 8192] 本地策略区间内按调用方预算翻倍。
+ * 已达本地上限、或调用方预算非法时返回 undefined 表示不重试。
+ */
+export function escalateMaxOutputTokens(maxOutputTokens: number): number | undefined {
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) {
+    return undefined;
+  }
+
+  const escalated = Math.min(
+    ESCALATED_MAX_OUTPUT_TOKENS_CEILING,
+    Math.max(ESCALATED_MAX_OUTPUT_TOKENS_FLOOR, maxOutputTokens * 2)
+  );
+
+  return escalated > maxOutputTokens ? escalated : undefined;
+}
+
+/** 预算耗尽或空响应时保留 stopReason 与已消耗的 token，便于线上定位。 */
+function buildNoTextError(
+  message: AssistantMessage,
+  extra: { attempts: number; tokensUsed: number },
+  cause?: unknown
+): Error {
+  return new Error(
+    `OpenAI Responses stream completed without text output (stopReason=${message.stopReason}, rawStopReason=${message.rawStopReason ?? 'unknown'}, attempts=${extra.attempts}, tokensUsed=${extra.tokensUsed})`,
+    cause === undefined ? undefined : { cause }
+  );
+}
+
+/** 被放弃的尝试同样消耗 token，统计时与最终响应合并，避免少报成本。 */
+function mergeUsage(
+  first: RuntimeUsage | undefined,
+  second: RuntimeUsage | undefined
+): RuntimeUsage | undefined {
+  if (!first) {
+    return second;
+  }
+
+  if (!second) {
+    return first;
+  }
+
+  const cachedInputTokens = (first.cachedInputTokens ?? 0) + (second.cachedInputTokens ?? 0);
+  return {
+    inputTokens: first.inputTokens + second.inputTokens,
+    ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
+    outputTokens: first.outputTokens + second.outputTokens,
+  };
+}
+
+function totalTokens(usage: RuntimeUsage | undefined): number {
+  return usage ? usage.inputTokens + usage.outputTokens : 0;
+}
+
+/**
+ * 用户中断要抛 AbortError（而不是把 aborted 当成普通 result 返回），
+ * streaming-orchestrator 依赖 `error.name === 'AbortError'` 走优雅退出分支。
+ */
+function createAbortError(message?: string): Error {
+  const error = new Error(message || 'OpenAI Responses runtime aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
 export class OpenAIResponsesRuntime implements AgentRuntime {
   readonly kind = 'openai-responses';
-  readonly client: OpenAI;
+  readonly model: Model<'openai-responses'>;
+  private readonly streamFn: PiStreamFn;
+  private readonly completeFn: PiCompleteFn;
 
   constructor(
     readonly config: ArgusRuntimeConfig,
-    client?: OpenAI
+    deps: OpenAIResponsesRuntimeDeps = {}
   ) {
     if (!config.openai) {
       throw new Error('OpenAI runtime requires openai credentials in the runtime config');
     }
 
-    this.client =
-      client ||
-      new OpenAI({
-        apiKey: config.openai.apiKey,
-        ...(config.openai.baseUrl ? { baseURL: config.openai.baseUrl } : {}),
-      });
+    this.model = deps.model ?? buildPiModel(config);
+    this.streamFn = deps.streamSimple ?? (streamSimple as PiStreamFn);
+    this.completeFn = deps.completeSimple ?? (completeSimple as PiCompleteFn);
+  }
+
+  private get apiKey(): string {
+    return this.config.openai?.apiKey ?? '';
+  }
+
+  private buildStreamOptions(extra: SimpleStreamOptions = {}): SimpleStreamOptions {
+    const reasoning = toThinkingLevel(this.config.reasoningEffort);
+    return {
+      apiKey: this.apiKey,
+      ...(reasoning ? { reasoning } : {}),
+      ...extra,
+    };
   }
 
   async generateText(options: RuntimeGenerateTextOptions): Promise<RuntimeGenerateTextResult> {
-    const reasoningRequest = buildReasoningRequest(this.config.reasoningEffort);
-    const request = {
-      model: options.model || this.config.models.main,
-      prompt: options.prompt,
-      ...(options.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}),
-      ...reasoningRequest,
+    const model = options.model ? buildPiModel(this.config, options.model) : this.model;
+    const context: Context = {
+      messages: [{ role: 'user', content: options.prompt, timestamp: Date.now() }],
     };
+    const baseOptions = this.buildStreamOptions({
+      ...(options.maxOutputTokens ? { maxTokens: options.maxOutputTokens } : {}),
+      ...(options.abortController ? { signal: options.abortController.signal } : {}),
+    });
 
-    let response: OpenAIResponse;
-    let sentMaxOutputTokens = Boolean(request.max_output_tokens);
-    let retriedOutputBudget = false;
-    try {
-      response = await createOpenAIStreamSnapshotForUserPrompt(
-        this.client,
-        request,
-        options.abortController?.signal
-      );
-    } catch (error) {
-      if (!request.max_output_tokens || !isMaxOutputTokensUnsupportedError(error)) {
-        throw error;
-      }
-
-      sentMaxOutputTokens = false;
-      const { max_output_tokens: _maxOutputTokens, ...requestWithoutMaxOutputTokens } = request;
-      response = await createOpenAIStreamSnapshotForUserPrompt(
-        this.client,
-        requestWithoutMaxOutputTokens,
-        options.abortController?.signal
-      );
-    }
-
-    const error = getResponseError(response);
-    if (error) {
-      throw new Error(error);
-    }
-
-    let text = getResponseText(response);
+    let message = await this.completeFn(model, context, baseOptions);
     let spentUsage: RuntimeUsage | undefined;
-    const escalatedMaxOutputTokens = sentMaxOutputTokens
-      ? escalateMaxOutputTokens(options.maxOutputTokens ?? 0)
+    let retriedOutputBudget = false;
+
+    const escalatedMaxOutputTokens = options.maxOutputTokens
+      ? escalateMaxOutputTokens(options.maxOutputTokens)
       : undefined;
 
-    if (!text && escalatedMaxOutputTokens !== undefined && isOutputBudgetExhausted(response)) {
+    if (
+      !extractAssistantText(message) &&
+      escalatedMaxOutputTokens !== undefined &&
+      isOutputBudgetExhausted(message)
+    ) {
       // 推理长度波动会让同一请求偶尔吃光输出预算；升档重试一次，避免整条调用直接失败。
-      spentUsage = normalizeUsage(response.usage);
-      const exhaustedResponse = response;
+      spentUsage = normalizeUsage(message);
+      const exhaustedMessage = message;
       retriedOutputBudget = true;
       try {
-        response = await createOpenAIStreamSnapshotForUserPrompt(
-          this.client,
-          {
-            ...request,
-            max_output_tokens: escalatedMaxOutputTokens,
-          },
-          options.abortController?.signal
-        );
+        message = await this.completeFn(model, context, {
+          ...baseOptions,
+          maxTokens: escalatedMaxOutputTokens,
+        });
       } catch (retryFailure) {
-        // 上游拒绝更大的预算时不再发第三次请求，保留原始的“无文本”失败语义。
-        if (isMaxOutputTokensUnsupportedError(retryFailure)) {
-          throw buildNoTextError(
-            exhaustedResponse,
-            {
-              attempts: 2,
-              tokensUsed: totalTokens(spentUsage),
-            },
-            retryFailure
-          );
-        }
-
-        throw retryFailure;
+        throw buildNoTextError(
+          exhaustedMessage,
+          { attempts: 2, tokensUsed: totalTokens(spentUsage) },
+          retryFailure
+        );
       }
-
-      const retryError = getResponseError(response);
-      if (retryError) {
-        throw new Error(retryError);
-      }
-
-      text = getResponseText(response);
     }
 
+    if (message.stopReason === 'aborted') {
+      throw createAbortError(message.errorMessage);
+    }
+
+    if (message.stopReason === 'error') {
+      throw new Error(message.errorMessage || 'pi-ai completion error');
+    }
+
+    const text = extractAssistantText(message);
     if (!text) {
-      throw buildNoTextError(response, {
+      throw buildNoTextError(message, {
         attempts: retriedOutputBudget ? 2 : 1,
-        tokensUsed: totalTokens(spentUsage) + totalTokens(normalizeUsage(response.usage)),
+        tokensUsed: totalTokens(spentUsage) + totalTokens(normalizeUsage(message)),
       });
     }
 
     return {
       text,
-      usage: mergeUsage(spentUsage, normalizeUsage(response.usage)),
+      usage: mergeUsage(spentUsage, normalizeUsage(message)),
     };
   }
 
   execute(options: RuntimeExecuteOptions): RuntimeExecution {
-    const client = this.client;
-    const defaultModel = this.config.models.main;
-    const reasoningRequest = buildReasoningRequest(this.config.reasoningEffort);
     const abortController = options.abortController ?? new AbortController();
     const ownsAbortController = !options.abortController;
     const runtimeTools = options.tools ?? [];
     const toolsByName = new Map(runtimeTools.map((tool) => [tool.name, tool]));
-    const openAITools: OpenAIRequestTool[] | undefined =
-      runtimeTools.length > 0
-        ? runtimeTools.map((tool) => ({
-            type: 'function' as const,
-            name: tool.name,
-            description: tool.description,
-            parameters: buildToolParameters(tool),
-            strict: true as const,
-          }))
-        : undefined;
-
+    const piTools: PiTool[] | undefined =
+      runtimeTools.length > 0 ? runtimeTools.map(toPiTool) : undefined;
     const totalTurns = Math.max(options.maxTurns, 1);
     const completionBudget = options.completionBudget;
-    // 前缀缓存：instructions 与 tools 在整个会话里保持字节一致，
-    // 逐轮变化的预算提示只追加到 input 末尾。
     const stableInstructions = completionBudget
       ? buildStableBudgetInstructions(totalTurns, completionBudget.reserveTurns)
       : undefined;
+    const model = options.model ? buildPiModel(this.config, options.model) : this.model;
+    const streamFn = this.streamFn;
+    const buildOptions = this.buildStreamOptions.bind(this);
 
     let closed = false;
 
     return {
       async *[Symbol.asyncIterator]() {
-        const conversationItems: OpenAIResponseInputItem[] = [];
-        let previousResponseId: string | undefined;
-        let continuationMode: OpenAIConversationContinuationMode = 'managed';
+        const messages: Message[] = [];
         let remainingTurns = totalTurns;
 
         for await (const promptInput of iteratePromptInputs(options.prompt)) {
@@ -1216,11 +569,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             return;
           }
 
-          conversationItems.push(createUserMessageInput(promptInput));
-          let input: OpenAIResponseInput =
-            continuationMode === 'managed'
-              ? promptInput
-              : buildStatelessConversationInput(continuationMode, conversationItems);
+          messages.push({ role: 'user', content: promptInput, timestamp: Date.now() });
           let lastText: string | undefined;
           let lastUsage: RuntimeUsage | undefined;
           let promptFinished = false;
@@ -1234,91 +583,61 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               : undefined;
             remainingTurns--;
 
-            let response: OpenAIResponse;
-            while (true) {
-              const requestInput = turnBudgetNote ? appendTurnNote(input, turnBudgetNote) : input;
-              const request = {
-                model: options.model || defaultModel,
-                input: requestInput,
-                ...(continuationMode === 'managed' && previousResponseId
-                  ? { previous_response_id: previousResponseId }
-                  : {}),
-                ...(stableInstructions ? { instructions: stableInstructions } : {}),
-                ...(openAITools
-                  ? {
-                      tools: openAITools,
-                      parallel_tool_calls: false as const,
-                    }
-                  : {}),
-                ...reasoningRequest,
-              };
+            // 逐轮变化的预算提示只挂在本次请求的末尾，不改动已缓存的 transcript 前缀。
+            // 这里传 transcript 的快照：请求发出后循环会继续往 messages 里追加
+            // assistant/toolResult，如果直接共享数组，调用方拿到的 context 会被后续轮次改写。
+            const context: Context = {
+              ...(stableInstructions ? { systemPrompt: stableInstructions } : {}),
+              messages: turnBudgetNote
+                ? [...messages, { role: 'user', content: turnBudgetNote, timestamp: Date.now() }]
+                : [...messages],
+              ...(piTools ? { tools: piTools } : {}),
+            };
 
-              try {
-                response =
-                  continuationMode === 'managed' && typeof input === 'string'
-                    ? await createOpenAIStreamSnapshotForUserPrompt(
-                        client,
-                        {
-                          model: request.model,
-                          ...(request.instructions ? { instructions: request.instructions } : {}),
-                          ...(request.previous_response_id
-                            ? { previous_response_id: request.previous_response_id }
-                            : {}),
-                          ...(request.tools ? { tools: request.tools } : {}),
-                          ...(request.parallel_tool_calls !== undefined
-                            ? { parallel_tool_calls: request.parallel_tool_calls }
-                            : {}),
-                          ...(request.reasoning ? { reasoning: request.reasoning } : {}),
-                          prompt: typeof requestInput === 'string' ? requestInput : input,
-                        },
-                        abortController.signal
-                      )
-                    : await createOpenAIStreamSnapshot(client, request, abortController.signal);
-                break;
-              } catch (error) {
-                const shouldFallbackToStatelessReplay =
-                  continuationMode === 'managed' &&
-                  ((previousResponseId &&
-                    (isPreviousResponseIdUnsupportedError(error) ||
-                      isNonPersistedItemReferenceError(error))) ||
-                    // 只带工具输出的续链请求即使没有 previous_response_id（上游只在
-                    // response.created 给 id 时会出现）也可能被网关以同一条 400 拒绝，
-                    // 本地已有完整历史，可以直接降级为无状态重放。
-                    (isFunctionCallOutputInput(input) &&
-                      (isToolContinuationGatewayFailure(error) ||
-                        isOrphanedToolOutputError(error))));
-
-                if (shouldFallbackToStatelessReplay) {
-                  continuationMode = 'stateless_full';
-                  previousResponseId = undefined;
-                  input = buildStatelessConversationInput(continuationMode, conversationItems);
-                  continue;
+            let assistant: AssistantMessage | undefined;
+            try {
+              for await (const event of streamFn(
+                model,
+                context,
+                buildOptions({ signal: abortController.signal })
+              )) {
+                if (event.type === 'done') {
+                  assistant = event.message;
+                } else if (event.type === 'error') {
+                  assistant = event.error;
+                } else if (event.type === 'toolcall_end') {
+                  yield {
+                    type: 'activity',
+                    event: `function_call:${event.toolCall.name}`,
+                  };
                 }
-
-                const shouldFallbackToItemReferenceReplay =
-                  continuationMode === 'stateless_full' &&
-                  containsFunctionCallOutputItems(input) &&
-                  isItemReferenceRequiredError(error);
-
-                if (shouldFallbackToItemReferenceReplay) {
-                  continuationMode = 'stateless_item_reference';
-                  input = buildStatelessConversationInput(continuationMode, conversationItems);
-                  continue;
-                }
-
+              }
+            } catch (error) {
+              // 用户中断继续向上抛，其余错误按 result 事件返回，保持事件契约。
+              if (error instanceof Error && error.name === 'AbortError') {
                 throw error;
               }
+
+              yield {
+                type: 'result',
+                status: 'error',
+                error: error instanceof Error ? error.message : String(error),
+              };
+              return;
             }
 
-            if (continuationMode === 'managed') {
-              previousResponseId = response.id;
+            if (!assistant) {
+              yield {
+                type: 'result',
+                status: 'error',
+                error: 'OpenAI Responses runtime stream ended without a response',
+              };
+              return;
             }
-            lastUsage = normalizeUsage(response.usage);
-            const responseText = getResponseText(response);
-            const responseOutputItems = Array.isArray(response.output)
-              ? (response.output as OpenAIResponseInputItem[])
-              : [];
-            conversationItems.push(...responseOutputItems);
+
+            lastUsage = normalizeUsage(assistant);
+            const responseText = extractAssistantText(assistant);
+            messages.push(assistant);
 
             if (responseText) {
               lastText = responseText;
@@ -1328,11 +647,38 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               };
             }
 
-            const functionCalls = responseOutputItems.filter(
-              (item): item is OpenAIFunctionCallItem => isFunctionCallItem(item)
-            );
-            if (functionCalls.length === 0) promptFinished = true;
-            if (response.status === 'completed' && !responseText && functionCalls.length === 0) {
+            if (assistant.stopReason === 'aborted') {
+              throw createAbortError(assistant.errorMessage);
+            }
+
+            if (assistant.stopReason === 'error') {
+              yield {
+                type: 'result',
+                status: 'error',
+                ...(responseText ? { text: responseText } : {}),
+                usage: lastUsage,
+                error: assistant.errorMessage || 'pi-ai completion error',
+              };
+              return;
+            }
+
+            const toolCalls = assistant.content.filter((block) => block.type === 'toolCall');
+            if (toolCalls.length === 0) {
+              promptFinished = true;
+            }
+
+            if (toolCalls.length === 0 && !responseText) {
+              if (assistant.stopReason === 'length') {
+                // 输出预算被吃光但没有正文：保持改造前的 incomplete 语义（可被重试/降级）。
+                yield {
+                  type: 'result',
+                  status: 'incomplete',
+                  rawStopReason: assistant.rawStopReason,
+                  usage: lastUsage,
+                };
+                break;
+              }
+
               yield {
                 type: 'result',
                 status: 'error_empty_output',
@@ -1342,68 +688,62 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               break;
             }
 
-            if (functionCalls.length === 0) {
-              const error = getResponseError(response);
+            if (toolCalls.length === 0) {
               yield {
                 type: 'result',
-                status: normalizeResponseStatus(response),
+                status: assistant.stopReason === 'length' ? 'incomplete' : 'success',
                 text: responseText,
                 usage: lastUsage,
-                ...(error ? { error } : {}),
               };
               break;
             }
 
-            const toolOutputs: OpenAIFunctionCallOutputItem[] = [];
-
-            for (const functionCall of functionCalls) {
-              yield {
-                type: 'activity',
-                event: `function_call:${functionCall.name}`,
+            for (const toolCall of toolCalls) {
+              const toolResult: ToolResultMessage = {
+                role: 'toolResult',
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                content: [],
+                isError: false,
+                timestamp: Date.now(),
               };
 
-              if (closing && !completionBudget!.toolNames.includes(functionCall.name)) {
-                toolOutputs.push({
-                  type: 'function_call_output',
-                  call_id: functionCall.call_id,
-                  output:
-                    'Context tools are unavailable in the closing phase. Finish from existing evidence or call report_incomplete.',
-                });
-                continue;
-              }
-              const runtimeTool = toolsByName.get(functionCall.name);
-              if (!runtimeTool) {
-                toolOutputs.push({
-                  type: 'function_call_output',
-                  call_id: functionCall.call_id,
-                  output: `Tool "${functionCall.name}" is not available.`,
-                });
+              if (!toolsByName.has(toolCall.name)) {
+                toolResult.content = [
+                  { type: 'text', text: `Tool "${toolCall.name}" is not available.` },
+                ];
+                toolResult.isError = true;
+                messages.push(toolResult);
                 continue;
               }
 
+              if (closing && !completionBudget!.toolNames.includes(toolCall.name)) {
+                toolResult.content = [
+                  {
+                    type: 'text',
+                    text: 'Context tools are unavailable in the closing phase. Finish from existing evidence or call report_incomplete.',
+                  },
+                ];
+                toolResult.isError = true;
+                messages.push(toolResult);
+                continue;
+              }
+
+              const runtimeTool = toolsByName.get(toolCall.name)!;
               try {
-                const args = normalizeToolArguments(JSON.parse(functionCall.arguments));
+                const args = normalizeToolArguments(toolCall.arguments);
                 const result = await runtimeTool.execute(args);
-                toolOutputs.push({
-                  type: 'function_call_output',
-                  call_id: functionCall.call_id,
-                  output: toolResultToOutput(result),
-                });
+                toolResult.content = [{ type: 'text', text: toolResultToOutput(result) }];
               } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
-                toolOutputs.push({
-                  type: 'function_call_output',
-                  call_id: functionCall.call_id,
-                  output: `Tool "${functionCall.name}" failed: ${message}`,
-                });
+                toolResult.content = [
+                  { type: 'text', text: `Tool "${toolCall.name}" failed: ${message}` },
+                ];
+                toolResult.isError = true;
               }
-            }
 
-            conversationItems.push(...toolOutputs);
-            input =
-              continuationMode === 'managed'
-                ? toolOutputs
-                : buildStatelessConversationInput(continuationMode, conversationItems);
+              messages.push(toolResult);
+            }
           }
 
           if (!closed && remainingTurns === 0 && !promptFinished) {
