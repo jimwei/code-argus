@@ -186,22 +186,31 @@ Notes:
   and becomes the source for the main/light/validator slots unless a slot override is set
 - `ARGUS_REASONING_EFFORT` is a single global value passed to every OpenAI Responses
   request (`minimal`, `low`, `medium`, `high`, ...); unset keeps the provider default
+- `ARGUS_REASONING_EFFORT` must use one of `none`, `minimal`, `low`, `medium`, `high`,
+  `xhigh`, `max`. pi-ai silently degrades any unknown level to `minimal`, so the runtime
+  validates the value and falls back to the provider default (with a one-time warning)
+  instead of passing it through
+- `openai-responses` traffic goes through `@earendil-works/pi-ai`, which always sends
+  `store: false` plus the full transcript, and (unless disabled) a `max_output_tokens`
+  cap taken from the runtime default. Set `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false`
+  for gateways that reject that parameter
 
 ### Environment variable summary
 
-| Purpose               | Variables                                       |
-| --------------------- | ----------------------------------------------- |
-| Runtime selection     | `ARGUS_RUNTIME`                                 |
-| OpenAI shared model   | `ARGUS_OPENAI_MODEL`                            |
-| Main model            | `ARGUS_MODEL`                                   |
-| Light model           | `ARGUS_LIGHT_MODEL`                             |
-| Validator model       | `ARGUS_VALIDATOR_MODEL`                         |
-| Reasoning effort      | `ARGUS_REASONING_EFFORT`                        |
-| Claude API key        | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
-| Claude OAuth or proxy | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
-| Claude base URL       | `ARGUS_ANTHROPIC_BASE_URL`                      |
-| OpenAI API key        | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
-| OpenAI base URL       | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
+| Purpose                             | Variables                                       |
+| ----------------------------------- | ----------------------------------------------- |
+| Runtime selection                   | `ARGUS_RUNTIME`                                 |
+| OpenAI shared model                 | `ARGUS_OPENAI_MODEL`                            |
+| Main model                          | `ARGUS_MODEL`                                   |
+| Light model                         | `ARGUS_LIGHT_MODEL`                             |
+| Validator model                     | `ARGUS_VALIDATOR_MODEL`                         |
+| Reasoning effort                    | `ARGUS_REASONING_EFFORT`                        |
+| Claude API key                      | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
+| Claude OAuth or proxy               | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
+| Claude base URL                     | `ARGUS_ANTHROPIC_BASE_URL`                      |
+| OpenAI API key                      | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
+| OpenAI base URL                     | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
+| Gateway `max_output_tokens` support | `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS`       |
 
 ## Configuration Management
 

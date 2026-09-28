@@ -439,6 +439,8 @@ describe('openai-responses runtime (pi-ai)', () => {
     expect(calls[0]!.model.baseUrl).toBe('https://gateway.test/v1');
     expect(calls[0]!.options?.reasoning).toBe('high');
     expect(calls[0]!.options?.apiKey).toBe('test-key');
+    // 改造前 SDK 默认重试 2 次；pi-ai 默认 0，必须显式传回
+    expect(calls[0]!.options?.maxRetries).toBe(2);
     expect(calls[1]!.context.messages.at(-1)).toMatchObject({
       role: 'toolResult',
       toolCallId: 'call_1',
@@ -808,6 +810,35 @@ describe('openai-responses text generation (pi-ai)', () => {
     expect(toThinkingLevel('none')).toBeUndefined();
     expect(toThinkingLevel(undefined)).toBeUndefined();
     expect(toThinkingLevel('max')).toBe('max');
+  });
+
+  it('ignores an unsupported reasoning effort instead of letting pi-ai clamp it to minimal', async () => {
+    const calls: PiStreamCall[] = [];
+    const streamSimple = vi.fn(
+      (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+        calls.push({ model, context, options });
+        return createPiStream([
+          doneEvent(createAssistantMessage({ content: [{ type: 'text', text: 'ok' }] })),
+        ]);
+      }
+    );
+    const unknownConfig: ArgusRuntimeConfig = { ...config, reasoningEffort: 'hgih' };
+
+    const runtime = new OpenAIResponsesRuntime(unknownConfig, { streamSimple });
+    await collectEvents(runtime.execute({ prompt: 'Review', cwd: '.', maxTurns: 1 }));
+
+    expect(toThinkingLevel('hgih')).toBeUndefined();
+    // 未识别时不声明 reasoning，pi-ai 就不会把未知档位钳成 minimal
+    expect(runtime.model.reasoning).toBe(false);
+    expect(calls[0]!.options?.reasoning).toBeUndefined();
+
+    // 显式 none 仍要声明 reasoning（pi-ai 会写 effort=none）
+    expect(
+      new OpenAIResponsesRuntime(
+        { ...config, reasoningEffort: 'none' },
+        { completeSimple: vi.fn() }
+      ).model.reasoning
+    ).toBe(true);
   });
 });
 

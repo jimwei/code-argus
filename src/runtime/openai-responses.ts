@@ -53,6 +53,12 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
 const ESCALATED_MAX_OUTPUT_TOKENS_FLOOR = 2048;
 const ESCALATED_MAX_OUTPUT_TOKENS_CEILING = 8192;
 
+/**
+ * 改造前用的 OpenAI/Anthropic SDK 默认会自己重试 2 次；pi-ai 把这个策略显式化，
+ * 且默认值是 0，所以这里显式传回 SDK 的既有语义（pi-ai 的重试支持 abort signal）。
+ */
+const PI_PROVIDER_MAX_RETRIES = 2;
+
 export type PiStreamFn = (
   model: Model<Api>,
   context: Context,
@@ -81,7 +87,8 @@ export function buildPiModel(
   modelId: string = config.models.main
 ): Model<'openai-responses'> {
   const baseUrl = (config.openai?.baseUrl ?? '').trim().replace(/\/+$/, '');
-  const hasReasoning = Boolean(config.reasoningEffort);
+  // 只认 pi-ai 词汇表里的档位 + 显式 none；未知值按未配置处理（见 resolveConfiguredEffort）。
+  const hasReasoning = resolveConfiguredEffort(config.reasoningEffort) !== undefined;
 
   return {
     id: modelId,
@@ -111,18 +118,59 @@ export function buildPiModel(
   };
 }
 
+/** pi-ai 认可的 thinking level 词汇表。 */
+const THINKING_LEVELS: readonly ThinkingLevel[] = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
+const THINKING_LEVEL_SET = new Set<string>(THINKING_LEVELS);
+
+let warnedUnknownReasoningEffort = false;
+
+/**
+ * 解析 ARGUS_REASONING_EFFORT：`off` 表示显式关闭推理（仍声明模型支持推理，
+ * pi-ai 会据此写 `reasoning.effort=none`）。
+ *
+ * 未知取值必须在这里拦掉：pi-ai 的 `clampThinkingLevel` 对不认识的档位会退化成
+ * `minimal`，直接透传等于把「网关默认」悄悄换成「最低档推理」。这里按未配置处理
+ * （完全不发 reasoning 字段），并只告警一次。
+ */
+function resolveConfiguredEffort(effort: string | undefined): ThinkingLevel | 'off' | undefined {
+  const trimmed = effort?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  if (trimmed === 'none') {
+    return 'off';
+  }
+
+  if (THINKING_LEVEL_SET.has(trimmed)) {
+    return trimmed as ThinkingLevel;
+  }
+
+  if (!warnedUnknownReasoningEffort) {
+    warnedUnknownReasoningEffort = true;
+    console.warn(
+      `[OpenAIResponsesRuntime] Unsupported ARGUS_REASONING_EFFORT "${trimmed}"; expected one of: ${THINKING_LEVELS.join(', ')}, none. Falling back to the provider default.`
+    );
+  }
+
+  return undefined;
+}
+
 /**
  * ARGUS_REASONING_EFFORT → pi-ai thinking level。
  * pi-ai 的 ThinkingLevel 没有 `off`：`none` 与「未配置」都不传档位，
  * 两者的差别由 `model.reasoning` 是否声明决定。
  */
 export function toThinkingLevel(effort: string | undefined): ThinkingLevel | undefined {
-  const trimmed = effort?.trim();
-  if (!trimmed || trimmed === 'none') {
-    return undefined;
-  }
-
-  return trimmed as ThinkingLevel;
+  const resolved = resolveConfiguredEffort(effort);
+  return resolved && resolved !== 'off' ? resolved : undefined;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -473,6 +521,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     const reasoning = toThinkingLevel(this.config.reasoningEffort);
     return {
       apiKey: this.apiKey,
+      maxRetries: PI_PROVIDER_MAX_RETRIES,
       ...(reasoning ? { reasoning } : {}),
       ...extra,
     };
