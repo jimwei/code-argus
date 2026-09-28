@@ -53,6 +53,9 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
 const ESCALATED_MAX_OUTPUT_TOKENS_FLOOR = 2048;
 const ESCALATED_MAX_OUTPUT_TOKENS_CEILING = 8192;
 
+/** 与旧实现一致：没有会话级 instructions 时的兜底指令。 */
+const DEFAULT_RUNTIME_INSTRUCTIONS = 'Follow the user instructions and tool definitions exactly.';
+
 /**
  * 改造前用的 OpenAI/Anthropic SDK 默认会自己重试 2 次；pi-ai 把这个策略显式化，
  * 且默认值是 0，所以这里显式传回 SDK 的既有语义（pi-ai 的重试支持 abort signal）。
@@ -136,8 +139,9 @@ let warnedUnknownReasoningEffort = false;
  * pi-ai 会据此写 `reasoning.effort=none`）。
  *
  * 未知取值必须在这里拦掉：pi-ai 的 `clampThinkingLevel` 对不认识的档位会退化成
- * `minimal`，直接透传等于把「网关默认」悄悄换成「最低档推理」。这里按未配置处理
- * （完全不发 reasoning 字段），并只告警一次。
+ * 词表里的第一个可用档位（`off`，也就是 `reasoning.effort=none`），直接透传等于把
+ * 「网关默认」悄悄换成「关闭推理」。这里按未配置处理（完全不发 reasoning 字段），
+ * 并只告警一次。
  */
 function resolveConfiguredEffort(effort: string | undefined): ThinkingLevel | 'off' | undefined {
   const trimmed = effort?.trim();
@@ -298,6 +302,13 @@ export function toPiTool(tool: RuntimeToolDefinition): PiTool {
     name: tool.name,
     description: tool.description,
     parameters: Type.Unsafe(buildToolParameters(tool)),
+    /**
+     * pi-ai 只在工具声明 json_schema 约束采样时才发送 `strict: true`
+     * （convertResponsesTools 的 defaultStrict 默认为 false）。旧实现每个工具都发
+     * strict:true，因此这里显式声明；schema 不满足 strict 子集时 pi-ai 会直接报错，
+     * 而不是静默降级成非 strict。
+     */
+    constrainedSampling: { type: 'json_schema', strict: 'require' },
   };
 }
 
@@ -494,6 +505,20 @@ function createAbortError(message?: string): Error {
   return error;
 }
 
+/**
+ * pi-ai 把 provider 错误归一化成 `"<prefix> (<status>): <body>"` 后塞进
+ * `AssistantMessage.errorMessage`，错误对象本身不再带 status。调用方
+ * （如 realtime-deduplicator）按 `error.status` 判断是否重试，这里把状态码还原回去。
+ */
+function createProviderError(errorMessage: string): Error {
+  const error = new Error(errorMessage);
+  const status = /\((\d{3})\)/.exec(errorMessage)?.[1] ?? /^(\d{3})\b/.exec(errorMessage)?.[1];
+  if (status) {
+    (error as Error & { status?: number }).status = Number.parseInt(status, 10);
+  }
+  return error;
+}
+
 export class OpenAIResponsesRuntime implements AgentRuntime {
   readonly kind = 'openai-responses';
   readonly model: Model<'openai-responses'>;
@@ -530,6 +555,8 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
   async generateText(options: RuntimeGenerateTextOptions): Promise<RuntimeGenerateTextResult> {
     const model = options.model ? buildPiModel(this.config, options.model) : this.model;
     const context: Context = {
+      // 旧实现每个 generateText 请求都带这份 instructions，保持行为一致。
+      systemPrompt: DEFAULT_RUNTIME_INSTRUCTIONS,
       messages: [{ role: 'user', content: options.prompt, timestamp: Date.now() }],
     };
     const baseOptions = this.buildStreamOptions({
@@ -560,6 +587,17 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
           maxTokens: escalatedMaxOutputTokens,
         });
       } catch (retryFailure) {
+        // 只有「升档后的预算也被上游拒绝」才改写成无文本错误；其余错误原样抛出，
+        // 保留调用方按 status/消息分类重试的能力（旧实现同样只在这条路径改写）。
+        const retryMessage =
+          retryFailure instanceof Error ? retryFailure.message.toLowerCase() : '';
+        if (
+          !retryMessage.includes('max_output_tokens') &&
+          !retryMessage.includes('max output tokens')
+        ) {
+          throw retryFailure;
+        }
+
         throw buildNoTextError(
           exhaustedMessage,
           { attempts: 2, tokensUsed: totalTokens(spentUsage) },
@@ -573,7 +611,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     }
 
     if (message.stopReason === 'error') {
-      throw new Error(message.errorMessage || 'pi-ai completion error');
+      throw createProviderError(message.errorMessage || 'pi-ai completion error');
     }
 
     const text = extractAssistantText(message);

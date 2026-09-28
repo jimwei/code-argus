@@ -187,9 +187,10 @@ Notes:
 - `ARGUS_REASONING_EFFORT` is a single global value passed to every OpenAI Responses
   request (`minimal`, `low`, `medium`, `high`, ...); unset keeps the provider default
 - `ARGUS_REASONING_EFFORT` must use one of `none`, `minimal`, `low`, `medium`, `high`,
-  `xhigh`, `max`. pi-ai silently degrades any unknown level to `minimal`, so the runtime
+  `xhigh`, `max`. pi-ai clamps an unknown level to the first entry of its vocabulary
+  (`off`, i.e. `reasoning.effort=none`) instead of reporting an error, so the runtime
   validates the value and falls back to the provider default (with a one-time warning)
-  instead of passing it through
+  rather than silently disabling reasoning
 - `openai-responses` traffic goes through `@earendil-works/pi-ai`, which always sends
   `store: false` plus the full transcript, and (unless disabled) a `max_output_tokens`
   cap taken from the runtime default. Set `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false`

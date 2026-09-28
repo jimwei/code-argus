@@ -47,7 +47,12 @@ import {
   OpenAIResponsesRuntime,
   createRuntimeFromEnv,
 } from '../../src/runtime/index.js';
-import { escalateMaxOutputTokens, toThinkingLevel } from '../../src/runtime/openai-responses.js';
+import {
+  escalateMaxOutputTokens,
+  toPiTool,
+  toThinkingLevel,
+} from '../../src/runtime/openai-responses.js';
+import { convertResponsesTools } from '@earendil-works/pi-ai/api/openai-responses-shared';
 import type { ArgusRuntimeConfig } from '../../src/config/env.js';
 import type { RuntimeToolDefinition } from '../../src/runtime/types.js';
 import type {
@@ -839,6 +844,44 @@ describe('openai-responses text generation (pi-ai)', () => {
         { completeSimple: vi.fn() }
       ).model.reasoning
     ).toBe(true);
+  });
+
+  it('declares json_schema constrained sampling so pi-ai actually sends strict tools', () => {
+    const tool = createTool('inspect', async () => ({
+      content: [{ type: 'text' as const, text: 'ok' }],
+    }));
+    const [converted] = convertResponsesTools([toPiTool(tool)], { supportsStrictMode: true });
+
+    // pi-ai 的 defaultStrict 是 false，只有 constrainedSampling 才能让 strict 变成 true
+    expect(converted?.strict).toBe(true);
+    expect(converted?.parameters).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+    });
+  });
+
+  it('sends the legacy default instructions and surfaces the provider status on errors', async () => {
+    const calls: PiStreamCall[] = [];
+    const completeSimple = vi.fn(
+      async (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+        calls.push({ model, context, options });
+        return createAssistantMessage({
+          content: [],
+          stopReason: 'error',
+          errorMessage: 'OpenAI API error (500): upstream failed',
+        });
+      }
+    );
+    const runtime = new OpenAIResponsesRuntime(config, { completeSimple });
+
+    // realtime-deduplicator 之类的调用方按 error.status 判断是否重试
+    await expect(runtime.generateText({ prompt: 'Summarize' })).rejects.toMatchObject({
+      message: 'OpenAI API error (500): upstream failed',
+      status: 500,
+    });
+    expect(calls[0]!.context.systemPrompt).toBe(
+      'Follow the user instructions and tool definitions exactly.'
+    );
   });
 });
 
