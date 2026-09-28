@@ -29,12 +29,18 @@ export interface OpenAIAuthConfig {
    * 读自 ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS，未设置时按 true 处理。
    */
   supportsMaxOutputTokens?: boolean;
+  /**
+   * 部署侧声明网关是否接受 `developer` 角色消息。开启推理时 pi-ai 会把首条指令
+   * 以 developer 角色发出（未开启推理时为 system）。读自
+   * ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE，未设置时按 true 处理。
+   */
+  supportsDeveloperRole?: boolean;
 }
 
 /**
  * 解析布尔型环境变量。取值不合法时回退到默认值，避免拼写错误静默改变行为。
  */
-function resolveBooleanEnv(raw: string | undefined, fallback: boolean): boolean {
+function resolveBooleanEnv(raw: string | undefined, fallback: boolean, name: string): boolean {
   const value = raw?.trim().toLowerCase();
   if (!value) {
     return fallback;
@@ -48,6 +54,7 @@ function resolveBooleanEnv(raw: string | undefined, fallback: boolean): boolean 
     return false;
   }
 
+  console.warn(`[ArgusRuntimeConfig] Unsupported ${name} "${value}", falling back to ${fallback}`);
   return fallback;
 }
 
@@ -132,7 +139,13 @@ function getClaudeAuthConfig(): ClaudeAuthConfig {
 function getOpenAIAuthConfig(): OpenAIAuthConfig {
   const supportsMaxOutputTokens = resolveBooleanEnv(
     process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS,
-    true
+    true,
+    'ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS'
+  );
+  const supportsDeveloperRole = resolveBooleanEnv(
+    process.env.ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE,
+    true,
+    'ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE'
   );
   const argusApiKey = process.env.ARGUS_OPENAI_API_KEY;
   if (argusApiKey) {
@@ -141,6 +154,7 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'argus',
       supportsMaxOutputTokens,
+      supportsDeveloperRole,
     };
   }
 
@@ -151,6 +165,7 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'openai-api',
       supportsMaxOutputTokens,
+      supportsDeveloperRole,
     };
   }
 

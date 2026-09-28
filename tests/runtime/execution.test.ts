@@ -446,6 +446,10 @@ describe('openai-responses runtime (pi-ai)', () => {
     expect(calls[0]!.options?.apiKey).toBe('test-key');
     // 改造前 SDK 默认重试 2 次；pi-ai 默认 0，必须显式传回
     expect(calls[0]!.options?.maxRetries).toBe(2);
+    // 旧实现每个请求都带默认 instructions
+    expect(calls[0]!.context.systemPrompt).toBe(
+      'Follow the user instructions and tool definitions exactly.'
+    );
     expect(calls[1]!.context.messages.at(-1)).toMatchObject({
       role: 'toolResult',
       toolCallId: 'call_1',
@@ -661,6 +665,7 @@ describe('openai-responses runtime (pi-ai)', () => {
     expect(runtime.model.compat).toEqual({
       supportsStrictMode: true,
       supportsMaxOutputTokens: true,
+      supportsDeveloperRole: true,
     });
 
     const limitedRuntime = new OpenAIResponsesRuntime(
@@ -668,6 +673,12 @@ describe('openai-responses runtime (pi-ai)', () => {
       { streamSimple: vi.fn() }
     );
     expect(limitedRuntime.model.compat?.supportsMaxOutputTokens).toBe(false);
+
+    const systemRoleRuntime = new OpenAIResponsesRuntime(
+      { ...config, openai: { ...config.openai!, supportsDeveloperRole: false } },
+      { streamSimple: vi.fn() }
+    );
+    expect(systemRoleRuntime.model.compat?.supportsDeveloperRole).toBe(false);
   });
 
   it('strips $schema and marks optional tool properties nullable for strict mode', async () => {
@@ -807,6 +818,26 @@ describe('openai-responses text generation (pi-ai)', () => {
     expect(completeSimple).toHaveBeenCalledTimes(1);
   });
 
+  it('does not escalate when the gateway rejects max_output_tokens anyway', async () => {
+    const completeSimple = vi.fn(async () =>
+      createAssistantMessage({
+        content: [{ type: 'thinking', thinking: 'scratchpad' }],
+        stopReason: 'length',
+        rawStopReason: 'incomplete.max_output_tokens',
+      })
+    );
+    const runtime = new OpenAIResponsesRuntime(
+      { ...config, openai: { ...config.openai!, supportsMaxOutputTokens: false } },
+      { completeSimple }
+    );
+
+    // pi-ai 不会发送该参数，重试只会重复同一个请求
+    await expect(
+      runtime.generateText({ prompt: 'Summarize', maxOutputTokens: 512 })
+    ).rejects.toThrow(/without text output/);
+    expect(completeSimple).toHaveBeenCalledTimes(1);
+  });
+
   it('escalates and caps the budget inside the documented policy window', () => {
     expect(escalateMaxOutputTokens(512)).toBe(2048);
     expect(escalateMaxOutputTokens(2048)).toBe(4096);
@@ -942,6 +973,7 @@ describe('review completion budget (pi-ai)', () => {
     const instructions = calls.map((call) => call.context.systemPrompt);
     expect(new Set(instructions).size).toBe(1);
     expect(instructions[0]).toContain('Reserve the last 1 turns for reporting');
+    expect(instructions[0]).toContain('Follow the user instructions and tool definitions exactly');
 
     // 2) tools 定义每一轮完全一致
     const toolSignatures = calls.map((call) =>

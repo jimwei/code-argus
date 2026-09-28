@@ -117,6 +117,8 @@ export function buildPiModel(
       // 部分自建网关（Codex 协议网关）会拒绝 max_output_tokens：由
       // ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS 声明，默认沿用 OpenAI 行为。
       supportsMaxOutputTokens: config.openai?.supportsMaxOutputTokens ?? true,
+      // 开启推理时 pi-ai 用 developer 角色发首条指令；只认 system 的网关可以关掉。
+      supportsDeveloperRole: config.openai?.supportsDeveloperRole ?? true,
     },
   };
 }
@@ -304,11 +306,14 @@ export function toPiTool(tool: RuntimeToolDefinition): PiTool {
     parameters: Type.Unsafe(buildToolParameters(tool)),
     /**
      * pi-ai 只在工具声明 json_schema 约束采样时才发送 `strict: true`
-     * （convertResponsesTools 的 defaultStrict 默认为 false）。旧实现每个工具都发
-     * strict:true，因此这里显式声明；schema 不满足 strict 子集时 pi-ai 会直接报错，
-     * 而不是静默降级成非 strict。
+     * （convertResponsesTools 的 defaultStrict 默认为 false）。旧实现每个工具都发 strict:true，
+     * 因此这里显式声明。
+     *
+     * 用 `prefer` 而不是 `require`：schema 满足 strict 子集时照常发 strict:true（当前所有内置
+     * 工具都属于这一类），而带 `z.record` 之类形状的工具会退化成非 strict，而不是让整轮 review
+     * 直接失败——编排层更在意「跑完」。
      */
-    constrainedSampling: { type: 'json_schema', strict: 'require' },
+    constrainedSampling: { type: 'json_schema', strict: 'prefer' },
   };
 }
 
@@ -338,6 +343,7 @@ function normalizeToolArguments<T>(value: T): T {
  */
 export function buildStableBudgetInstructions(totalTurns: number, reserveTurns: number): string {
   return [
+    DEFAULT_RUNTIME_INSTRUCTIONS,
     'You are one specialist reviewer inside a multi-agent code review pipeline.',
     `This session has at most ${totalTurns} model turns in total.`,
     `Reserve the last ${reserveTurns} turns for reporting: stop exploring context once that phase starts.`,
@@ -568,9 +574,11 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     let spentUsage: RuntimeUsage | undefined;
     let retriedOutputBudget = false;
 
-    const escalatedMaxOutputTokens = options.maxOutputTokens
-      ? escalateMaxOutputTokens(options.maxOutputTokens)
-      : undefined;
+    // 网关不接受 max_output_tokens 时 pi-ai 不会再发该参数，升档重试只会重复同一个请求。
+    const escalatedMaxOutputTokens =
+      this.config.openai?.supportsMaxOutputTokens === false || !options.maxOutputTokens
+        ? undefined
+        : escalateMaxOutputTokens(options.maxOutputTokens);
 
     if (
       !extractAssistantText(message) &&
@@ -674,7 +682,8 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             // 这里传 transcript 的快照：请求发出后循环会继续往 messages 里追加
             // assistant/toolResult，如果直接共享数组，调用方拿到的 context 会被后续轮次改写。
             const context: Context = {
-              ...(stableInstructions ? { systemPrompt: stableInstructions } : {}),
+              // 旧实现每个请求都带默认 instructions（有会话预算时再追加预算段落）。
+              systemPrompt: stableInstructions ?? DEFAULT_RUNTIME_INSTRUCTIONS,
               messages: turnBudgetNote
                 ? [...messages, { role: 'user', content: turnBudgetNote, timestamp: Date.now() }]
                 : [...messages],

@@ -195,6 +195,12 @@ Notes:
   `store: false` plus the full transcript, and (unless disabled) a `max_output_tokens`
   cap taken from the runtime default. Set `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false`
   for gateways that reject that parameter
+- When `ARGUS_REASONING_EFFORT` is set, pi-ai sends the leading instructions with the
+  `developer` role (plain `system` when reasoning is off). Gateways that only accept
+  `system` should set `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE=false`
+- The runtime sends a `systemPrompt` on every request (the reviewer budget text is
+  appended when a completion budget is present). Unknown values of the two gateway
+  flags above fall back to `true` with a warning in the logs
 
 ### Environment variable summary
 
@@ -212,6 +218,7 @@ Notes:
 | OpenAI API key                      | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
 | OpenAI base URL                     | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
 | Gateway `max_output_tokens` support | `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS`       |
+| Gateway `developer` role support    | `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`          |
 
 ## Configuration Management
 
