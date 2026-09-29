@@ -201,6 +201,10 @@ Notes:
 - The runtime sends a `systemPrompt` on every request (the reviewer budget text is
   appended when a completion budget is present). Unknown values of the two gateway
   flags above fall back to `true` with a warning in the logs
+- A turn truncated by the output budget (`stopReason=length`) is reported as
+  `incomplete` and its tool calls are **not** executed: their arguments may be cut off
+  or mixed up (upstream fixed the same class of bug for unfinished Responses tool calls
+  in #9974)
 
 ### Environment variable summary
 

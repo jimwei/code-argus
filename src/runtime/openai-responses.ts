@@ -759,22 +759,30 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             }
 
             const toolCalls = assistant.content.filter((block) => block.type === 'toolCall');
+
+            /**
+             * 输出预算被推理吃光时，消息里的 tool call 参数可能被截断或串位，
+             * 这类调用不能交给工具执行。上游在 0.88 里把「未完成的 tool call」改成直接让流
+             * 失败（issue #9974）；本地能判定的是 stopReason=length 这一条路径。
+             * 按 incomplete 返回交给编排层处理，并标记本轮已结束，避免再补一条 error_max_turns。
+             */
+            if (assistant.stopReason === 'length') {
+              promptFinished = true;
+              yield {
+                type: 'result',
+                status: 'incomplete',
+                rawStopReason: assistant.rawStopReason,
+                ...(responseText ? { text: responseText } : {}),
+                usage: lastUsage,
+              };
+              break;
+            }
+
             if (toolCalls.length === 0) {
               promptFinished = true;
             }
 
             if (toolCalls.length === 0 && !responseText) {
-              if (assistant.stopReason === 'length') {
-                // 输出预算被吃光但没有正文：保持改造前的 incomplete 语义（可被重试/降级）。
-                yield {
-                  type: 'result',
-                  status: 'incomplete',
-                  rawStopReason: assistant.rawStopReason,
-                  usage: lastUsage,
-                };
-                break;
-              }
-
               yield {
                 type: 'result',
                 status: 'error_empty_output',
@@ -787,7 +795,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             if (toolCalls.length === 0) {
               yield {
                 type: 'result',
-                status: assistant.stopReason === 'length' ? 'incomplete' : 'success',
+                status: 'success',
                 text: responseText,
                 usage: lastUsage,
               };

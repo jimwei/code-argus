@@ -564,6 +564,45 @@ describe('openai-responses runtime (pi-ai)', () => {
     });
   });
 
+  it('does not run tool calls that the output budget cut short', async () => {
+    const execute = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
+    const streamSimple = vi.fn(() =>
+      createPiStream([
+        doneEvent(
+          createAssistantMessage({
+            content: [
+              // 参数可能被截断或串位：这样的调用不能交给工具执行
+              { type: 'toolCall', id: 'call_1', name: 'read', arguments: { title: 'trunc' } },
+            ],
+            stopReason: 'length',
+            rawStopReason: 'incomplete.max_output_tokens',
+          })
+        ),
+      ])
+    );
+
+    const runtime = new OpenAIResponsesRuntime(config, { streamSimple });
+    const events = await collectEvents(
+      runtime.execute({
+        prompt: 'Review',
+        cwd: '.',
+        maxTurns: 1,
+        tools: [createTool('read', execute)],
+      })
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      {
+        type: 'result',
+        status: 'incomplete',
+        rawStopReason: 'incomplete.max_output_tokens',
+        usage: { inputTokens: 12, cachedInputTokens: 2, outputTokens: 4 },
+      },
+    ]);
+    expect(streamSimple).toHaveBeenCalledTimes(1);
+  });
+
   it('reports completed turns with no text or tool calls as an error', async () => {
     const streamSimple = vi.fn(() =>
       createPiStream([doneEvent(createAssistantMessage({ content: [] }))])
