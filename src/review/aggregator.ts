@@ -277,6 +277,44 @@ export function groupByFile(issues: ValidatedIssue[]): Map<string, ValidatedIssu
 }
 
 /**
+ * Severity normalization.
+ *
+ * `severity` is model-provided, so it can arrive out of enum: a category value
+ * (`style`, `logic`, ...), different casing, or arbitrary text. Using such a
+ * value as a `Record<Severity, ...>` key yields `undefined` and crashes the
+ * report pipeline (`groupBySeverity`), so every severity consumer must
+ * normalize first.
+ */
+const SEVERITY_ALIASES: Record<string, Severity> = {
+  // Canonical values.
+  critical: 'critical',
+  error: 'error',
+  warning: 'warning',
+  suggestion: 'suggestion',
+  // Category values that models occasionally emit in the severity field.
+  style: 'suggestion',
+  maintainability: 'suggestion',
+  performance: 'warning',
+  logic: 'warning',
+  security: 'warning',
+  // Other common severities.
+  warn: 'warning',
+  info: 'suggestion',
+  minor: 'suggestion',
+  fatal: 'critical',
+  high: 'critical',
+};
+
+export function normalizeSeverity(value: unknown, fallback: Severity = 'warning'): Severity {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const key = value.trim().toLowerCase();
+  return SEVERITY_ALIASES[key] ?? fallback;
+}
+
+/**
  * Group issues by severity
  */
 export function groupBySeverity(issues: ValidatedIssue[]): Record<Severity, ValidatedIssue[]> {
@@ -288,7 +326,7 @@ export function groupBySeverity(issues: ValidatedIssue[]): Record<Severity, Vali
   };
 
   for (const issue of issues) {
-    groups[issue.severity].push(issue);
+    groups[normalizeSeverity(issue.severity)].push(issue);
   }
 
   return groups;

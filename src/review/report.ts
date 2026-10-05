@@ -19,7 +19,7 @@ import type {
   FixVerificationResult,
   ReviewMetadata,
 } from './types.js';
-import { groupBySeverity } from './aggregator.js';
+import { groupBySeverity, normalizeSeverity } from './aggregator.js';
 
 /**
  * Chinese translations for report elements
@@ -229,7 +229,7 @@ export function calculateMetrics(
   };
 
   for (const issue of validatedIssues) {
-    bySeverity[issue.severity]++;
+    bySeverity[normalizeSeverity(issue.severity)]++;
     byCategory[issue.category]++;
   }
 
@@ -322,10 +322,20 @@ export function generateReport(
   language: 'en' | 'zh' = 'zh',
   fixVerification?: FixVerificationSummary
 ): ReviewReport {
+  /**
+   * `severity` is model-provided and can be out of enum (see normalizeSeverity).
+   * Normalize once here so the summary, risk level and rendered issue list all
+   * agree on the same value.
+   */
+  const normalizedIssues: ValidatedIssue[] = issues.map((issue) => ({
+    ...issue,
+    severity: normalizeSeverity(issue.severity),
+  }));
+
   const report: ReviewReport = {
-    summary: generateSummary(issues, context, language),
-    risk_level: determineRiskLevel(issues),
-    issues,
+    summary: generateSummary(normalizedIssues, context, language),
+    risk_level: determineRiskLevel(normalizedIssues),
+    issues: normalizedIssues,
     checklist,
     metrics,
     metadata: metadata || {
