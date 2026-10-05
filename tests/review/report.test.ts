@@ -320,3 +320,45 @@ describe('formatReport', () => {
     expect(output).toContain('# Code Review Report');
   });
 });
+
+describe('generateReport severity normalization', () => {
+  it('should not crash when a model emits a category as severity', () => {
+    const issues: ValidatedIssue[] = [
+      createMockValidatedIssue({
+        id: 'style-1',
+        severity: 'style' as ValidatedIssue['severity'],
+        category: 'style',
+      }),
+    ];
+    const metrics = calculateMetrics(issues, issues, 1);
+
+    const report = generateReport(issues, [], metrics, undefined, undefined, 'en');
+
+    expect(report.issues).toHaveLength(1);
+    expect(report.issues[0].severity).toBe('suggestion');
+    expect(metrics.by_severity.suggestion).toBe(1);
+    expect(report.summary).toContain('suggestion');
+  });
+
+  it('should keep risk assessment consistent with the normalized severity', () => {
+    const issues: ValidatedIssue[] = [
+      createMockValidatedIssue({
+        id: 'sev-1',
+        severity: 'high' as ValidatedIssue['severity'],
+        category: 'logic',
+      }),
+    ];
+
+    const report = generateReport(
+      issues,
+      [],
+      calculateMetrics(issues, issues, 1),
+      undefined,
+      undefined,
+      'en'
+    );
+
+    expect(report.issues[0].severity).toBe('critical');
+    expect(report.risk_level).toBe('high');
+  });
+});

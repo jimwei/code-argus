@@ -5,6 +5,7 @@ import {
   groupByCategory,
   groupByFile,
   groupBySeverity,
+  normalizeSeverity,
 } from '../../src/review/aggregator.js';
 import type { ValidatedIssue, ChecklistItem } from '../../src/review/types.js';
 
@@ -266,5 +267,50 @@ describe('groupBySeverity', () => {
     expect(result.error).toHaveLength(1);
     expect(result.warning).toHaveLength(1);
     expect(result.suggestion).toHaveLength(0);
+  });
+
+  it('should not throw when a model emits a category as severity', () => {
+    const issues: ValidatedIssue[] = [
+      createMockIssue({ id: '1', severity: 'critical' }),
+      createMockIssue({ id: '2', severity: 'style' as ValidatedIssue['severity'] }),
+      createMockIssue({ id: '3', severity: 'PERFORMANCE' as ValidatedIssue['severity'] }),
+    ];
+
+    const result = groupBySeverity(issues);
+
+    expect(result.critical.map((i) => i.id)).toEqual(['1']);
+    expect(result.suggestion.map((i) => i.id)).toEqual(['2']);
+    expect(result.warning.map((i) => i.id)).toEqual(['3']);
+    expect(Object.values(result).flat()).toHaveLength(3);
+  });
+});
+
+describe('normalizeSeverity', () => {
+  it('should keep valid severities unchanged', () => {
+    expect(normalizeSeverity('critical')).toBe('critical');
+    expect(normalizeSeverity('error')).toBe('error');
+    expect(normalizeSeverity('warning')).toBe('warning');
+    expect(normalizeSeverity('suggestion')).toBe('suggestion');
+  });
+
+  it('should normalize case and surrounding whitespace', () => {
+    expect(normalizeSeverity('  Warning ')).toBe('warning');
+    expect(normalizeSeverity('ERROR')).toBe('error');
+  });
+
+  it('should map category values that models sometimes emit as severity', () => {
+    expect(normalizeSeverity('style')).toBe('suggestion');
+    expect(normalizeSeverity('maintainability')).toBe('suggestion');
+    expect(normalizeSeverity('performance')).toBe('warning');
+    expect(normalizeSeverity('logic')).toBe('warning');
+    expect(normalizeSeverity('security')).toBe('warning');
+  });
+
+  it('should fall back to warning for unknown or non-string values', () => {
+    expect(normalizeSeverity('blocker')).toBe('warning');
+    expect(normalizeSeverity('')).toBe('warning');
+    expect(normalizeSeverity(undefined)).toBe('warning');
+    expect(normalizeSeverity(42)).toBe('warning');
+    expect(normalizeSeverity(null, 'error')).toBe('error');
   });
 });
