@@ -441,8 +441,18 @@ function isToolContinuationGatewayFailure(error: unknown): boolean {
   );
 }
 
+/**
+ * 网关无法按 previous_response_id 续链时返回 400，且各家措辞并不统一，例如：
+ * - `previous_response_id is only supported on Responses WebSocket v2`
+ * - `previous_response_id is not available for this user`
+ * - `The previous response is unavailable for continuation. Resend the complete conversation context.`
+ * 这些都属于“托管续链不可用”；本地仍保留完整对话历史，可以降级为无状态重放。
+ */
 function isPreviousResponseIdUnsupportedError(error: unknown): boolean {
-  if (getOpenAIErrorStatus(error) !== 400) {
+  const status = getOpenAIErrorStatus(error);
+  // 与 isOrphanedToolOutputError 同理：网关也可能把校验错误放进 SSE 的 error 事件，
+  // 此时抛出的 Error 上没有 status，因此只在状态码存在且不是 400 时排除。
+  if (status !== undefined && status !== 400) {
     return false;
   }
 
@@ -451,11 +461,21 @@ function isPreviousResponseIdUnsupportedError(error: unknown): boolean {
     return false;
   }
 
+  const mentionsPreviousResponse =
+    message.includes('previous_response_id') || message.includes('previous response');
+  if (!mentionsPreviousResponse) {
+    return false;
+  }
+
   return (
-    message.includes('previous_response_id') &&
-    (message.includes('websocket v2') ||
-      message.includes('responses websocket') ||
-      message.includes('not supported'))
+    message.includes('websocket v2') ||
+    message.includes('responses websocket') ||
+    message.includes('not supported') ||
+    message.includes('unavailable') ||
+    message.includes('not available') ||
+    message.includes('not found') ||
+    message.includes('expired') ||
+    message.includes('resend the complete conversation context')
   );
 }
 

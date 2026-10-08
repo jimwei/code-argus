@@ -1432,6 +1432,164 @@ describe('runtime execution', () => {
     ]);
   });
 
+  it.each([
+    {
+      label: 'gateway loses the previous response (upstream_error)',
+      message:
+        '400 The previous response is unavailable for continuation. Resend the complete conversation context.',
+      errorType: 'upstream_error',
+      errorMessage:
+        'The previous response is unavailable for continuation. Resend the complete conversation context.',
+    },
+    {
+      label: 'previous_response_id is not available for this user',
+      message: '400 previous_response_id is not available for this user',
+      errorType: 'invalid_request_error',
+      errorMessage: 'previous_response_id is not available for this user',
+    },
+  ])(
+    'falls back to stateless tool-loop replay when gateway cannot continue the previous response ($label)',
+    async ({ message, errorType, errorMessage }) => {
+      const unusableContinuationError = Object.assign(new Error(message), {
+        status: 400,
+        headers: {
+          'x-client-request-id': '19bd0e19-1d2e-4056-91fd-cf195fe5c9b8',
+          'x-request-id': '675645ff-ed1a-4418-a882-b6e89bcf8f0c',
+        },
+        error: {
+          message: errorMessage,
+          type: errorType,
+        },
+      });
+
+      const createMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          createOpenAIResponseStream({
+            id: 'resp_1',
+            status: 'completed',
+            output_text: '',
+            output: [
+              {
+                id: 'fc_1',
+                type: 'function_call',
+                call_id: 'call_1',
+                name: 'report_issue',
+                arguments: JSON.stringify({
+                  file: 'src/api/service.ts',
+                  line_start: 18,
+                  line_end: 21,
+                  title: 'Missing error handling',
+                }),
+                status: 'completed',
+              },
+            ],
+            usage: {
+              input_tokens: 8,
+              output_tokens: 3,
+            },
+          })
+        )
+        .mockRejectedValueOnce(unusableContinuationError)
+        .mockResolvedValueOnce(
+          createOpenAIResponseStream({
+            id: 'resp_2',
+            status: 'completed',
+            output_text: 'Done',
+            output: [
+              {
+                id: 'msg_1',
+                type: 'message',
+                role: 'assistant',
+                status: 'completed',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: 'Done',
+                    annotations: [],
+                  },
+                ],
+              },
+            ],
+            usage: {
+              input_tokens: 11,
+              output_tokens: 7,
+            },
+          })
+        );
+
+      const executeTool = vi.fn().mockResolvedValue({
+        content: [{ type: 'text' as const, text: 'Issue recorded' }],
+      });
+
+      const runtime = new OpenAIResponsesRuntime(
+        {
+          runtime: 'openai-responses',
+          models: {
+            main: 'gpt-5.5',
+            light: 'gpt-5-mini',
+            validator: 'gpt-5.5',
+          },
+          openai: {
+            apiKey: 'openai-key',
+            source: 'argus',
+          },
+        },
+        {
+          responses: {
+            create: createMock,
+          },
+        } as any
+      );
+
+      const execution = runtime.execute({
+        prompt: 'Review this diff',
+        cwd: 'C:\\repo',
+        maxTurns: 6,
+        tools: [
+          {
+            name: 'report_issue',
+            description: 'Capture an issue',
+            inputSchema: {
+              file: z.string(),
+              line_start: z.number(),
+              line_end: z.number(),
+              title: z.string(),
+            },
+            execute: executeTool,
+          },
+        ],
+      });
+
+      const events = [];
+      for await (const event of execution) {
+        events.push(event);
+      }
+
+      expect(createMock).toHaveBeenCalledTimes(3);
+      expect(createMock.mock.calls[2]?.[0]?.previous_response_id).toBeUndefined();
+      expect(createMock.mock.calls[2]?.[0]?.input).toEqual([
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Review this diff' }],
+        },
+        expect.objectContaining({
+          id: 'fc_1',
+          type: 'function_call',
+          call_id: 'call_1',
+          name: 'report_issue',
+        }),
+        {
+          type: 'function_call_output',
+          call_id: 'call_1',
+          output: 'Issue recorded',
+        },
+      ]);
+      expect(events.at(-1)).toMatchObject({ type: 'result', status: 'success', text: 'Done' });
+    }
+  );
+
   it('falls back to item_reference continuation when stateless tool replay is rejected by the gateway', async () => {
     const unsupportedContinuationError = Object.assign(
       new Error('400 previous_response_id is only supported on Responses WebSocket v2'),
