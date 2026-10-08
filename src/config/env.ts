@@ -15,12 +15,12 @@ export type ArgusRuntimeType = 'claude-agent' | 'openai-responses';
 export type ArgusRuntimeModelKind = 'main' | 'light' | 'validator';
 /**
  * `openai-responses` 运行时的协议栈实现：
- * - `pi-ai`（缺省）：委托给 @earendil-works/pi-ai
- * - `sdk`：改造前自维护的 OpenAI SDK 实现（保留作为回退路径）
+ * - `sdk`（缺省）：改造前自维护的 OpenAI SDK 实现
+ * - `pi-ai`：委托给 @earendil-works/pi-ai（需要显式开启）
  */
 export type OpenAIResponsesImpl = 'pi-ai' | 'sdk';
 
-export const DEFAULT_OPENAI_RESPONSE_IMPL: OpenAIResponsesImpl = 'pi-ai';
+export const DEFAULT_OPENAI_RESPONSE_IMPL: OpenAIResponsesImpl = 'sdk';
 
 export interface ClaudeAuthConfig {
   apiKey: string;
@@ -45,7 +45,7 @@ export interface OpenAIAuthConfig {
   supportsDeveloperRole?: boolean;
   /**
    * 选用哪套 Responses 协议栈实现，读自 ARGUS_OPENAI_RESPONSE_IMPL，
-   * 缺省 `pi-ai`。仅对 `openai-responses` 运行时生效。
+   * 缺省 `sdk`。仅对 `openai-responses` 运行时生效。
    */
   responseImpl?: OpenAIResponsesImpl;
 }

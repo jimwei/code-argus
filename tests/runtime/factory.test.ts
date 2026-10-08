@@ -38,6 +38,7 @@ describe('runtime factory', () => {
         apiKey: 'openai-key',
         baseUrl: 'https://openai-proxy.test',
         source: 'argus',
+        responseImpl: 'pi-ai',
       },
     };
 
@@ -73,5 +74,25 @@ describe('runtime factory', () => {
     expect(runtime).toBeInstanceOf(OpenAIResponsesSdkRuntime);
     expect(runtime.kind).toBe('openai-responses');
     expect(runtime.config).toEqual(config);
+  });
+
+  it('defaults to the SDK backed OpenAI runtime when responseImpl is absent', () => {
+    const config: ArgusRuntimeConfig = {
+      runtime: 'openai-responses',
+      models: {
+        main: 'gpt-5.3-codex',
+        light: 'gpt-5-mini',
+        validator: 'gpt-5.3-codex',
+      },
+      openai: {
+        apiKey: 'openai-key',
+        baseUrl: 'https://openai-proxy.test',
+        source: 'argus',
+      },
+    };
+
+    const runtime = createRuntimeFactory().create(config);
+
+    expect(runtime).toBeInstanceOf(OpenAIResponsesSdkRuntime);
   });
 });

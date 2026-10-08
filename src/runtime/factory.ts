@@ -1,4 +1,8 @@
-import { loadArgusRuntimeConfig, type ArgusRuntimeConfig } from '../config/env.js';
+import {
+  DEFAULT_OPENAI_RESPONSE_IMPL,
+  loadArgusRuntimeConfig,
+  type ArgusRuntimeConfig,
+} from '../config/env.js';
 import { ClaudeAgentRuntime } from './claude-agent.js';
 import { OpenAIResponsesRuntime } from './openai-responses.js';
 import { OpenAIResponsesSdkRuntime } from './openai-responses-sdk.js';
@@ -18,9 +22,9 @@ export function createRuntimeFactory(): RuntimeFactory {
       /**
        * 两套实现共享同一个 `AgentRuntime` 契约与同一组事件状态
        * （success / incomplete / error / error_empty_output / error_max_turns），
-       * 所以编排层无需感知差异。缺省走 pi-ai，显式声明 `sdk` 时回到自维护实现。
+       * 所以编排层无需感知差异。缺省走自维护的 `sdk` 实现，显式声明 `pi-ai` 才切到 pi-ai。
        */
-      if (config.openai?.responseImpl === 'sdk') {
+      if ((config.openai?.responseImpl ?? DEFAULT_OPENAI_RESPONSE_IMPL) === 'sdk') {
         return new OpenAIResponsesSdkRuntime(config);
       }
 

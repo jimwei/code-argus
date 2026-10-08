@@ -211,7 +211,7 @@ Config keys:
 
 Runtime environment:
   ARGUS_RUNTIME        claude-agent (default) | openai-responses
-  ARGUS_OPENAI_RESPONSE_IMPL  pi-ai (default) | sdk   (openai-responses protocol stack)
+  ARGUS_OPENAI_RESPONSE_IMPL  sdk (default) | pi-ai   (openai-responses protocol stack)
   Claude credentials   ARGUS_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
   OpenAI credentials   ARGUS_OPENAI_API_KEY / OPENAI_API_KEY
 

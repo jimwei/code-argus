@@ -206,12 +206,12 @@ Notes:
   or mixed up (upstream fixed the same class of bug for unfinished Responses tool calls
   in #9974)
 - `ARGUS_OPENAI_RESPONSE_IMPL` selects which protocol stack backs the `openai-responses`
-  runtime: `pi-ai` (default, `@earendil-works/pi-ai`) or `sdk` (the previous
-  self-maintained `openai` SDK implementation, kept as a fallback). Both share the same
+  runtime: `sdk` (default, the self-maintained `openai` SDK implementation) or `pi-ai`
+  (`@earendil-works/pi-ai`, opt-in). Both share the same
   `AgentRuntime` contract and event statuses, so nothing else in the pipeline changes;
-  an unknown value falls back to `pi-ai` with a warning. The two gateway flags above
+  an unknown value falls back to `sdk` with a warning. The two gateway flags above
   (`ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS` / `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`)
-  only affect the `pi-ai` implementation
+  only affect the `pi-ai` implementation and are therefore ignored on the default path
 
 ### Environment variable summary
 
