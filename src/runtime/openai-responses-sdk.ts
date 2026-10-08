@@ -1,8 +1,8 @@
 /**
  * OpenAI Responses runtime backed by the official `openai` SDK.
  *
- * 这是改造前自维护的实现，现作为 `ARGUS_OPENAI_RESPONSE_IMPL=sdk` 的可选路径与
- * pi-ai 实现并存（缺省仍是 pi-ai）。两套实现共用 `AgentRuntime` 契约与同一组
+ * 这是改造前自维护的实现，现作为 `ARGUS_OPENAI_RESPONSE_IMPL=sdk`（缺省）的实现与
+ * pi-ai 路径并存（pi-ai 需显式开启）。两套实现共用 `AgentRuntime` 契约与同一组
  * 事件状态（success / incomplete / error / error_empty_output / error_max_turns），
  * 因此编排层无需感知差异。
  */

@@ -191,6 +191,9 @@ Notes:
   (`off`, i.e. `reasoning.effort=none`) instead of reporting an error, so the runtime
   validates the value and falls back to the provider default (with a one-time warning)
   rather than silently disabling reasoning
+- The next four bullets describe the `pi-ai` implementation only
+  (`ARGUS_OPENAI_RESPONSE_IMPL=pi-ai`); with the default `sdk` implementation the
+  pre-migration behaviour applies instead
 - `openai-responses` traffic goes through `@earendil-works/pi-ai`, which always sends
   `store: false` plus the full transcript, and (unless disabled) a `max_output_tokens`
   cap taken from the runtime default. Set `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false`
