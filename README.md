@@ -205,12 +205,20 @@ Notes:
   `incomplete` and its tool calls are **not** executed: their arguments may be cut off
   or mixed up (upstream fixed the same class of bug for unfinished Responses tool calls
   in #9974)
+- `ARGUS_OPENAI_RESPONSE_IMPL` selects which protocol stack backs the `openai-responses`
+  runtime: `pi-ai` (default, `@earendil-works/pi-ai`) or `sdk` (the previous
+  self-maintained `openai` SDK implementation, kept as a fallback). Both share the same
+  `AgentRuntime` contract and event statuses, so nothing else in the pipeline changes;
+  an unknown value falls back to `pi-ai` with a warning. The two gateway flags above
+  (`ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS` / `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`)
+  only affect the `pi-ai` implementation
 
 ### Environment variable summary
 
 | Purpose                             | Variables                                       |
 | ----------------------------------- | ----------------------------------------------- |
 | Runtime selection                   | `ARGUS_RUNTIME`                                 |
+| OpenAI Responses protocol stack     | `ARGUS_OPENAI_RESPONSE_IMPL`                    |
 | OpenAI shared model                 | `ARGUS_OPENAI_MODEL`                            |
 | Main model                          | `ARGUS_MODEL`                                   |
 | Light model                         | `ARGUS_LIGHT_MODEL`                             |

@@ -47,6 +47,7 @@ describe('runtime-aware env configuration', () => {
     delete process.env.ARGUS_OPENAI_API_KEY;
     delete process.env.ARGUS_OPENAI_BASE_URL;
     delete process.env.ARGUS_OPENAI_MODEL;
+    delete process.env.ARGUS_OPENAI_RESPONSE_IMPL;
     delete process.env.ARGUS_REASONING_EFFORT;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
@@ -94,8 +95,31 @@ describe('runtime-aware env configuration', () => {
         source: 'argus',
         supportsMaxOutputTokens: true,
         supportsDeveloperRole: true,
+        responseImpl: 'pi-ai',
       },
     });
+  });
+
+  it('honours ARGUS_OPENAI_RESPONSE_IMPL to pick the protocol implementation', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+
+    expect(loadArgusRuntimeConfig().openai?.responseImpl).toBe('pi-ai');
+
+    process.env.ARGUS_OPENAI_RESPONSE_IMPL = 'sdk';
+    expect(loadArgusRuntimeConfig().openai?.responseImpl).toBe('sdk');
+  });
+
+  it('falls back to pi-ai when ARGUS_OPENAI_RESPONSE_IMPL is unsupported', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_OPENAI_RESPONSE_IMPL = 'legacy';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(loadArgusRuntimeConfig().openai?.responseImpl).toBe('pi-ai');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ARGUS_OPENAI_RESPONSE_IMPL'));
+
+    warn.mockRestore();
   });
 
   it('honours ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS for gateways that reject the parameter', () => {

@@ -13,6 +13,14 @@ import { loadConfig } from './store.js';
 
 export type ArgusRuntimeType = 'claude-agent' | 'openai-responses';
 export type ArgusRuntimeModelKind = 'main' | 'light' | 'validator';
+/**
+ * `openai-responses` 运行时的协议栈实现：
+ * - `pi-ai`（缺省）：委托给 @earendil-works/pi-ai
+ * - `sdk`：改造前自维护的 OpenAI SDK 实现（保留作为回退路径）
+ */
+export type OpenAIResponsesImpl = 'pi-ai' | 'sdk';
+
+export const DEFAULT_OPENAI_RESPONSE_IMPL: OpenAIResponsesImpl = 'pi-ai';
 
 export interface ClaudeAuthConfig {
   apiKey: string;
@@ -35,6 +43,11 @@ export interface OpenAIAuthConfig {
    * ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE，未设置时按 true 处理。
    */
   supportsDeveloperRole?: boolean;
+  /**
+   * 选用哪套 Responses 协议栈实现，读自 ARGUS_OPENAI_RESPONSE_IMPL，
+   * 缺省 `pi-ai`。仅对 `openai-responses` 运行时生效。
+   */
+  responseImpl?: OpenAIResponsesImpl;
 }
 
 /**
@@ -56,6 +69,26 @@ function resolveBooleanEnv(raw: string | undefined, fallback: boolean, name: str
 
   console.warn(`[ArgusRuntimeConfig] Unsupported ${name} "${value}", falling back to ${fallback}`);
   return fallback;
+}
+
+/**
+ * 解析 `ARGUS_OPENAI_RESPONSE_IMPL`。取值不合法时回退到默认实现并告警，
+ * 避免拼写错误让部署静默切走实现。
+ */
+function resolveOpenAIResponsesImpl(raw: string | undefined): OpenAIResponsesImpl {
+  const value = raw?.trim().toLowerCase();
+  if (!value) {
+    return DEFAULT_OPENAI_RESPONSE_IMPL;
+  }
+
+  if (value === 'pi-ai' || value === 'sdk') {
+    return value;
+  }
+
+  console.warn(
+    `[ArgusRuntimeConfig] Unsupported ARGUS_OPENAI_RESPONSE_IMPL "${value}", falling back to ${DEFAULT_OPENAI_RESPONSE_IMPL}`
+  );
+  return DEFAULT_OPENAI_RESPONSE_IMPL;
 }
 
 export interface ArgusRuntimeConfig {
@@ -137,6 +170,7 @@ function getClaudeAuthConfig(): ClaudeAuthConfig {
 }
 
 function getOpenAIAuthConfig(): OpenAIAuthConfig {
+  const responseImpl = resolveOpenAIResponsesImpl(process.env.ARGUS_OPENAI_RESPONSE_IMPL);
   const supportsMaxOutputTokens = resolveBooleanEnv(
     process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS,
     true,
@@ -155,6 +189,7 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       source: 'argus',
       supportsMaxOutputTokens,
       supportsDeveloperRole,
+      responseImpl,
     };
   }
 
@@ -166,6 +201,7 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       source: 'openai-api',
       supportsMaxOutputTokens,
       supportsDeveloperRole,
+      responseImpl,
     };
   }
 
