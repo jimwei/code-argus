@@ -47,6 +47,7 @@ describe('runtime-aware env configuration', () => {
     delete process.env.ARGUS_OPENAI_API_KEY;
     delete process.env.ARGUS_OPENAI_BASE_URL;
     delete process.env.ARGUS_OPENAI_MODEL;
+    delete process.env.ARGUS_OPENAI_RESPONSE_IMPL;
     delete process.env.ARGUS_REASONING_EFFORT;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
@@ -92,8 +93,55 @@ describe('runtime-aware env configuration', () => {
         apiKey: 'openai-key',
         baseUrl: 'https://openai-proxy.test',
         source: 'argus',
+        supportsMaxOutputTokens: true,
+        supportsDeveloperRole: true,
+        responseImpl: 'sdk',
       },
     });
+  });
+
+  it('honours ARGUS_OPENAI_RESPONSE_IMPL to pick the protocol implementation', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+
+    expect(loadArgusRuntimeConfig().openai?.responseImpl).toBe('sdk');
+
+    process.env.ARGUS_OPENAI_RESPONSE_IMPL = 'pi-ai';
+    expect(loadArgusRuntimeConfig().openai?.responseImpl).toBe('pi-ai');
+  });
+
+  it('falls back to sdk when ARGUS_OPENAI_RESPONSE_IMPL is unsupported', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_OPENAI_RESPONSE_IMPL = 'legacy';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(loadArgusRuntimeConfig().openai?.responseImpl).toBe('sdk');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ARGUS_OPENAI_RESPONSE_IMPL'));
+
+    warn.mockRestore();
+  });
+
+  it('honours ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS for gateways that reject the parameter', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS = 'false';
+
+    expect(loadArgusRuntimeConfig().openai?.supportsMaxOutputTokens).toBe(false);
+
+    process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS = 'yes';
+    expect(loadArgusRuntimeConfig().openai?.supportsMaxOutputTokens).toBe(true);
+  });
+
+  it('honours ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE for gateways that only accept system', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE = 'false';
+
+    expect(loadArgusRuntimeConfig().openai?.supportsDeveloperRole).toBe(false);
+
+    process.env.ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE = 'on';
+    expect(loadArgusRuntimeConfig().openai?.supportsDeveloperRole).toBe(true);
   });
 
   it('falls back light and validator models to the main model', () => {

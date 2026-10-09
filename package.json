@@ -21,7 +21,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "homepage": "https://github.com/Edric-Li/code-argus",
   "repository": {
@@ -88,6 +88,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.81",
     "@anthropic-ai/sdk": "^0.80.0",
+    "@earendil-works/pi-ai": "1.1.0",
     "dotenv": "^17.2.3",
     "minimatch": "^10.0.1",
     "openai": "^7.17.0",

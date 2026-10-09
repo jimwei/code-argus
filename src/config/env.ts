@@ -13,6 +13,14 @@ import { loadConfig } from './store.js';
 
 export type ArgusRuntimeType = 'claude-agent' | 'openai-responses';
 export type ArgusRuntimeModelKind = 'main' | 'light' | 'validator';
+/**
+ * `openai-responses` 运行时的协议栈实现：
+ * - `sdk`（缺省）：改造前自维护的 OpenAI SDK 实现
+ * - `pi-ai`：委托给 @earendil-works/pi-ai（需要显式开启）
+ */
+export type OpenAIResponsesImpl = 'pi-ai' | 'sdk';
+
+export const DEFAULT_OPENAI_RESPONSE_IMPL: OpenAIResponsesImpl = 'sdk';
 
 export interface ClaudeAuthConfig {
   apiKey: string;
@@ -24,6 +32,63 @@ export interface OpenAIAuthConfig {
   apiKey: string;
   baseUrl?: string;
   source: 'argus' | 'openai-api';
+  /**
+   * 部署侧声明网关是否接受 `max_output_tokens`；不接受时由 pi-ai 省略该参数。
+   * 读自 ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS，未设置时按 true 处理。
+   */
+  supportsMaxOutputTokens?: boolean;
+  /**
+   * 部署侧声明网关是否接受 `developer` 角色消息。开启推理时 pi-ai 会把首条指令
+   * 以 developer 角色发出（未开启推理时为 system）。读自
+   * ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE，未设置时按 true 处理。
+   */
+  supportsDeveloperRole?: boolean;
+  /**
+   * 选用哪套 Responses 协议栈实现，读自 ARGUS_OPENAI_RESPONSE_IMPL，
+   * 缺省 `sdk`。仅对 `openai-responses` 运行时生效。
+   */
+  responseImpl?: OpenAIResponsesImpl;
+}
+
+/**
+ * 解析布尔型环境变量。取值不合法时回退到默认值，避免拼写错误静默改变行为。
+ */
+function resolveBooleanEnv(raw: string | undefined, fallback: boolean, name: string): boolean {
+  const value = raw?.trim().toLowerCase();
+  if (!value) {
+    return fallback;
+  }
+
+  if (['1', 'true', 'yes', 'on'].includes(value)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(value)) {
+    return false;
+  }
+
+  console.warn(`[ArgusRuntimeConfig] Unsupported ${name} "${value}", falling back to ${fallback}`);
+  return fallback;
+}
+
+/**
+ * 解析 `ARGUS_OPENAI_RESPONSE_IMPL`。取值不合法时回退到默认实现并告警，
+ * 避免拼写错误让部署静默切走实现。
+ */
+function resolveOpenAIResponsesImpl(raw: string | undefined): OpenAIResponsesImpl {
+  const value = raw?.trim().toLowerCase();
+  if (!value) {
+    return DEFAULT_OPENAI_RESPONSE_IMPL;
+  }
+
+  if (value === 'pi-ai' || value === 'sdk') {
+    return value;
+  }
+
+  console.warn(
+    `[ArgusRuntimeConfig] Unsupported ARGUS_OPENAI_RESPONSE_IMPL "${value}", falling back to ${DEFAULT_OPENAI_RESPONSE_IMPL}`
+  );
+  return DEFAULT_OPENAI_RESPONSE_IMPL;
 }
 
 export interface ArgusRuntimeConfig {
@@ -105,12 +170,26 @@ function getClaudeAuthConfig(): ClaudeAuthConfig {
 }
 
 function getOpenAIAuthConfig(): OpenAIAuthConfig {
+  const responseImpl = resolveOpenAIResponsesImpl(process.env.ARGUS_OPENAI_RESPONSE_IMPL);
+  const supportsMaxOutputTokens = resolveBooleanEnv(
+    process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS,
+    true,
+    'ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS'
+  );
+  const supportsDeveloperRole = resolveBooleanEnv(
+    process.env.ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE,
+    true,
+    'ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE'
+  );
   const argusApiKey = process.env.ARGUS_OPENAI_API_KEY;
   if (argusApiKey) {
     return {
       apiKey: argusApiKey,
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'argus',
+      supportsMaxOutputTokens,
+      supportsDeveloperRole,
+      responseImpl,
     };
   }
 
@@ -120,6 +199,9 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       apiKey: openaiApiKey,
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'openai-api',
+      supportsMaxOutputTokens,
+      supportsDeveloperRole,
+      responseImpl,
     };
   }
 

@@ -66,6 +66,11 @@ export interface RuntimeResultEvent {
   text?: string;
   usage?: RuntimeUsage;
   error?: string;
+  /**
+   * pi-ai 透传的上游终止原因（如 `incomplete.max_output_tokens`），
+   * 供调用方区分「预算截断」和其它 incomplete。
+   */
+  rawStopReason?: string;
 }
 
 export type RuntimeEvent = RuntimeAssistantTextEvent | RuntimeActivityEvent | RuntimeResultEvent;
