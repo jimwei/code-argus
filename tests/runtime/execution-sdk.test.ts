@@ -2391,6 +2391,78 @@ describe('runtime execution', () => {
     );
   });
 
+  it('overrides the reasoning effort for a single execution', async () => {
+    const createMock = vi.fn().mockResolvedValue(
+      createOpenAIResponseStream({
+        id: 'resp_reasoning_override',
+        status: 'completed',
+        output_text: 'Done',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Done',
+                annotations: [],
+              },
+            ],
+          },
+        ],
+        usage: {
+          input_tokens: 6,
+          output_tokens: 2,
+        },
+      })
+    );
+
+    const runtime = new OpenAIResponsesSdkRuntime(
+      {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.5',
+          light: 'gpt-5.5',
+          validator: 'gpt-5.5',
+        },
+        reasoningEffort: 'high',
+        validatorReasoningEffort: 'medium',
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      {
+        responses: {
+          create: createMock,
+        },
+      } as any
+    );
+
+    const execution = runtime.execute({
+      prompt: 'Validate this issue',
+      cwd: 'C:\\repo',
+      maxTurns: 1,
+      reasoningEffort: 'medium',
+    });
+
+    for await (const event of execution) {
+      if (event.type === 'result') {
+        break;
+      }
+    }
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5.5',
+        reasoning: { effort: 'medium' },
+      }),
+      expect.any(Object)
+    );
+  });
+
   it('retries OpenAI text generation with plain string input when the endpoint rejects message-list input', async () => {
     const incompatibleInputError = Object.assign(new Error('input must be a string'), {
       status: 400,

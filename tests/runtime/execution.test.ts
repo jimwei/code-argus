@@ -485,6 +485,176 @@ describe('openai-responses runtime (pi-ai)', () => {
     expect(events.filter((event: any) => event.type === 'result')).toHaveLength(2);
   });
 
+  it('drops reasoning summaries and replayed thinking blocks by default', async () => {
+    const calls: PiStreamCall[] = [];
+    const report = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
+    const streams = [
+      createPiStream([
+        toolCallEvent('report_issue', 'call_1', { title: 'bug' }),
+        doneEvent(
+          createAssistantMessage({
+            content: [
+              {
+                type: 'thinking',
+                thinking: 'internal reasoning',
+                thinkingSignature: '{"type":"reasoning","id":"rs_1"}',
+              },
+              { type: 'toolCall', id: 'call_1', name: 'report_issue', arguments: { title: 'bug' } },
+            ],
+            stopReason: 'toolUse',
+          })
+        ),
+      ]),
+      createPiStream([
+        doneEvent(createAssistantMessage({ content: [{ type: 'text', text: 'Reviewed.' }] })),
+      ]),
+    ];
+    const streamSimple = vi.fn(
+      (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+        calls.push({ model, context, options });
+        return streams.shift()!;
+      }
+    );
+
+    const runtime = new OpenAIResponsesRuntime(config, { streamSimple });
+    await collectEvents(
+      runtime.execute({
+        prompt: 'Review',
+        cwd: '.',
+        maxTurns: 4,
+        tools: [createTool('report_issue', report)],
+      })
+    );
+
+    const onPayload = calls[0]!.options?.onPayload;
+    expect(typeof onPayload).toBe('function');
+    const adjusted = onPayload!(
+      {
+        include: ['reasoning.encrypted_content'],
+        reasoning: { effort: 'high', summary: 'auto' },
+        store: false,
+      },
+      calls[0]!.model
+    );
+    expect(adjusted).toEqual({ reasoning: { effort: 'high' }, store: false });
+
+    const replayed = calls[1]!.context.messages.find((message) => message.role === 'assistant');
+    expect(replayed?.content.some((block) => block.type === 'thinking')).toBe(false);
+    expect(replayed?.content.some((block) => block.type === 'toolCall')).toBe(true);
+  });
+
+  it('keeps pi-ai native reasoning replay when reasoning replay is kept', async () => {
+    const keepConfig: ArgusRuntimeConfig = {
+      ...config,
+      openai: { ...config.openai!, reasoningReplay: 'keep' },
+    };
+    const calls: PiStreamCall[] = [];
+    const report = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
+    const streams = [
+      createPiStream([
+        toolCallEvent('report_issue', 'call_1', { title: 'bug' }),
+        doneEvent(
+          createAssistantMessage({
+            content: [
+              {
+                type: 'thinking',
+                thinking: 'internal reasoning',
+                thinkingSignature: '{"type":"reasoning","id":"rs_1"}',
+              },
+              { type: 'toolCall', id: 'call_1', name: 'report_issue', arguments: { title: 'bug' } },
+            ],
+            stopReason: 'toolUse',
+          })
+        ),
+      ]),
+      createPiStream([
+        doneEvent(createAssistantMessage({ content: [{ type: 'text', text: 'Reviewed.' }] })),
+      ]),
+    ];
+    const streamSimple = vi.fn(
+      (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+        calls.push({ model, context, options });
+        return streams.shift()!;
+      }
+    );
+
+    const runtime = new OpenAIResponsesRuntime(keepConfig, { streamSimple });
+    await collectEvents(
+      runtime.execute({
+        prompt: 'Review',
+        cwd: '.',
+        maxTurns: 4,
+        tools: [createTool('report_issue', report)],
+      })
+    );
+
+    expect(calls[0]!.options?.onPayload).toBeUndefined();
+    const replayed = calls[1]!.context.messages.find((message) => message.role === 'assistant');
+    expect(replayed?.content.some((block) => block.type === 'thinking')).toBe(true);
+  });
+
+  it('compacts transcripts that exceed the configured token budget', async () => {
+    const budgetConfig: ArgusRuntimeConfig = {
+      ...config,
+      openai: { ...config.openai!, transcriptBudgetTokens: 3000 },
+    };
+    const read = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'z'.repeat(8000) }],
+    }));
+    const calls: PiStreamCall[] = [];
+    const streams: AssistantMessageEventStream[] = [];
+    for (let i = 1; i <= 8; i++) {
+      streams.push(
+        createPiStream([
+          toolCallEvent('read', `call_${i}`, { title: `t${i}` }),
+          doneEvent(
+            createAssistantMessage({
+              content: [
+                { type: 'toolCall', id: `call_${i}`, name: 'read', arguments: { title: `t${i}` } },
+              ],
+              stopReason: 'toolUse',
+            })
+          ),
+        ])
+      );
+    }
+    streams.push(
+      createPiStream([
+        doneEvent(createAssistantMessage({ content: [{ type: 'text', text: 'Reviewed.' }] })),
+      ])
+    );
+    const streamSimple = vi.fn(
+      (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+        calls.push({ model, context, options });
+        return streams.shift()!;
+      }
+    );
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const runtime = new OpenAIResponsesRuntime(budgetConfig, { streamSimple });
+    await collectEvents(
+      runtime.execute({
+        prompt: 'Review',
+        cwd: '.',
+        maxTurns: 12,
+        tools: [createTool('read', read)],
+      })
+    );
+
+    const finalToolResults = calls
+      .at(-1)!
+      .context.messages.filter((message) => message.role === 'toolResult');
+    expect(finalToolResults).toHaveLength(8);
+    const firstText = (finalToolResults[0]!.content as Array<{ text?: string }>)[0]!.text!;
+    const lastText = (finalToolResults.at(-1)!.content as Array<{ text?: string }>)[0]!.text!;
+    expect(firstText).toContain('tool output elided');
+    expect(lastText.startsWith('z')).toBe(true);
+    // 保留的最近 6 条本身超预算：折叠只能尽力而为，且每次会话只告警一次。
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('best effort'));
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it('normalizes tool schemas for strict mode and converts null tool args to undefined', async () => {
     const calls: PiStreamCall[] = [];
     const execute = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));

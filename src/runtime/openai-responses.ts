@@ -39,6 +39,7 @@ import type {
   RuntimeToolDefinition,
   RuntimeUsage,
 } from './types.js';
+import { compactTranscript, estimateTextTokens } from './transcript-budget.js';
 
 /** 网关真实上下文长度不可知；pi-ai 用它裁剪 maxTokens。 */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -87,11 +88,12 @@ export interface OpenAIResponsesRuntimeDeps {
  */
 export function buildPiModel(
   config: ArgusRuntimeConfig,
-  modelId: string = config.models.main
+  modelId: string = config.models.main,
+  reasoningEffort: string | undefined = config.reasoningEffort
 ): Model<'openai-responses'> {
   const baseUrl = (config.openai?.baseUrl ?? '').trim().replace(/\/+$/, '');
   // 只认 pi-ai 词汇表里的档位 + 显式 none；未知值按未配置处理（见 resolveConfiguredEffort）。
-  const hasReasoning = resolveConfiguredEffort(config.reasoningEffort) !== undefined;
+  const hasReasoning = resolveConfiguredEffort(reasoningEffort) !== undefined;
 
   return {
     id: modelId,
@@ -177,6 +179,40 @@ function resolveConfiguredEffort(effort: string | undefined): ThinkingLevel | 'o
 export function toThinkingLevel(effort: string | undefined): ThinkingLevel | undefined {
   const resolved = resolveConfiguredEffort(effort);
   return resolved && resolved !== 'off' ? resolved : undefined;
+}
+
+/**
+ * `drop` 模式下从请求 payload 去掉 pi-ai 强制附带的推理摘要与加密内容。
+ * 内网网关探针实测：去掉 include/summary 后仍会返回推理内容本身，且
+ * transcript 不重放推理项的 follow-up 请求依旧返回 200。需要严格 OpenAI
+ * 语义（store:false + 重放 reasoning.encrypted_content）的部署必须使用 `keep`。
+ */
+function stripReasoningPayloadFields(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+
+  const params = payload as Record<string, unknown>;
+  delete params.include;
+
+  const reasoning = params.reasoning;
+  if (reasoning && typeof reasoning === 'object') {
+    delete (reasoning as Record<string, unknown>).summary;
+  }
+
+  return params;
+}
+
+/** `drop` 模式下不把思考块写回 transcript，避免推理内容逐轮重放。 */
+function stripThinkingBlocks(message: AssistantMessage): AssistantMessage {
+  if (!message.content.some((block) => block.type === 'thinking')) {
+    return message;
+  }
+
+  return {
+    ...message,
+    content: message.content.filter((block) => block.type !== 'thinking'),
+  };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -548,12 +584,17 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     return this.config.openai?.apiKey ?? '';
   }
 
-  private buildStreamOptions(extra: SimpleStreamOptions = {}): SimpleStreamOptions {
-    const reasoning = toThinkingLevel(this.config.reasoningEffort);
+  private buildStreamOptions(
+    extra: SimpleStreamOptions = {},
+    effort: string | undefined = this.config.reasoningEffort
+  ): SimpleStreamOptions {
+    const reasoning = toThinkingLevel(effort);
+    const dropReasoningContent = this.config.openai?.reasoningReplay !== 'keep';
     return {
       apiKey: this.apiKey,
       maxRetries: PI_PROVIDER_MAX_RETRIES,
       ...(reasoning ? { reasoning } : {}),
+      ...(dropReasoningContent ? { onPayload: stripReasoningPayloadFields } : {}),
       ...extra,
     };
   }
@@ -648,16 +689,40 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     const stableInstructions = completionBudget
       ? buildStableBudgetInstructions(totalTurns, completionBudget.reserveTurns)
       : undefined;
-    const model = options.model ? buildPiModel(this.config, options.model) : this.model;
+    const activeEffort = options.reasoningEffort ?? this.config.reasoningEffort;
+    const model = options.model
+      ? buildPiModel(this.config, options.model, activeEffort)
+      : activeEffort === this.config.reasoningEffort
+        ? this.model
+        : buildPiModel(this.config, this.config.models.main, activeEffort);
+    const dropReasoningReplay = this.config.openai?.reasoningReplay !== 'keep';
+    const transcriptBudgetTokens = this.config.openai?.transcriptBudgetTokens;
     const streamFn = this.streamFn;
-    const buildOptions = this.buildStreamOptions.bind(this);
+    const buildOptions = (extra: SimpleStreamOptions = {}) =>
+      this.buildStreamOptions(extra, activeEffort);
 
     let closed = false;
 
     return {
       async *[Symbol.asyncIterator]() {
-        const messages: Message[] = [];
+        let messages: Message[] = [];
         let remainingTurns = totalTurns;
+        let warnedTranscriptBudgetMiss = false;
+        const systemPromptText = stableInstructions ?? DEFAULT_RUNTIME_INSTRUCTIONS;
+        const fixedTranscriptTokens =
+          estimateTextTokens(systemPromptText) +
+          (piTools ? estimateTextTokens(JSON.stringify(piTools)) : 0);
+        const warnTranscriptBudgetMiss = (tokensAfter: number) => {
+          if (warnedTranscriptBudgetMiss) {
+            return;
+          }
+
+          warnedTranscriptBudgetMiss = true;
+          console.warn(
+            `[OpenAIResponsesRuntime] Transcript stays above the budget (best effort): ` +
+              `~${tokensAfter} > ${transcriptBudgetTokens} est. tokens`
+          );
+        };
 
         for await (const promptInput of iteratePromptInputs(options.prompt)) {
           if (closed) {
@@ -678,12 +743,33 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               : undefined;
             remainingTurns--;
 
+            // 长会话控制：超预算时先折叠最旧的工具输出，再发本轮请求。
+            if (transcriptBudgetTokens !== undefined && transcriptBudgetTokens > 0) {
+              const compacted = compactTranscript(messages, {
+                budgetTokens: transcriptBudgetTokens,
+                fixedTokens: fixedTranscriptTokens,
+              });
+              if (compacted.elidedCount > 0) {
+                messages = compacted.messages;
+                console.log(
+                  `[OpenAIResponsesRuntime] Compacted transcript: ~${compacted.tokensBefore} → ~${compacted.tokensAfter} est. tokens ` +
+                    `(elided ${compacted.elidedCount} tool outputs)`
+                );
+                if (!compacted.budgetMet) {
+                  warnTranscriptBudgetMiss(compacted.tokensAfter);
+                }
+              } else if (!compacted.budgetMet) {
+                // best effort：保留项本身已超预算，折叠无法继续压低体积（每次会话只提示一次）。
+                warnTranscriptBudgetMiss(compacted.tokensAfter);
+              }
+            }
+
             // 逐轮变化的预算提示只挂在本次请求的末尾，不改动已缓存的 transcript 前缀。
             // 这里传 transcript 的快照：请求发出后循环会继续往 messages 里追加
             // assistant/toolResult，如果直接共享数组，调用方拿到的 context 会被后续轮次改写。
             const context: Context = {
               // 旧实现每个请求都带默认 instructions（有会话预算时再追加预算段落）。
-              systemPrompt: stableInstructions ?? DEFAULT_RUNTIME_INSTRUCTIONS,
+              systemPrompt: systemPromptText,
               messages: turnBudgetNote
                 ? [...messages, { role: 'user', content: turnBudgetNote, timestamp: Date.now() }]
                 : [...messages],
@@ -733,7 +819,8 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
 
             lastUsage = normalizeUsage(assistant);
             const responseText = extractAssistantText(assistant);
-            messages.push(assistant);
+            // `drop` 模式：thinking 块不回写 transcript，避免推理内容逐轮重放。
+            messages.push(dropReasoningReplay ? stripThinkingBlocks(assistant) : assistant);
 
             if (responseText) {
               lastText = responseText;

@@ -10,7 +10,20 @@
 export type Severity = 'critical' | 'error' | 'warning' | 'suggestion';
 
 /** Issue categories */
-export type IssueCategory = 'security' | 'logic' | 'performance' | 'style' | 'maintainability';
+export const ISSUE_CATEGORIES = [
+  'security',
+  'logic',
+  'performance',
+  'style',
+  'maintainability',
+] as const;
+
+export type IssueCategory = (typeof ISSUE_CATEGORIES)[number];
+
+/** Runtime guard: model output is untrusted, so category values need validation before use. */
+export function isIssueCategory(value: unknown): value is IssueCategory {
+  return typeof value === 'string' && (ISSUE_CATEGORIES as readonly string[]).includes(value);
+}
 
 /** Validation status after verification */
 export type ValidationStatus = 'pending' | 'confirmed' | 'rejected' | 'uncertain';

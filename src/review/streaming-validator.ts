@@ -783,6 +783,10 @@ export class StreamingValidator {
           cwd: this.options.repoPath,
           maxTurns,
           model: runtime.config.models.validator,
+          // 验证阶段默认降档推理（主流程高于 medium 时；可被 env 覆盖）。
+          ...(runtime.config.validatorReasoningEffort
+            ? { reasoningEffort: runtime.config.validatorReasoningEffort }
+            : {}),
           settingSources: ['project'],
           tools: repoContextTools,
         });
@@ -817,9 +821,11 @@ export class StreamingValidator {
               }
 
               const inputTokens = event.usage?.inputTokens ?? 0;
+              const cachedInputTokens = event.usage?.cachedInputTokens ?? 0;
               const outputTokens = event.usage?.outputTokens ?? 0;
               const turnTokens = inputTokens + outputTokens;
               session.inputTokensUsed += inputTokens;
+              session.cachedInputTokensUsed += cachedInputTokens;
               session.outputTokensUsed += outputTokens;
               session.tokensUsed += turnTokens;
 
@@ -1032,6 +1038,9 @@ export class StreamingValidator {
           cwd: this.options.repoPath,
           maxTurns,
           model: runtime.config.models.validator,
+          ...(runtime.config.validatorReasoningEffort
+            ? { reasoningEffort: runtime.config.validatorReasoningEffort }
+            : {}),
           settingSources: ['project'],
           ...(repoContextTools.length > 0 ? { tools: repoContextTools } : {}),
         });

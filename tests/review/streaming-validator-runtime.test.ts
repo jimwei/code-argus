@@ -753,4 +753,92 @@ describe('streaming validator runtime bridge', () => {
     });
     expect(createRuntimeFromEnvMock).toHaveBeenCalledTimes(1);
   });
+
+  it('aggregates cached validator tokens and forwards the validator reasoning effort', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        reasoningEffort: 'high',
+        validatorReasoningEffort: 'medium',
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const iterator = options.prompt[Symbol.asyncIterator]();
+          const firstPrompt = await iterator.next();
+          expect(firstPrompt.done).toBe(false);
+
+          const responseText = JSON.stringify({
+            validation_status: 'confirmed',
+            final_confidence: 0.9,
+            grounding_evidence: {
+              checked_files: ['src/api/service.ts'],
+              checked_symbols: [],
+              related_context: 'The guard branch is observed in the changed code.',
+              reasoning: 'The optional payload is now checked before use.',
+            },
+          });
+
+          yield {
+            type: 'assistant.text',
+            text: responseText,
+          };
+
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: {
+              inputTokens: 1200,
+              cachedInputTokens: 900,
+              outputTokens: 80,
+            },
+            text: responseText,
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: false,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+
+    validator.enqueue({
+      id: 'issue-cached',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      suggestion: 'Guard the null path before accessing response fields.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush();
+
+    expect(executeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5.3-codex',
+        reasoningEffort: 'medium',
+      })
+    );
+    expect(result.inputTokensUsed).toBe(1200);
+    expect(result.cachedInputTokensUsed).toBe(900);
+    expect(result.outputTokensUsed).toBe(80);
+  });
 });

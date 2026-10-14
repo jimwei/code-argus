@@ -1186,7 +1186,9 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
   execute(options: RuntimeExecuteOptions): RuntimeExecution {
     const client = this.client;
     const defaultModel = this.config.models.main;
-    const reasoningRequest = buildReasoningRequest(this.config.reasoningEffort);
+    const reasoningRequest = buildReasoningRequest(
+      options.reasoningEffort ?? this.config.reasoningEffort
+    );
     const abortController = options.abortController ?? new AbortController();
     const ownsAbortController = !options.abortController;
     const runtimeTools = options.tools ?? [];

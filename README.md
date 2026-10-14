@@ -170,6 +170,7 @@ export ARGUS_MODEL=gpt-5
 export ARGUS_LIGHT_MODEL=gpt-5-mini
 export ARGUS_VALIDATOR_MODEL=gpt-5
 export ARGUS_REASONING_EFFORT=medium
+export ARGUS_VALIDATOR_REASONING_EFFORT=medium
 ```
 
 You can also persist the default main model:
@@ -191,6 +192,10 @@ Notes:
   (`off`, i.e. `reasoning.effort=none`) instead of reporting an error, so the runtime
   validates the value and falls back to the provider default (with a one-time warning)
   rather than silently disabling reasoning
+- Validator sessions default to `medium` reasoning whenever `ARGUS_REASONING_EFFORT` is
+  higher than `medium` (the validator model itself keeps using `ARGUS_VALIDATOR_MODEL`).
+  Set `ARGUS_VALIDATOR_REASONING_EFFORT` to override; when no main effort is configured
+  the validator keeps the provider default
 - The next four bullets describe the `pi-ai` implementation only
   (`ARGUS_OPENAI_RESPONSE_IMPL=pi-ai`); with the default `sdk` implementation the
   pre-migration behaviour applies instead
@@ -198,6 +203,20 @@ Notes:
   `store: false` plus the full transcript, and (unless disabled) a `max_output_tokens`
   cap taken from the runtime default. Set `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false`
   for gateways that reject that parameter
+- With `ARGUS_OPENAI_REASONING_REPLAY=drop` (default) the pi-ai runtime strips the
+  forced `reasoning.summary` / `include: ["reasoning.encrypted_content"]` fields from
+  requests and no longer replays historical thinking blocks, which keeps reasoning
+  content out of (and off) every subsequent turn. Use `keep` when the upstream requires
+  strict OpenAI semantics (encrypted reasoning replay with `store: false`)
+- `ARGUS_TRANSCRIPT_BUDGET_TOKENS` (default `160000`, `0` disables) bounds the pi-ai
+  transcript on a best-effort basis: once the estimated request size crosses the
+  budget, the oldest tool outputs are folded toward 60% of it. The most recent six tool
+  outputs and all user/assistant messages are preserved, so tool-call pairing stays
+  intact; the fold logs a one-time warning when the budget cannot be met. A fold rewrites
+  history, so the first request after it re-bills the changed prefix once (prompt cache
+  resets) and the default 160k leaves the 32k output clamp headroom inside the 200k
+  window — verify the net cost with the cached/input counters if your gateway prices
+  cached tokens very cheaply
 - When `ARGUS_REASONING_EFFORT` is set, pi-ai sends the leading instructions with the
   `developer` role (plain `system` when reasoning is off). Gateways that only accept
   `system` should set `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE=false`
@@ -227,6 +246,9 @@ Notes:
 | Light model                         | `ARGUS_LIGHT_MODEL`                             |
 | Validator model                     | `ARGUS_VALIDATOR_MODEL`                         |
 | Reasoning effort                    | `ARGUS_REASONING_EFFORT`                        |
+| Validator reasoning effort          | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
+| pi-ai reasoning replay              | `ARGUS_OPENAI_REASONING_REPLAY`                 |
+| pi-ai transcript budget             | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
 | Claude API key                      | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
 | Claude OAuth or proxy               | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
 | Claude base URL                     | `ARGUS_ANTHROPIC_BASE_URL`                      |

@@ -116,6 +116,39 @@ export interface ValidationPromptOptions {
 }
 
 /**
+ * 未知 category 的兜底配置：只保留基础验证模板，不注入类别专属规则。
+ * 模型理论上只会回传五个合法类别，但历史上出现过越界取值让验证器直接崩溃，
+ * 这里宁可降级成基础模板并告警，也不让整个会话失败。
+ */
+export const FALLBACK_VALIDATION_PROMPT_CONFIG: ValidationPromptConfig = {
+  category: 'maintainability',
+  additionalSystemPrompt: '',
+  validationFocus: [],
+  rejectionCriteria: [],
+};
+
+let warnedUnknownCategory = false;
+
+/**
+ * 解析任意 category 到验证提示词配置；未知取值回退到兜底配置并告警（仅一次）。
+ */
+export function resolveValidationPromptConfig(category: string): ValidationPromptConfig {
+  const config = VALIDATION_PROMPT_CONFIGS[category as IssueCategory];
+  if (config) {
+    return config;
+  }
+
+  if (!warnedUnknownCategory) {
+    warnedUnknownCategory = true;
+    console.warn(
+      `[ValidationPrompt] Unknown issue category "${category}", falling back to the base validation template`
+    );
+  }
+
+  return FALLBACK_VALIDATION_PROMPT_CONFIG;
+}
+
+/**
  * Build complete validation system prompt for a specific category
  * Combines base template with category-specific rules and project rules
  */
@@ -124,7 +157,7 @@ export function buildValidationSystemPrompt(
   options?: ValidationPromptOptions
 ): string {
   let baseTemplate = loadBaseValidationTemplate(options?.fastMode);
-  const categoryConfig = VALIDATION_PROMPT_CONFIGS[category];
+  const categoryConfig = resolveValidationPromptConfig(category);
 
   // Replace language placeholder
   const langText = (options?.language ?? 'zh') === 'en' ? 'English' : 'Chinese (中文)';
@@ -158,7 +191,7 @@ ${options.projectRules}
  * Get validation prompt config for a category
  */
 export function getValidationPromptConfig(category: IssueCategory): ValidationPromptConfig {
-  return VALIDATION_PROMPT_CONFIGS[category];
+  return resolveValidationPromptConfig(category);
 }
 
 /**

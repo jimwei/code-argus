@@ -169,6 +169,7 @@ export ARGUS_MODEL=gpt-5
 export ARGUS_LIGHT_MODEL=gpt-5-mini
 export ARGUS_VALIDATOR_MODEL=gpt-5
 export ARGUS_REASONING_EFFORT=medium
+export ARGUS_VALIDATOR_REASONING_EFFORT=medium
 ```
 
 也可以把主模型保存到配置文件：
@@ -185,6 +186,20 @@ argus config set model gpt-5
   main/light/validator 三个模型槽位的默认来源（个别槽位显式覆盖时以覆盖值为准）
 - `ARGUS_REASONING_EFFORT` 是单一全局值，会传递给每一个 OpenAI Responses 请求
   （`minimal`、`low`、`medium`、`high` 等）；不设置则沿用 Provider 默认值
+- 验证阶段缺省把推理强度压到 `medium`（仅在主流程高于 `medium` 时生效），
+  验证模型本身仍取 `ARGUS_VALIDATOR_MODEL`；可用
+  `ARGUS_VALIDATOR_REASONING_EFFORT` 显式覆盖
+- 选用 `pi-ai` 实现时：`ARGUS_OPENAI_REASONING_REPLAY`（缺省 `drop`）会去掉
+  上游强制附带的 `reasoning.summary` / `include: ["reasoning.encrypted_content"]`，
+  且不再把历史思考块写回 transcript，避免推理内容逐轮重放；需要严格 OpenAI
+  语义（`store: false` 下重放加密推理项）时设为 `keep`
+- 选用 `pi-ai` 实现时：`ARGUS_TRANSCRIPT_BUDGET_TOKENS`（缺省 `160000`，
+  `0` 表示禁用）用于控制长会话体积，属于 best-effort 约束：估算请求超过预算时，
+  最旧的工具输出会被折叠成占位文本，向预算的 60% 收敛（保留最近 6 条与全部
+  user/assistant 消息，调用配对不变；无法达标时会告警一次）。折叠会改写历史，
+  折叠后的第一轮请求前缀缓存失效一次（按全价重新计费），之后恢复命中；
+  缺省 160k 同时为 200k 窗口内的输出预留了 32k 空间——若网关缓存折扣很高，
+  请结合 cached/input 计数评估净收益
 
 ### 环境变量总表
 
@@ -196,6 +211,9 @@ argus config set model gpt-5
 | 轻量模型                | `ARGUS_LIGHT_MODEL`                             |
 | 验证模型                | `ARGUS_VALIDATOR_MODEL`                         |
 | 推理强度                | `ARGUS_REASONING_EFFORT`                        |
+| 验证阶段推理强度        | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
+| pi-ai 推理项重放        | `ARGUS_OPENAI_REASONING_REPLAY`                 |
+| pi-ai transcript 预算   | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
 | Claude API Key          | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
 | Claude OAuth / 兼容代理 | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
 | Claude Base URL         | `ARGUS_ANTHROPIC_BASE_URL`                      |

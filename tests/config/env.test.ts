@@ -49,6 +49,9 @@ describe('runtime-aware env configuration', () => {
     delete process.env.ARGUS_OPENAI_MODEL;
     delete process.env.ARGUS_OPENAI_RESPONSE_IMPL;
     delete process.env.ARGUS_REASONING_EFFORT;
+    delete process.env.ARGUS_VALIDATOR_REASONING_EFFORT;
+    delete process.env.ARGUS_OPENAI_REASONING_REPLAY;
+    delete process.env.ARGUS_TRANSCRIPT_BUDGET_TOKENS;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
   });
@@ -96,6 +99,8 @@ describe('runtime-aware env configuration', () => {
         supportsMaxOutputTokens: true,
         supportsDeveloperRole: true,
         responseImpl: 'sdk',
+        reasoningReplay: 'drop',
+        transcriptBudgetTokens: 160000,
       },
     });
   });
@@ -202,6 +207,91 @@ describe('runtime-aware env configuration', () => {
     process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
 
     expect(loadArgusRuntimeConfig().reasoningEffort).toBeUndefined();
+  });
+
+  it('caps the validator reasoning effort at medium by default', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_REASONING_EFFORT = 'high';
+
+    const config = loadArgusRuntimeConfig();
+    expect(config.reasoningEffort).toBe('high');
+    expect(config.validatorReasoningEffort).toBe('medium');
+
+    process.env.ARGUS_REASONING_EFFORT = 'xhigh';
+    expect(loadArgusRuntimeConfig().validatorReasoningEffort).toBe('medium');
+  });
+
+  it('keeps validator efforts at or below medium unchanged', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+
+    process.env.ARGUS_REASONING_EFFORT = 'low';
+    expect(loadArgusRuntimeConfig().validatorReasoningEffort).toBe('low');
+
+    process.env.ARGUS_REASONING_EFFORT = 'medium';
+    expect(loadArgusRuntimeConfig().validatorReasoningEffort).toBe('medium');
+  });
+
+  it('honours ARGUS_VALIDATOR_REASONING_EFFORT overrides', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_REASONING_EFFORT = 'high';
+    process.env.ARGUS_VALIDATOR_REASONING_EFFORT = ' xhigh ';
+
+    expect(loadArgusRuntimeConfig().validatorReasoningEffort).toBe('xhigh');
+  });
+
+  it('omits the validator reasoning effort when no effort is configured', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+
+    expect(loadArgusRuntimeConfig().validatorReasoningEffort).toBeUndefined();
+  });
+
+  it('defaults the pi-ai reasoning replay mode to drop and accepts keep', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+
+    expect(loadArgusRuntimeConfig().openai?.reasoningReplay).toBe('drop');
+
+    process.env.ARGUS_OPENAI_REASONING_REPLAY = 'keep';
+    expect(loadArgusRuntimeConfig().openai?.reasoningReplay).toBe('keep');
+  });
+
+  it('falls back to the default reasoning replay mode for unsupported values', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_OPENAI_REASONING_REPLAY = 'sometimes';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(loadArgusRuntimeConfig().openai?.reasoningReplay).toBe('drop');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ARGUS_OPENAI_REASONING_REPLAY'));
+
+    warn.mockRestore();
+  });
+
+  it('parses ARGUS_TRANSCRIPT_BUDGET_TOKENS and lets 0 disable it', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+
+    process.env.ARGUS_TRANSCRIPT_BUDGET_TOKENS = '90000';
+    expect(loadArgusRuntimeConfig().openai?.transcriptBudgetTokens).toBe(90000);
+
+    process.env.ARGUS_TRANSCRIPT_BUDGET_TOKENS = '0';
+    expect(loadArgusRuntimeConfig().openai?.transcriptBudgetTokens).toBeUndefined();
+  });
+
+  it('falls back to the default transcript budget for invalid values', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_TRANSCRIPT_BUDGET_TOKENS = 'many';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(loadArgusRuntimeConfig().openai?.transcriptBudgetTokens).toBe(160000);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ARGUS_TRANSCRIPT_BUDGET_TOKENS'));
+
+    warn.mockRestore();
   });
 
   it('initializes Anthropic provider env from the runtime config', () => {
