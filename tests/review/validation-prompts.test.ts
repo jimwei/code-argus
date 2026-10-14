@@ -195,5 +195,16 @@ describe('Validation Prompts', () => {
 
       warn.mockRestore();
     });
+
+    it('should not treat prototype properties as category configs', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const config = getValidationPromptConfig('toString' as IssueCategory);
+
+      expect(config.additionalSystemPrompt).toBe('');
+      expect(config.validationFocus).toEqual([]);
+
+      warn.mockRestore();
+    });
   });
 });

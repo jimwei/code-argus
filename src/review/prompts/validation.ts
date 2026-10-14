@@ -133,7 +133,10 @@ let warnedUnknownCategory = false;
  * 解析任意 category 到验证提示词配置；未知取值回退到兜底配置并告警（仅一次）。
  */
 export function resolveValidationPromptConfig(category: string): ValidationPromptConfig {
-  const config = VALIDATION_PROMPT_CONFIGS[category as IssueCategory];
+  // hasOwnProperty 兜底：`toString`/`constructor` 等原型链属性不能命中配置表。
+  const config = Object.prototype.hasOwnProperty.call(VALIDATION_PROMPT_CONFIGS, category)
+    ? VALIDATION_PROMPT_CONFIGS[category as IssueCategory]
+    : undefined;
   if (config) {
     return config;
   }

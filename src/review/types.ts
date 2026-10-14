@@ -25,6 +25,68 @@ export function isIssueCategory(value: unknown): value is IssueCategory {
   return typeof value === 'string' && (ISSUE_CATEGORIES as readonly string[]).includes(value);
 }
 
+/**
+ * 类别归一化别名表。`category` 由模型提供，可能带大小写/空白变体，
+ * 也可能回传语义相近的别名（documentation、correctness 等）。
+ */
+const ISSUE_CATEGORY_ALIASES: Record<string, IssueCategory> = {
+  security: 'security',
+  sec: 'security',
+  logic: 'logic',
+  correctness: 'logic',
+  bug: 'logic',
+  performance: 'performance',
+  perf: 'performance',
+  style: 'style',
+  formatting: 'style',
+  naming: 'style',
+  maintainability: 'maintainability',
+  readability: 'maintainability',
+  documentation: 'maintainability',
+  docs: 'maintainability',
+  quality: 'maintainability',
+};
+
+/** 原型链上的属性（如 `toString`）不能当作别名命中。 */
+function lookupIssueCategoryAlias(key: string): IssueCategory | undefined {
+  return Object.prototype.hasOwnProperty.call(ISSUE_CATEGORY_ALIASES, key)
+    ? ISSUE_CATEGORY_ALIASES[key]
+    : undefined;
+}
+
+/**
+ * 宽松识别：接受大小写/空白变体与已知别名。
+ * 用于在拒绝模型乱填前判断"这个值能否被理解"。
+ */
+export function isRecognizedIssueCategory(value: unknown): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  return lookupIssueCategoryAlias(value.trim().toLowerCase()) !== undefined;
+}
+
+/**
+ * 把模型回传的任意值归一成合法类别，避免下游按 `Record<IssueCategory, ...>`
+ * 索引时得到 `undefined`（计数变 NaN、分组直接抛错）。
+ * 无法识别时落到 `maintainability`（最通用的桶）。
+ */
+export function normalizeIssueCategory(
+  value: unknown,
+  fallback: IssueCategory = 'maintainability'
+): IssueCategory {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const key = value.trim().toLowerCase();
+  if (!key) {
+    return fallback;
+  }
+
+  return lookupIssueCategoryAlias(key) ?? fallback;
+}
+
 /** Validation status after verification */
 export type ValidationStatus = 'pending' | 'confirmed' | 'rejected' | 'uncertain';
 

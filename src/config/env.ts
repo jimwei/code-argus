@@ -43,6 +43,9 @@ export const DEFAULT_TRANSCRIPT_BUDGET_TOKENS = 160_000;
 /** pi-ai 词汇表里的推理档位；用于给验证阶段做降档。 */
 const REASONING_EFFORT_RANKS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
+/** 两套实现都认识的推理档位（外加显式关闭推理的 `none`）。 */
+const REASONING_EFFORT_VALUES = new Set<string>(['none', ...REASONING_EFFORT_RANKS]);
+
 export interface ClaudeAuthConfig {
   apiKey: string;
   baseUrl?: string;
@@ -167,9 +170,19 @@ function resolveTranscriptBudgetTokens(raw: string | undefined): number | undefi
  * 其余情况沿用主流程档位；`ARGUS_VALIDATOR_REASONING_EFFORT` 可显式覆盖。
  */
 function resolveValidatorReasoningEffort(mainEffort: string | undefined): string | undefined {
-  const override = process.env.ARGUS_VALIDATOR_REASONING_EFFORT?.trim();
-  if (override) {
-    return override;
+  const rawOverride = process.env.ARGUS_VALIDATOR_REASONING_EFFORT?.trim();
+  if (rawOverride) {
+    const override = rawOverride.toLowerCase();
+    if (REASONING_EFFORT_VALUES.has(override)) {
+      return override;
+    }
+
+    // 拼写错误或不在词表里的取值会一路透传给上游并让每个验证请求失败，
+    // 这里回退到默认降档策略（与 ARGUS_REASONING_EFFORT 的容错方向一致）。
+    console.warn(
+      `[ArgusRuntimeConfig] Unsupported ARGUS_VALIDATOR_REASONING_EFFORT "${rawOverride}", ` +
+        'falling back to the default validator policy'
+    );
   }
 
   if (!mainEffort) {

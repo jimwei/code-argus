@@ -242,6 +242,28 @@ describe('runtime-aware env configuration', () => {
     expect(loadArgusRuntimeConfig().validatorReasoningEffort).toBe('xhigh');
   });
 
+  it('normalizes the validator reasoning effort override casing', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_REASONING_EFFORT = 'high';
+    process.env.ARGUS_VALIDATOR_REASONING_EFFORT = ' MEDIUM ';
+
+    expect(loadArgusRuntimeConfig().validatorReasoningEffort).toBe('medium');
+  });
+
+  it('falls back to the default validator policy for unsupported overrides', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_REASONING_EFFORT = 'high';
+    process.env.ARGUS_VALIDATOR_REASONING_EFFORT = 'hgih';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(loadArgusRuntimeConfig().validatorReasoningEffort).toBe('medium');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ARGUS_VALIDATOR_REASONING_EFFORT'));
+
+    warn.mockRestore();
+  });
+
   it('omits the validator reasoning effort when no effort is configured', () => {
     process.env.ARGUS_RUNTIME = 'openai-responses';
     process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
