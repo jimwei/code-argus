@@ -84,6 +84,7 @@ type MockOpenAIResponse = {
   usage?: {
     input_tokens: number;
     output_tokens: number;
+    input_tokens_details?: { cached_tokens: number };
   };
   error?: {
     message?: string;
@@ -622,9 +623,9 @@ describe('runtime execution', () => {
         status: 'success',
         text: 'Done',
         usage: {
-          inputTokens: 11,
+          inputTokens: 19,
           cachedInputTokens: 5,
-          outputTokens: 7,
+          outputTokens: 10,
         },
       },
     ]);
@@ -804,8 +805,8 @@ describe('runtime execution', () => {
         status: 'success',
         text: 'Done',
         usage: {
-          inputTokens: 11,
-          outputTokens: 7,
+          inputTokens: 19,
+          outputTokens: 10,
         },
       },
     ]);
@@ -986,8 +987,8 @@ describe('runtime execution', () => {
         status: 'success',
         text: 'Done',
         usage: {
-          inputTokens: 11,
-          outputTokens: 7,
+          inputTokens: 19,
+          outputTokens: 10,
         },
       },
     ]);
@@ -1425,8 +1426,8 @@ describe('runtime execution', () => {
         status: 'success',
         text: 'Done',
         usage: {
-          inputTokens: 11,
-          outputTokens: 7,
+          inputTokens: 19,
+          outputTokens: 10,
         },
       },
     ]);
@@ -1655,8 +1656,8 @@ describe('runtime execution', () => {
         status: 'success',
         text: 'Done',
         usage: {
-          inputTokens: 12,
-          outputTokens: 7,
+          inputTokens: 20,
+          outputTokens: 10,
         },
       },
     ]);
@@ -1827,10 +1828,220 @@ describe('runtime execution', () => {
         status: 'success',
         text: 'Done',
         usage: {
-          inputTokens: 11,
-          outputTokens: 7,
+          inputTokens: 19,
+          outputTokens: 10,
         },
       },
+    ]);
+  });
+
+  it.each(['completed', 'incomplete', 'failed', 'empty', 'maxTurns', 'throw'])(
+    'counts all tool-loop requests ending with %s',
+    async (ending) => {
+      const call = {
+        id: 'fc_1',
+        type: 'function_call',
+        call_id: 'call_1',
+        name: 'read',
+        arguments: '{}',
+        status: 'completed',
+      };
+      const create = vi
+        .fn()
+        .mockResolvedValueOnce(
+          createOpenAIResponseStream({
+            id: 'resp_1',
+            status: 'completed',
+            output: [call],
+            usage: {
+              input_tokens: 100,
+              output_tokens: 10,
+              input_tokens_details: { cached_tokens: 20 },
+            },
+          })
+        )
+        .mockImplementationOnce(() => {
+          if (ending === 'throw') throw new Error('connection lost');
+          return createOpenAIResponseStream({
+            id: 'resp_2',
+            status: ['empty', 'maxTurns'].includes(ending) ? 'completed' : ending,
+            output: ending === 'maxTurns' ? [call] : [],
+            output_text: ending === 'maxTurns' || ending === 'empty' ? '' : 'done',
+            usage: {
+              input_tokens: 300,
+              output_tokens: 20,
+              input_tokens_details: { cached_tokens: 100 },
+            },
+          });
+        });
+      const runtime = new OpenAIResponsesSdkRuntime(
+        {
+          runtime: 'openai-responses',
+          models: { main: 'gpt-5', light: 'gpt-5', validator: 'gpt-5' },
+          openai: { apiKey: 'test-key', source: 'argus' },
+        },
+        { responses: { create } } as any
+      );
+      const events = [];
+      for await (const event of runtime.execute({
+        prompt: 'review',
+        cwd: '.',
+        maxTurns: 2,
+        tools: [
+          {
+            name: 'read',
+            description: 'read',
+            inputSchema: {},
+            execute: async () => ({ content: [{ type: 'text', text: 'fixture' }] }),
+          },
+        ],
+      }))
+        events.push(event);
+      expect(events.at(-1)?.usage).toEqual(
+        ending === 'throw'
+          ? { inputTokens: 100, cachedInputTokens: 20, outputTokens: 10 }
+          : { inputTokens: 400, cachedInputTokens: 120, outputTokens: 30 }
+      );
+    }
+  );
+
+  it.each([
+    [false, 'native'],
+    [true, 'native'],
+    [false, 'sdk'],
+    [true, 'sdk'],
+    [true, 'silentStream'],
+  ] as const)(
+    'propagates cancellation after an earlier tool turn: %s (%s)',
+    async (afterTool, shape) => {
+      const { APIUserAbortError } = await vi.importActual<typeof import('openai')>('openai');
+      const abortController = new AbortController();
+      const abortError =
+        shape === 'sdk'
+          ? new APIUserAbortError()
+          : Object.assign(new Error('Request cancelled'), { name: 'AbortError' });
+      const create = vi.fn();
+      if (afterTool) {
+        create.mockResolvedValueOnce(
+          createOpenAIResponseStream({
+            id: 'resp_1',
+            status: 'completed',
+            output: [
+              {
+                id: 'fc_1',
+                type: 'function_call',
+                call_id: 'call_1',
+                name: 'read',
+                arguments: '{}',
+                status: 'completed',
+              },
+            ],
+            usage: { input_tokens: 100, output_tokens: 10 },
+          })
+        );
+      }
+      create.mockImplementationOnce(() => {
+        if (shape !== 'native') abortController.abort();
+        if (shape === 'silentStream') return createAsyncStream([]);
+        throw abortError;
+      });
+      const runtime = new OpenAIResponsesSdkRuntime(
+        {
+          runtime: 'openai-responses',
+          models: { main: 'gpt-5', light: 'gpt-5', validator: 'gpt-5' },
+          openai: { apiKey: 'test-key', source: 'argus' },
+        },
+        { responses: { create } } as any
+      );
+      const events = [];
+      const collect = async () => {
+        for await (const event of runtime.execute({
+          prompt: 'review',
+          cwd: '.',
+          maxTurns: 2,
+          abortController,
+          tools: [
+            {
+              name: 'read',
+              description: 'read',
+              inputSchema: {},
+              execute: async () => ({ content: [{ type: 'text', text: 'fixture' }] }),
+            },
+          ],
+        }))
+          events.push(event);
+      };
+      await expect(collect()).rejects.toMatchObject({ name: 'AbortError' });
+      expect(events.some((event) => event.type === 'result')).toBe(false);
+    }
+  );
+
+  it('keeps usage disjoint across streamed prompts with tool loops', async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_1',
+          status: 'completed',
+          output: [
+            {
+              id: 'fc_1',
+              type: 'function_call',
+              call_id: 'call_1',
+              name: 'read',
+              arguments: '{}',
+              status: 'completed',
+            },
+          ],
+          usage: { input_tokens: 100, output_tokens: 10 },
+        })
+      )
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_2',
+          status: 'completed',
+          output_text: 'done',
+          usage: { input_tokens: 300, output_tokens: 20 },
+        })
+      )
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'resp_3',
+          status: 'completed',
+          output_text: 'challenge done',
+          usage: { input_tokens: 200, output_tokens: 15 },
+        })
+      );
+    const runtime = new OpenAIResponsesSdkRuntime(
+      {
+        runtime: 'openai-responses',
+        models: { main: 'gpt-5', light: 'gpt-5', validator: 'gpt-5' },
+        openai: { apiKey: 'test-key', source: 'argus' },
+      },
+      { responses: { create } } as any
+    );
+    async function* prompts() {
+      yield 'review';
+      yield 'challenge';
+    }
+    const events = [];
+    for await (const event of runtime.execute({
+      prompt: prompts(),
+      cwd: '.',
+      maxTurns: 3,
+      tools: [
+        {
+          name: 'read',
+          description: 'read',
+          inputSchema: {},
+          execute: async () => ({ content: [{ type: 'text', text: 'fixture' }] }),
+        },
+      ],
+    }))
+      events.push(event);
+    expect(events.filter((event) => event.type === 'result').map((event) => event.usage)).toEqual([
+      { inputTokens: 400, outputTokens: 30 },
+      { inputTokens: 200, outputTokens: 15 },
     ]);
   });
 
@@ -2181,8 +2392,8 @@ describe('runtime execution', () => {
         status: 'success',
         text: 'Done',
         usage: {
-          inputTokens: 11,
-          outputTokens: 4,
+          inputTokens: 20,
+          outputTokens: 7,
         },
       },
     ]);

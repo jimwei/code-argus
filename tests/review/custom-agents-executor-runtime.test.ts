@@ -109,6 +109,40 @@ describe('custom agent executor runtime bridge', () => {
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
 
+  it('reports runtime error results as failures without losing their known usage', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      execute: () => ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            status: 'error',
+            error: 'upstream disconnected',
+            usage: { inputTokens: 100, cachedInputTokens: 20, outputTokens: 10 },
+          };
+        },
+        close: closeMock,
+      }),
+    });
+    const callbacks = { onAgentComplete: vi.fn(), onAgentError: vi.fn() };
+    const result = await executeCustomAgent(
+      createAgent(),
+      {
+        repoPath: 'C:\\repo',
+        diffContent: '+fetch("/api/service")',
+        language: 'en',
+      },
+      callbacks
+    );
+
+    expect(result.error).toBe('upstream disconnected');
+    expect(result.tokens_used).toBe(110);
+    expect(result.cached_input_tokens_used).toBe(20);
+    expect(callbacks.onAgentError).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAgentComplete).not.toHaveBeenCalled();
+    expect(closeMock).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects custom-agent issues with unknown categories and normalizes aliases', async () => {
     let toolResultText = '';
 

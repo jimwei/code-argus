@@ -803,6 +803,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               yield {
                 type: 'result',
                 status: 'error',
+                usage: lastUsage,
                 error: error instanceof Error ? error.message : String(error),
               };
               return;
@@ -812,12 +813,14 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
               yield {
                 type: 'result',
                 status: 'error',
+                usage: lastUsage,
                 error: 'OpenAI Responses runtime stream ended without a response',
               };
               return;
             }
 
-            lastUsage = normalizeUsage(assistant);
+            // 每个 result 汇总当前 prompt 的全部工具轮次；下个 prompt 重新计数。
+            lastUsage = mergeUsage(lastUsage, normalizeUsage(assistant));
             const responseText = extractAssistantText(assistant);
             // `drop` 模式：thinking 块不回写 transcript，避免推理内容逐轮重放。
             messages.push(dropReasoningReplay ? stripThinkingBlocks(assistant) : assistant);

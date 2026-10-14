@@ -79,8 +79,8 @@ describe('compactTranscript', () => {
     }
 
     const result = compactTranscript(messages, {
-      budgetTokens: 12_000,
-      lowWatermarkRatio: 0.5,
+      budgetTokens: 20_000,
+      lowWatermarkRatio: 0.6,
       keepRecentToolResults: 2,
     });
 
@@ -125,7 +125,7 @@ describe('compactTranscript', () => {
     ];
 
     const result = compactTranscript(messages, {
-      budgetTokens: 3_000,
+      budgetTokens: 12_000,
       lowWatermarkRatio: 0.5,
       keepRecentToolResults: 1,
     });
@@ -167,9 +167,33 @@ describe('compactTranscript', () => {
       keepRecentToolResults: 2,
     });
 
-    // 唯一可折叠的一条被折叠，但保留的两条仍有 ~10000 tokens。
-    expect(result.elidedCount).toBe(1);
+    // 保留项超预算时不改写历史，避免随后每轮反复折叠。
+    expect(result.elidedCount).toBe(0);
+    expect(result.messages).toBe(messages);
     expect(result.budgetMet).toBe(false);
     expect(result.tokensAfter).toBeGreaterThan(1_000);
+  });
+
+  it('does not rewrite a growing transcript when the low watermark is unreachable', () => {
+    let messages = [userMessage('u'.repeat(2800))];
+    for (let i = 0; i < 8; i++) {
+      messages.push(toolResultMessage(`call_${i}`, 'x'.repeat(400)));
+    }
+    for (let turn = 0; turn < 4; turn++) {
+      const result = compactTranscript(messages, { budgetTokens: 1000 });
+      expect(result.messages).toBe(messages);
+      expect(result.elidedCount).toBe(0);
+      expect(result.budgetMet).toBe(false);
+      messages = [...result.messages, toolResultMessage(`next_${turn}`, 'x'.repeat(400))];
+    }
+  });
+
+  it('requires low-watermark headroom even when folding could just meet the budget', () => {
+    const messages = [userMessage('u'.repeat(2800))];
+    for (let i = 0; i < 8; i++) messages.push(toolResultMessage(`call_${i}`, 'x'.repeat(400)));
+    const result = compactTranscript(messages, { budgetTokens: 1400 });
+    expect(result.messages).toBe(messages);
+    expect(result.elidedCount).toBe(0);
+    expect(result.budgetMet).toBe(false);
   });
 });

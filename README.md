@@ -192,7 +192,8 @@ Notes:
   (`off`, i.e. `reasoning.effort=none`) instead of reporting an error, so the runtime
   validates the value and falls back to the provider default (with a one-time warning)
   rather than silently disabling reasoning
-- Validator sessions default to `medium` reasoning whenever `ARGUS_REASONING_EFFORT` is
+- Validator sessions, including fix verification, default to `medium` reasoning whenever
+  `ARGUS_REASONING_EFFORT` is
   higher than `medium` (the validator model itself keeps using `ARGUS_VALIDATOR_MODEL`).
   Set `ARGUS_VALIDATOR_REASONING_EFFORT` to override; when no main effort is configured
   the validator keeps the provider default
@@ -212,17 +213,29 @@ Notes:
   transcript on a best-effort basis: once the estimated request size crosses the
   budget, the oldest tool outputs are folded toward 60% of it. The most recent six tool
   outputs and all user/assistant messages are preserved, so tool-call pairing stays
-  intact; the fold logs a one-time warning when the budget cannot be met. A fold rewrites
-  history, so the first request after it re-bills the changed prefix once (prompt cache
-  resets) and the default 160k leaves the 32k output clamp headroom inside the 200k
-  window — verify the net cost with the cached/input counters if your gateway prices
-  cached tokens very cheaply
+  intact. Folding only proceeds if it can reach the low watermark; otherwise history
+  stays unchanged and the runtime warns once. Every fold invalidates the cached suffix
+  after the first changed item; the prefix is stable between folds, not necessarily
+  for the rest of the session. The budget is not a hard context limit: if retained
+  content stays above the low watermark, compaction may stay inactive until requests
+  exceed the provider context limit. The default
+  160k leaves estimated 32k output headroom inside the 200k window when the budget is
+  met; verify net cost using cached/input counters if cached tokens are cheap
 - When `ARGUS_REASONING_EFFORT` is set, pi-ai sends the leading instructions with the
   `developer` role (plain `system` when reasoning is off). Gateways that only accept
   `system` should set `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE=false`
 - The runtime sends a `systemPrompt` on every request (the reviewer budget text is
   appended when a completion budget is present). Unknown values of the two gateway
   flags above fall back to `true` with a warning in the logs
+- Both Responses implementations report all provider-reported usage across tool turns
+  for each prompt in `result.usage`, including earlier turns when a later request fails.
+  Subsequent streamed prompts have disjoint usage, so validators can sum their results
+  without double counting. Cache rate is cached input divided by input (which already
+  includes cached input). Unreported usage from transport/provider-internal retries
+  cannot be recovered and is not included
+- The [reasoning replay probe](docs/reasoning-replay-probe-2026-10-14.md) did not
+  reproduce item-pairing failures on the tested gateway; official strict-interface
+  compatibility remains unverified, so this result does not apply to every deployment
 - A turn truncated by the output budget (`stopReason=length`) is reported as
   `incomplete` and its tool calls are **not** executed: their arguments may be cut off
   or mixed up (upstream fixed the same class of bug for unfinished Responses tool calls

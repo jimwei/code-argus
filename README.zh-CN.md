@@ -186,7 +186,7 @@ argus config set model gpt-5
   main/light/validator 三个模型槽位的默认来源（个别槽位显式覆盖时以覆盖值为准）
 - `ARGUS_REASONING_EFFORT` 是单一全局值，会传递给每一个 OpenAI Responses 请求
   （`minimal`、`low`、`medium`、`high` 等）；不设置则沿用 Provider 默认值
-- 验证阶段缺省把推理强度压到 `medium`（仅在主流程高于 `medium` 时生效），
+- 验证阶段（含 fix-verifier 修复验证）缺省把推理强度压到 `medium`（仅在主流程高于 `medium` 时生效），
   验证模型本身仍取 `ARGUS_VALIDATOR_MODEL`；可用
   `ARGUS_VALIDATOR_REASONING_EFFORT` 显式覆盖
 - 选用 `pi-ai` 实现时：`ARGUS_OPENAI_REASONING_REPLAY`（缺省 `drop`）会去掉
@@ -196,10 +196,18 @@ argus config set model gpt-5
 - 选用 `pi-ai` 实现时：`ARGUS_TRANSCRIPT_BUDGET_TOKENS`（缺省 `160000`，
   `0` 表示禁用）用于控制长会话体积，属于 best-effort 约束：估算请求超过预算时，
   最旧的工具输出会被折叠成占位文本，向预算的 60% 收敛（保留最近 6 条与全部
-  user/assistant 消息，调用配对不变；无法达标时会告警一次）。折叠会改写历史，
-  折叠后的第一轮请求前缀缓存失效一次（按全价重新计费），之后恢复命中；
-  缺省 160k 同时为 200k 窗口内的输出预留了 32k 空间——若网关缓存折扣很高，
-  请结合 cached/input 计数评估净收益
+  user/assistant 消息，调用配对不变）。仅当能够达到低水位时才折叠；否则保留历史
+  原文并告警一次，避免每轮部分折叠。每次折叠都可能让首个改写点之后的缓存失效，
+  两次折叠之间前缀稳定，不保证整个会话只失效一次。预算不是上下文硬上限；
+  保留项持续超过低水位时可能一直无法折叠，直到请求触发 provider 上下文超限。
+  达标时缺省 160k 为估算的 200k 窗口保留约 32k 输出空间，仍需用 cached/input
+  计数评估实际净收益
+- 两种 Responses 实现的 `result.usage` 都汇总当前 prompt 内全部工具调用轮次的
+  已上报用量；后续 streamed prompt 单独计数，validator 可以累加而不重复计算。
+  后续请求失败时保留前面已知消耗；缓存命中率为 cached input / input（input 已含缓存）。
+  传输失败或 provider 内部重试未上报的用量无法恢复，不包含在此统计中
+- [reasoning 重放实测报告](docs/reasoning-replay-probe-2026-10-14.md)：当前网关未复现
+  item 配对失败；官方严格接口尚未验证，不能把结果推广到所有部署
 
 ### 环境变量总表
 

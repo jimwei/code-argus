@@ -5,13 +5,13 @@
  * 单次请求会随轮数近似二次方增长：payroll 实测单个 agent 会话末次调用约
  * 16 万 token。这里在超过预算时把最旧的工具输出折叠成占位文本，保留
  * 最近若干条与全部 user/assistant 消息：
- * - 折叠是 `best effort`：保留项（最近 N 条工具输出 + 全部 user/assistant
- *   消息）本身超预算时不会再折，`budgetMet` 会给出是否达到预算；
+ * - 折叠是 `best effort`：无法达到低水位时保持原文并返回 `budgetMet: false`，
+ *   避免每轮改写历史；最近 N 条工具输出 + 全部 user/assistant 消息始终保留；
  * - 占位文本保留 tool 名与调用 ID，function_call / function_call_output 配对不变；
- * - 代价说明：折叠会改写历史内容，本次折叠后的第一轮请求前缀命中失效（重新按
- *   全价计费一次），之后前缀重新稳定、缓存继续命中。是否净收益取决于网关的
+ * - 代价说明：每次折叠都会改写历史内容，缓存只能匹配到首个改写点之前；
+ *   两次折叠之间前缀稳定，不保证整个会话只失效一次。是否净收益取决于网关的
  *   cached token 折扣与折叠后的剩余轮数，请结合 cached/input 计数验证；
- *   折叠的硬收益是把上下文控制在窗口内，避免 pi-ai 的 maxTokens 被压缩甚至溢出。
+ *   折叠可以降低上下文占用；无法达到低水位时不折叠，仍可能触发 provider 上下文超限。
  */
 
 import type { Message, ToolResultMessage } from '@earendil-works/pi-ai';
@@ -172,24 +172,32 @@ export function compactTranscript(
   }
 
   const next = messages.slice();
+  // 先确认能达到低水位；不可达时不做部分折叠，以保留稳定的缓存前缀。
+  const replacements = foldableIndexes
+    .map((index) => {
+      const original = messages[index] as ToolResultMessage;
+      const elided = buildElidedToolResult(original);
+      return {
+        index,
+        elided,
+        saving: estimateMessageTokens(original) - estimateMessageTokens(elided),
+      };
+    })
+    .filter(({ saving }) => saving > 0);
+  const minimumTokens = tokensBefore - replacements.reduce((sum, entry) => sum + entry.saving, 0);
+  if (minimumTokens > target) {
+    return { messages, elidedCount: 0, tokensBefore, tokensAfter: tokensBefore, budgetMet: false };
+  }
   let currentTokens = tokensBefore;
   let elidedCount = 0;
 
-  for (const index of foldableIndexes) {
+  for (const { index, elided, saving } of replacements) {
     if (currentTokens <= target) {
       break;
     }
 
-    const original = next[index] as ToolResultMessage;
-    const originalTokens = estimateMessageTokens(original);
-    const elided = buildElidedToolResult(original);
-    const elidedTokens = estimateMessageTokens(elided);
-    if (elidedTokens >= originalTokens) {
-      continue;
-    }
-
     next[index] = elided;
-    currentTokens -= originalTokens - elidedTokens;
+    currentTokens -= saving;
     elidedCount += 1;
   }
 

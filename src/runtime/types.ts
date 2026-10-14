@@ -69,6 +69,7 @@ export interface RuntimeResultEvent {
   type: 'result';
   status: string;
   text?: string;
+  /** All reported requests for this prompt, including tool turns; excludes earlier prompts. */
   usage?: RuntimeUsage;
   error?: string;
   /**

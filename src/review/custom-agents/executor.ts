@@ -321,6 +321,9 @@ export async function executeCustomAgent(
         tokensUsed = inputTokensUsed + outputTokensUsed;
       }
 
+      if (event.status === 'error') {
+        throw new Error(event.error || 'Custom agent runtime returned error');
+      }
       if (event.status !== 'success' && options.verbose) {
         console.error(`[CustomAgentExecutor] Agent ${agent.name} error:`, event.status);
       }

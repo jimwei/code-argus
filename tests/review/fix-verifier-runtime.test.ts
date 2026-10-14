@@ -29,7 +29,7 @@ describe('fix verifier runtime bridge', () => {
     queryMock.mockClear();
   });
 
-  it('executes fix verification through the runtime tool bridge', async () => {
+  it.each(['medium', 'low', 'none', undefined])('validator effort %s', async (effort) => {
     createRuntimeFromEnvMock.mockReturnValue({
       kind: 'openai-responses',
       config: {
@@ -39,6 +39,8 @@ describe('fix verifier runtime bridge', () => {
           light: 'gpt-5-mini',
           validator: 'gpt-5.3-codex',
         },
+        reasoningEffort: 'high',
+        validatorReasoningEffort: effort,
         openai: {
           apiKey: 'openai-key',
           source: 'argus',
@@ -125,6 +127,7 @@ describe('fix verifier runtime bridge', () => {
       expect.objectContaining({
         cwd: 'C:\\repo',
         model: 'gpt-5.3-codex',
+        ...(effort ? { reasoningEffort: effort } : {}),
         toolNamespace: 'fix-verifier-tools',
         tools: expect.any(Array),
       })
@@ -135,6 +138,7 @@ describe('fix verifier runtime bridge', () => {
     expect(queryMock).not.toHaveBeenCalled();
 
     const runtimeOptions = executeMock.mock.calls[0]?.[0];
+    if (!effort) expect(runtimeOptions).not.toHaveProperty('reasoningEffort');
     expect(runtimeOptions).not.toHaveProperty('completionBudget');
     expect(runtimeOptions.prompt).toContain('Fix Verification Specialist');
     expect(runtimeOptions.prompt).toContain('issue-1');
@@ -158,6 +162,40 @@ describe('fix verifier runtime bridge', () => {
         title: 'HTTP failures are still ignored',
       },
     });
+    expect(closeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports runtime error results through the existing progress error path', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        models: { validator: 'gpt-5' },
+        validatorReasoningEffort: 'medium',
+      },
+      execute: () => ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            status: 'error',
+            error: 'upstream disconnected',
+            usage: { inputTokens: 100, cachedInputTokens: 20, outputTokens: 10 },
+          };
+        },
+        close: closeMock,
+      }),
+    });
+    const progress = { info: vi.fn(), error: vi.fn(), success: vi.fn() };
+    const summary = await executeFixVerifier({
+      repoPath: 'C:\\repo',
+      previousReview: { issues: [] },
+      diffContent: '+fetch("/api/service")',
+      fileChangesSummary: 'fixture',
+      progress: progress as any,
+    });
+
+    expect(progress.error).toHaveBeenCalledWith(expect.stringContaining('upstream disconnected'));
+    expect(summary.tokens_used).toBe(110);
+    expect(summary.cached_input_tokens_used).toBe(20);
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
 });
