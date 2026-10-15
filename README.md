@@ -20,6 +20,7 @@ This branch adds the first production-ready dual runtime foundation:
 
 - Multi-agent parallel review for security, logic, performance, and style
 - Smart agent selection based on the changed file set
+- Large PR segmentation, with each segment's File Change Analysis limited to files in that segment's diff
 - Multi-round validation to reduce false positives
 - Fast review mode for lower-latency feedback
 - Realtime deduplication with rule-based filtering plus semantic verification
