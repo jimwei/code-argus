@@ -2803,6 +2803,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
       // Create segment-specific context
       const segmentDiff = rebuildDiffFromSegment(segment);
+      const segmentPaths = new Set(segment.files.map((file) => file.path));
       const segmentContext: ReviewContext = {
         ...context,
         diff: {
@@ -2810,6 +2811,12 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           diff: segmentDiff,
         },
         diffFiles: segment.files,
+        // File Change Analysis 必须与本分段 diff 保持一致：如果沿用整个 PR 的
+        // fileAnalyses，agent 会看到清单里存在未包含在 diff 中的文件，从而调用
+        // report_incomplete，把分段审核误报成「agent 执行失败」。
+        fileAnalyses: context.fileAnalyses.filter((analysis) =>
+          segmentPaths.has(analysis.file_path)
+        ),
         // Keep deletedFiles from original context for logic-reviewer
         deletedFiles: context.deletedFiles,
       };
