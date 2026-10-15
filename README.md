@@ -204,11 +204,12 @@ Notes:
   `store: false` plus the full transcript, and (unless disabled) a `max_output_tokens`
   cap taken from the runtime default. Set `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false`
   for gateways that reject that parameter
-- With `ARGUS_OPENAI_REASONING_REPLAY=drop` (default) the pi-ai runtime strips the
-  forced `reasoning.summary` / `include: ["reasoning.encrypted_content"]` fields from
-  requests and no longer replays historical thinking blocks, which keeps reasoning
-  content out of (and off) every subsequent turn. Use `keep` when the upstream requires
-  strict OpenAI semantics (encrypted reasoning replay with `store: false`)
+- The pi-ai runtime replays native reasoning blocks exactly like the SDK implementation:
+  `reasoning.summary` / `include: ["reasoning.encrypted_content"]` stay in the payload and
+  historical thinking blocks are written back to the transcript. The former
+  `ARGUS_OPENAI_REASONING_REPLAY=drop` mode was removed after a real-PR A/B showed it
+  roughly doubled review cost — without its own reasoning the model re-explores instead
+  of continuing from prior analysis
 - `ARGUS_TRANSCRIPT_BUDGET_TOKENS` (default `160000`, `0` disables) bounds the pi-ai
   transcript on a best-effort basis: once the estimated request size crosses the
   budget, the oldest tool outputs are folded toward 60% of it. The most recent six tool
@@ -260,7 +261,6 @@ Notes:
 | Validator model                     | `ARGUS_VALIDATOR_MODEL`                         |
 | Reasoning effort                    | `ARGUS_REASONING_EFFORT`                        |
 | Validator reasoning effort          | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
-| pi-ai reasoning replay              | `ARGUS_OPENAI_REASONING_REPLAY`                 |
 | pi-ai transcript budget             | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
 | Claude API key                      | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
 | Claude OAuth or proxy               | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |

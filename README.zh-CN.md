@@ -189,10 +189,10 @@ argus config set model gpt-5
 - 验证阶段（含 fix-verifier 修复验证）缺省把推理强度压到 `medium`（仅在主流程高于 `medium` 时生效），
   验证模型本身仍取 `ARGUS_VALIDATOR_MODEL`；可用
   `ARGUS_VALIDATOR_REASONING_EFFORT` 显式覆盖
-- 选用 `pi-ai` 实现时：`ARGUS_OPENAI_REASONING_REPLAY`（缺省 `drop`）会去掉
-  上游强制附带的 `reasoning.summary` / `include: ["reasoning.encrypted_content"]`，
-  且不再把历史思考块写回 transcript，避免推理内容逐轮重放；需要严格 OpenAI
-  语义（`store: false` 下重放加密推理项）时设为 `keep`
+- `pi-ai` 实现现在与 SDK 实现一样重放原生推理块：保留 `reasoning.summary` /
+  `include: ["reasoning.encrypted_content"]`，并把历史思考块写回 transcript。
+  旧的 `ARGUS_OPENAI_REASONING_REPLAY=drop` 已移除——真实 PR A/B 实测该模式会让
+  模型失去自有推理、反复重新探索，整体成本约翻倍
 - 选用 `pi-ai` 实现时：`ARGUS_TRANSCRIPT_BUDGET_TOKENS`（缺省 `160000`，
   `0` 表示禁用）用于控制长会话体积，属于 best-effort 约束：估算请求超过预算时，
   最旧的工具输出会被折叠成占位文本，向预算的 60% 收敛（保留最近 6 条与全部
@@ -220,7 +220,6 @@ argus config set model gpt-5
 | 验证模型                | `ARGUS_VALIDATOR_MODEL`                         |
 | 推理强度                | `ARGUS_REASONING_EFFORT`                        |
 | 验证阶段推理强度        | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
-| pi-ai 推理项重放        | `ARGUS_OPENAI_REASONING_REPLAY`                 |
 | pi-ai transcript 预算   | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
 | Claude API Key          | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
 | Claude OAuth / 兼容代理 | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |

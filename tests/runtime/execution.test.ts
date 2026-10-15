@@ -548,7 +548,7 @@ describe('openai-responses runtime (pi-ai)', () => {
     ]);
   });
 
-  it('drops reasoning summaries and replayed thinking blocks by default', async () => {
+  it('replays pi-ai native reasoning blocks', async () => {
     const calls: PiStreamCall[] = [];
     const report = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
     const streams = [
@@ -580,68 +580,6 @@ describe('openai-responses runtime (pi-ai)', () => {
     );
 
     const runtime = new OpenAIResponsesRuntime(config, { streamSimple });
-    await collectEvents(
-      runtime.execute({
-        prompt: 'Review',
-        cwd: '.',
-        maxTurns: 4,
-        tools: [createTool('report_issue', report)],
-      })
-    );
-
-    const onPayload = calls[0]!.options?.onPayload;
-    expect(typeof onPayload).toBe('function');
-    const adjusted = onPayload!(
-      {
-        include: ['reasoning.encrypted_content'],
-        reasoning: { effort: 'high', summary: 'auto' },
-        store: false,
-      },
-      calls[0]!.model
-    );
-    expect(adjusted).toEqual({ reasoning: { effort: 'high' }, store: false });
-
-    const replayed = calls[1]!.context.messages.find((message) => message.role === 'assistant');
-    expect(replayed?.content.some((block) => block.type === 'thinking')).toBe(false);
-    expect(replayed?.content.some((block) => block.type === 'toolCall')).toBe(true);
-  });
-
-  it('keeps pi-ai native reasoning replay when reasoning replay is kept', async () => {
-    const keepConfig: ArgusRuntimeConfig = {
-      ...config,
-      openai: { ...config.openai!, reasoningReplay: 'keep' },
-    };
-    const calls: PiStreamCall[] = [];
-    const report = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
-    const streams = [
-      createPiStream([
-        toolCallEvent('report_issue', 'call_1', { title: 'bug' }),
-        doneEvent(
-          createAssistantMessage({
-            content: [
-              {
-                type: 'thinking',
-                thinking: 'internal reasoning',
-                thinkingSignature: '{"type":"reasoning","id":"rs_1"}',
-              },
-              { type: 'toolCall', id: 'call_1', name: 'report_issue', arguments: { title: 'bug' } },
-            ],
-            stopReason: 'toolUse',
-          })
-        ),
-      ]),
-      createPiStream([
-        doneEvent(createAssistantMessage({ content: [{ type: 'text', text: 'Reviewed.' }] })),
-      ]),
-    ];
-    const streamSimple = vi.fn(
-      (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
-        calls.push({ model, context, options });
-        return streams.shift()!;
-      }
-    );
-
-    const runtime = new OpenAIResponsesRuntime(keepConfig, { streamSimple });
     await collectEvents(
       runtime.execute({
         prompt: 'Review',

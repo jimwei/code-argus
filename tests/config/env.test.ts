@@ -50,7 +50,6 @@ describe('runtime-aware env configuration', () => {
     delete process.env.ARGUS_OPENAI_RESPONSE_IMPL;
     delete process.env.ARGUS_REASONING_EFFORT;
     delete process.env.ARGUS_VALIDATOR_REASONING_EFFORT;
-    delete process.env.ARGUS_OPENAI_REASONING_REPLAY;
     delete process.env.ARGUS_TRANSCRIPT_BUDGET_TOKENS;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
@@ -99,7 +98,6 @@ describe('runtime-aware env configuration', () => {
         supportsMaxOutputTokens: true,
         supportsDeveloperRole: true,
         responseImpl: 'sdk',
-        reasoningReplay: 'drop',
         transcriptBudgetTokens: 160000,
       },
     });
@@ -269,28 +267,6 @@ describe('runtime-aware env configuration', () => {
     process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
 
     expect(loadArgusRuntimeConfig().validatorReasoningEffort).toBeUndefined();
-  });
-
-  it('defaults the pi-ai reasoning replay mode to drop and accepts keep', () => {
-    process.env.ARGUS_RUNTIME = 'openai-responses';
-    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
-
-    expect(loadArgusRuntimeConfig().openai?.reasoningReplay).toBe('drop');
-
-    process.env.ARGUS_OPENAI_REASONING_REPLAY = 'keep';
-    expect(loadArgusRuntimeConfig().openai?.reasoningReplay).toBe('keep');
-  });
-
-  it('falls back to the default reasoning replay mode for unsupported values', () => {
-    process.env.ARGUS_RUNTIME = 'openai-responses';
-    process.env.ARGUS_OPENAI_API_KEY = 'openai-key';
-    process.env.ARGUS_OPENAI_REASONING_REPLAY = 'sometimes';
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    expect(loadArgusRuntimeConfig().openai?.reasoningReplay).toBe('drop');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ARGUS_OPENAI_REASONING_REPLAY'));
-
-    warn.mockRestore();
   });
 
   it('parses ARGUS_TRANSCRIPT_BUDGET_TOKENS and lets 0 disable it', () => {

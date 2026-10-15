@@ -181,40 +181,6 @@ export function toThinkingLevel(effort: string | undefined): ThinkingLevel | und
   return resolved && resolved !== 'off' ? resolved : undefined;
 }
 
-/**
- * `drop` 模式下从请求 payload 去掉 pi-ai 强制附带的推理摘要与加密内容。
- * 内网网关探针实测：去掉 include/summary 后仍会返回推理内容本身，且
- * transcript 不重放推理项的 follow-up 请求依旧返回 200。需要严格 OpenAI
- * 语义（store:false + 重放 reasoning.encrypted_content）的部署必须使用 `keep`。
- */
-function stripReasoningPayloadFields(payload: unknown): unknown {
-  if (!payload || typeof payload !== 'object') {
-    return payload;
-  }
-
-  const params = payload as Record<string, unknown>;
-  delete params.include;
-
-  const reasoning = params.reasoning;
-  if (reasoning && typeof reasoning === 'object') {
-    delete (reasoning as Record<string, unknown>).summary;
-  }
-
-  return params;
-}
-
-/** `drop` 模式下不把思考块写回 transcript，避免推理内容逐轮重放。 */
-function stripThinkingBlocks(message: AssistantMessage): AssistantMessage {
-  if (!message.content.some((block) => block.type === 'thinking')) {
-    return message;
-  }
-
-  return {
-    ...message,
-    content: message.content.filter((block) => block.type !== 'thinking'),
-  };
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -589,12 +555,10 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     effort: string | undefined = this.config.reasoningEffort
   ): SimpleStreamOptions {
     const reasoning = toThinkingLevel(effort);
-    const dropReasoningContent = this.config.openai?.reasoningReplay !== 'keep';
     return {
       apiKey: this.apiKey,
       maxRetries: PI_PROVIDER_MAX_RETRIES,
       ...(reasoning ? { reasoning } : {}),
-      ...(dropReasoningContent ? { onPayload: stripReasoningPayloadFields } : {}),
       ...extra,
     };
   }
@@ -695,7 +659,6 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
       : activeEffort === this.config.reasoningEffort
         ? this.model
         : buildPiModel(this.config, this.config.models.main, activeEffort);
-    const dropReasoningReplay = this.config.openai?.reasoningReplay !== 'keep';
     const transcriptBudgetTokens = this.config.openai?.transcriptBudgetTokens;
     const streamFn = this.streamFn;
     const buildOptions = (extra: SimpleStreamOptions = {}) =>
@@ -822,8 +785,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             // 每个 result 汇总当前 prompt 的全部工具轮次；下个 prompt 重新计数。
             lastUsage = mergeUsage(lastUsage, normalizeUsage(assistant));
             const responseText = extractAssistantText(assistant);
-            // `drop` 模式：thinking 块不回写 transcript，避免推理内容逐轮重放。
-            messages.push(dropReasoningReplay ? stripThinkingBlocks(assistant) : assistant);
+            messages.push(assistant);
 
             if (responseText) {
               lastText = responseText;

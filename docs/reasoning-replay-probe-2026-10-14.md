@@ -5,8 +5,16 @@
 2026-10-14 在 `ssh-bridge` 主机别名 `prm-g1-103` 上，通过 PR Manager 已配置的
 `api.aicr.gccode.cn` 网关和服务器凭据测试了真实 Responses 工具调用。
 当前网关没有复现“删除 reasoning、保留工具 item ID 后第二轮报错”。因此不把这项
-风险当作已确认的生产 P1，不修改 `ARGUS_OPENAI_REASONING_REPLAY=drop` 默认值。
+风险当作已确认的生产 P1；当日未修改 `ARGUS_OPENAI_REASONING_REPLAY=drop` 默认值
+（该开关已于 2026-10-15 按下方更新整体移除）。
 官方严格接口的兼容性仍未实际验证；这不等于证明所有 OpenAI 部署都安全。
+
+> 后续更新（2026-10-15）：本页只验证了"drop 的请求形态能被网关接受"，没有验证
+> 净费用。随后的真实 PR A/B（LeySerFujiProject #7182 / #7191，103 隔离运行）实测
+> 推翻了"drop 更省"的前提：不重放推理会让模型失去自有分析、反复重新探索，同一
+> PR 上 pi-ai 的成本约为 keep 的 2–3 倍（例如小 PR：drop 8.7 分钟 / 2.19M tokens
+> vs keep 5.0 分钟 / 1.67M，SDK 4.2 分钟 / 1.42M）。因此
+> `ARGUS_OPENAI_REASONING_REPLAY` 已整体移除，pi-ai 固定按原生（keep）行为重放。
 
 ## 方法与结果
 
@@ -32,7 +40,8 @@ reasoning 且去掉工具 item ID。drop 第一轮响应测试后两种 follow-u
 
 该网关没有返回官方 `rs_*`/`fc_*` 配对项，GPT 路由也没有 reasoning 输出；
 结果只能证明当前网关接受这些请求，不能验证官方 item 配对约束。
-需要严格 `store:false` reasoning 重放的部署仍可显式设置 `keep`。
+需要严格 `store:false` reasoning 重放的部署无需再做配置——pi-ai 现在固定按原生
+行为重放加密推理项。
 此探针不是 PR 审核 A/B，不用于推导审核质量、净费用或缓存收益。
 
 ## 复现

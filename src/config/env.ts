@@ -23,18 +23,6 @@ export type OpenAIResponsesImpl = 'pi-ai' | 'sdk';
 export const DEFAULT_OPENAI_RESPONSE_IMPL: OpenAIResponsesImpl = 'sdk';
 
 /**
- * pi-ai 路径如何处理推理项：
- * - `drop`（缺省）：不请求推理摘要/加密内容，也不把历史推理块回传给上游。
- *   本地网关（deepseek 等）实测接受不重放推理项的 transcript，且推理内容本身
- *   会被逐轮重放放大成本；真正需要严格 OpenAI 语义（store:false + 重放
- *   `reasoning.encrypted_content`）的部署请显式设置为 `keep`。
- * - `keep`：保持 pi-ai 原生行为。
- */
-export type OpenAIReasoningReplayMode = 'drop' | 'keep';
-
-export const DEFAULT_OPENAI_REASONING_REPLAY: OpenAIReasoningReplayMode = 'drop';
-
-/**
  * pi-ai 路径的会话 transcript 预算（估算 token）。超过预算时最旧的工具输出
  * 会被折叠成占位文本，避免长会话把每次请求越滚越大；`0` 表示禁用。
  */
@@ -72,11 +60,6 @@ export interface OpenAIAuthConfig {
    * 缺省 `sdk`。仅对 `openai-responses` 运行时生效。
    */
   responseImpl?: OpenAIResponsesImpl;
-  /**
-   * pi-ai 路径的推理项重放策略，读自 ARGUS_OPENAI_REASONING_REPLAY，
-   * 缺省 `drop`（见 OpenAIReasoningReplayMode）。
-   */
-  reasoningReplay?: OpenAIReasoningReplayMode;
   /**
    * pi-ai 路径的 transcript 预算，读自 ARGUS_TRANSCRIPT_BUDGET_TOKENS，
    * 缺省 160000；`0` 表示禁用（字段缺省）。
@@ -123,25 +106,6 @@ function resolveOpenAIResponsesImpl(raw: string | undefined): OpenAIResponsesImp
     `[ArgusRuntimeConfig] Unsupported ARGUS_OPENAI_RESPONSE_IMPL "${value}", falling back to ${DEFAULT_OPENAI_RESPONSE_IMPL}`
   );
   return DEFAULT_OPENAI_RESPONSE_IMPL;
-}
-
-/**
- * 解析 `ARGUS_OPENAI_REASONING_REPLAY`。取值不合法时回退到默认值并告警。
- */
-function resolveReasoningReplay(raw: string | undefined): OpenAIReasoningReplayMode {
-  const value = raw?.trim().toLowerCase();
-  if (!value) {
-    return DEFAULT_OPENAI_REASONING_REPLAY;
-  }
-
-  if (value === 'drop' || value === 'keep') {
-    return value;
-  }
-
-  console.warn(
-    `[ArgusRuntimeConfig] Unsupported ARGUS_OPENAI_REASONING_REPLAY "${value}", falling back to ${DEFAULT_OPENAI_REASONING_REPLAY}`
-  );
-  return DEFAULT_OPENAI_REASONING_REPLAY;
 }
 
 /**
@@ -295,7 +259,6 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
     true,
     'ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE'
   );
-  const reasoningReplay = resolveReasoningReplay(process.env.ARGUS_OPENAI_REASONING_REPLAY);
   const transcriptBudgetTokens = resolveTranscriptBudgetTokens(
     process.env.ARGUS_TRANSCRIPT_BUDGET_TOKENS
   );
@@ -308,7 +271,6 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       supportsMaxOutputTokens,
       supportsDeveloperRole,
       responseImpl,
-      reasoningReplay,
       ...(transcriptBudgetTokens !== undefined ? { transcriptBudgetTokens } : {}),
     };
   }
@@ -322,7 +284,6 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       supportsMaxOutputTokens,
       supportsDeveloperRole,
       responseImpl,
-      reasoningReplay,
       ...(transcriptBudgetTokens !== undefined ? { transcriptBudgetTokens } : {}),
     };
   }
