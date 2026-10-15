@@ -210,6 +210,10 @@ Notes:
   `ARGUS_OPENAI_REASONING_REPLAY=drop` mode was removed after a real-PR A/B showed it
   roughly doubled review cost — without its own reasoning the model re-explores instead
   of continuing from prior analysis
+- The pi-ai runtime also lifts the session instructions from the leading `developer`
+  input message into the top-level `instructions` field, matching the SDK request shape.
+  A real-PR A/B on prm-g1-103 showed the developer-message placement made the agents
+  explore ~1.5–2× longer (3.3–4.7M tokens vs 2.3–3.1M after the lift; SDK 2.2–2.5M)
 - `ARGUS_TRANSCRIPT_BUDGET_TOKENS` (default `160000`, `0` disables) bounds the pi-ai
   transcript on a best-effort basis: once the estimated request size crosses the
   budget, the oldest tool outputs are folded toward 60% of it. The most recent six tool
@@ -222,9 +226,10 @@ Notes:
   exceed the provider context limit. The default
   160k leaves estimated 32k output headroom inside the 200k window when the budget is
   met; verify net cost using cached/input counters if cached tokens are cheap
-- When `ARGUS_REASONING_EFFORT` is set, pi-ai sends the leading instructions with the
-  `developer` role (plain `system` when reasoning is off). Gateways that only accept
-  `system` should set `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE=false`
+- `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE=false` only changes the role pi-ai uses while
+  building the leading instruction (`system` instead of `developer`); the runtime then
+  lifts that message into the top-level `instructions` field, so the flag no longer
+  changes the outgoing request and is deprecated
 - The runtime sends a `systemPrompt` on every request (the reviewer budget text is
   appended when a completion budget is present). Unknown values of the two gateway
   flags above fall back to `true` with a warning in the logs
@@ -245,30 +250,30 @@ Notes:
   runtime: `sdk` (default, the self-maintained `openai` SDK implementation) or `pi-ai`
   (`@earendil-works/pi-ai`, opt-in). Both share the same
   `AgentRuntime` contract and event statuses, so nothing else in the pipeline changes;
-  an unknown value falls back to `sdk` with a warning. The two gateway flags above
-  (`ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS` / `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`)
-  only affect the `pi-ai` implementation and are therefore ignored on the default path
+  an unknown value falls back to `sdk` with a warning.
+  `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS` only affects the `pi-ai` implementation and
+  is therefore ignored on the default path
 
 ### Environment variable summary
 
-| Purpose                             | Variables                                       |
-| ----------------------------------- | ----------------------------------------------- |
-| Runtime selection                   | `ARGUS_RUNTIME`                                 |
-| OpenAI Responses protocol stack     | `ARGUS_OPENAI_RESPONSE_IMPL`                    |
-| OpenAI shared model                 | `ARGUS_OPENAI_MODEL`                            |
-| Main model                          | `ARGUS_MODEL`                                   |
-| Light model                         | `ARGUS_LIGHT_MODEL`                             |
-| Validator model                     | `ARGUS_VALIDATOR_MODEL`                         |
-| Reasoning effort                    | `ARGUS_REASONING_EFFORT`                        |
-| Validator reasoning effort          | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
-| pi-ai transcript budget             | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
-| Claude API key                      | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
-| Claude OAuth or proxy               | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
-| Claude base URL                     | `ARGUS_ANTHROPIC_BASE_URL`                      |
-| OpenAI API key                      | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
-| OpenAI base URL                     | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
-| Gateway `max_output_tokens` support | `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS`       |
-| Gateway `developer` role support    | `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`          |
+| Purpose                                       | Variables                                       |
+| --------------------------------------------- | ----------------------------------------------- |
+| Runtime selection                             | `ARGUS_RUNTIME`                                 |
+| OpenAI Responses protocol stack               | `ARGUS_OPENAI_RESPONSE_IMPL`                    |
+| OpenAI shared model                           | `ARGUS_OPENAI_MODEL`                            |
+| Main model                                    | `ARGUS_MODEL`                                   |
+| Light model                                   | `ARGUS_LIGHT_MODEL`                             |
+| Validator model                               | `ARGUS_VALIDATOR_MODEL`                         |
+| Reasoning effort                              | `ARGUS_REASONING_EFFORT`                        |
+| Validator reasoning effort                    | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
+| pi-ai transcript budget                       | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
+| Claude API key                                | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
+| Claude OAuth or proxy                         | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
+| Claude base URL                               | `ARGUS_ANTHROPIC_BASE_URL`                      |
+| OpenAI API key                                | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
+| OpenAI base URL                               | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
+| Gateway `max_output_tokens` support           | `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS`       |
+| Gateway `developer` role support (deprecated) | `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`          |
 
 ## Configuration Management
 

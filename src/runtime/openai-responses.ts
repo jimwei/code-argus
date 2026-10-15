@@ -119,7 +119,8 @@ export function buildPiModel(
       // 部分自建网关（Codex 协议网关）会拒绝 max_output_tokens：由
       // ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS 声明，默认沿用 OpenAI 行为。
       supportsMaxOutputTokens: config.openai?.supportsMaxOutputTokens ?? true,
-      // 开启推理时 pi-ai 用 developer 角色发首条指令；只认 system 的网关可以关掉。
+      // 仅决定 pi-ai 构造首条指令的角色；该指令随后会被搬到顶层 `instructions`
+      // （见 liftInstructionsToPayload），因此对出站请求不再有影响。
       supportsDeveloperRole: config.openai?.supportsDeveloperRole ?? true,
     },
   };
@@ -183,6 +184,41 @@ export function toThinkingLevel(effort: string | undefined): ThinkingLevel | und
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * pi-ai 默认把会话指令放在 `input[0]`（推理开启时为 `developer` 角色消息）。
+ * SDK 实现与官方 Responses 语义都使用顶层 `instructions` 字段；103 实测把同一段
+ * 指令从 developer 消息移到 `instructions` 后，四个 reviewer 的工具调用轮数从
+ * 80–103 降到 44–67、总 token 从 3.3–4.7M 降到 2.3–3.1M（同窗 SDK 为 2.2–2.5M）。
+ * 这里在出站 payload 上做等价的搬运，保持与 SDK 相同的请求形态。
+ */
+function liftInstructionsToPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+
+  const params = payload as Record<string, unknown>;
+  if (typeof params.instructions === 'string' && params.instructions.length > 0) {
+    return params;
+  }
+
+  const input = params.input;
+  if (!Array.isArray(input) || input.length === 0) {
+    return params;
+  }
+
+  const first = input[0];
+  if (
+    isPlainObject(first) &&
+    (first.role === 'developer' || first.role === 'system') &&
+    typeof first.content === 'string'
+  ) {
+    params.instructions = first.content;
+    params.input = input.slice(1);
+  }
+
+  return params;
 }
 
 type JsonSchema = Record<string, unknown>;
@@ -559,6 +595,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
       apiKey: this.apiKey,
       maxRetries: PI_PROVIDER_MAX_RETRIES,
       ...(reasoning ? { reasoning } : {}),
+      onPayload: liftInstructionsToPayload,
       ...extra,
     };
   }

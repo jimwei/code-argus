@@ -50,9 +50,9 @@ export interface OpenAIAuthConfig {
    */
   supportsMaxOutputTokens?: boolean;
   /**
-   * 部署侧声明网关是否接受 `developer` 角色消息。开启推理时 pi-ai 会把首条指令
-   * 以 developer 角色发出（未开启推理时为 system）。读自
-   * ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE，未设置时按 true 处理。
+   * 仅决定 pi-ai 构造首条指令时使用的角色（developer / system）；运行时随后会把
+   * 该指令搬到顶层 `instructions` 字段，因此该开关不再改变出站请求，标记为废弃。
+   * 读自 ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE，未设置时按 true 处理。
    */
   supportsDeveloperRole?: boolean;
   /**

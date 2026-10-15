@@ -589,7 +589,25 @@ describe('openai-responses runtime (pi-ai)', () => {
       })
     );
 
-    expect(calls[0]!.options?.onPayload).toBeUndefined();
+    const onPayload = calls[0]!.options?.onPayload;
+    expect(typeof onPayload).toBe('function');
+    const adjusted = onPayload!(
+      {
+        input: [
+          { role: 'developer', content: 'Review budget: 41 requests for this review.' },
+          { role: 'user', content: [{ type: 'input_text', text: 'Review' }] },
+        ],
+        reasoning: { effort: 'high', summary: 'auto' },
+        store: false,
+      },
+      calls[0]!.model
+    );
+    expect(adjusted).toEqual({
+      instructions: 'Review budget: 41 requests for this review.',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Review' }] }],
+      reasoning: { effort: 'high', summary: 'auto' },
+      store: false,
+    });
     const replayed = calls[1]!.context.messages.find((message) => message.role === 'assistant');
     expect(replayed?.content.some((block) => block.type === 'thinking')).toBe(true);
   });
