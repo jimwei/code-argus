@@ -1,0 +1,4 @@
+name: comprehensive-reviewer
+description: 综合审核安全、逻辑、性能和代码可维护性
+trigger_mode: rule
+prompt_file: comprehensive-reviewer.md

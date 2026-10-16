@@ -76,6 +76,36 @@ export ARGUS_MODEL=gpt-5
 argus review /path/to/repo feature-branch main
 ```
 
+## 审核策略与可配置主 reviewer
+
+`multi` 是默认审核策略，保留安全、逻辑、性能和风格等内置 reviewer 的分工。`single` 使用一个主 reviewer 做综合审核，同时保留按规则匹配的 supplemental custom agents；它不会关闭验证、去重或修复验证。审核策略与 `--review-mode=normal|fast` 正交：normal/fast 决定验证轮次，不决定 reviewer 数量。
+
+```bash
+# 默认 multi；环境变量留空也使用 multi
+export ARGUS_REVIEW_STRATEGY=single
+# 可选，留空使用随包内置的综合 reviewer YAML 与 prompt
+export ARGUS_PRIMARY_REVIEWER=/config/team-primary.yaml
+
+argus review /path/to/repo feature-branch main --review-mode=fast
+# CLI 显式参数优先于环境变量；--primary-reviewer= 显式选择内置定义
+argus review /path/to/repo feature-branch main --review-strategy=single --primary-reviewer=/config/team-primary.yaml
+```
+
+主定义使用 custom agent YAML 格式，运行标识为 `custom:<name>`。主 reviewer 必须启用，并会忽略触发条件而必跑；同一个定义作为主 reviewer 后，不会再作为 supplemental agent 重复执行。其他 custom agents 仍按各自触发规则运行。multi 策略不使用主定义路径。非法策略、主定义文件不可读或定义不合法会直接失败。
+
+```yaml
+name: team-primary
+description: 综合检查业务逻辑、安全和可维护性
+prompt_file: ./team-primary.md
+max_turns: 80
+```
+
+`prompt_file` 相对于 YAML 文件所在目录解析，也支持绝对路径；它与内联 `prompt` 二选一。主定义省略触发配置即可。`max_turns` 可选，必须是 24 到 500 的整数；省略时按变更文件数动态计算综合审核预算，重试可能使用更大预算，并受 500 轮上限约束。预算增加会提高调用时间和 token 成本，不能保证模型在预算内完成。补充 agent 继续使用现有预算策略。
+
+包内综合定义包含 severity 分级标准：确认的安全回归——尤其是 diff 移除或弱化既有校验、且不可信输入仍可达的情况——不低于 `error`；`suggestion` 只用于非缺陷的可选改进，缺陷不能降级到该级别。
+
+主 reviewer 或补充审核因预算耗尽、缺少证据等原因未完成时，报告的 `metadata.review_complete` 为 `false`，`incomplete_reasons` 列出原因，已报告的部分 findings 会保留。可读报告会明确“审核不完整”，不能把零 findings 当作完整 clean 结论。`metadata.review_strategy`、`primary_reviewer`、`reviewer_max_turns` 记录实际策略、主 reviewer 标识和执行预算，便于核验。
+
 ## Runtime and Authentication
 
 ### Runtime selection
@@ -301,25 +331,28 @@ Reference auto-detection:
 
 ## Common Options
 
-| Option                     | Description                                       |
-| -------------------------- | ------------------------------------------------- | ------------------------ |
-| `--json-logs`              | Emit NDJSON events for service integration        |
-| `--language=<zh            | en>`                                              | Set output language      |
-| `--review-mode=<normal     | fast>`                                            | Control validation depth |
-| `--skip-validation`        | Skip validation for faster output                 |
-| `--verbose`                | Emit extra debug information                      |
-| `--config-dir=<path>`      | Auto-load rules, agents, and `.argusignore`       |
-| `--rules-dir=<path>`       | Add a custom rules directory                      |
-| `--agents-dir=<path>`      | Add a custom agents directory                     |
-| `--previous-review=<file>` | Load a previous review and verify fixes           |
-| `--no-verify-fixes`        | Disable fix verification                          |
-| `--pr-context=<file>`      | Inject PR business context, for example Jira data |
-| `--local`                  | Use local branches and skip `git fetch`           |
-| `--require-worktree`       | Require worktree creation or fail                 |
-| `--diff-file=<path>`       | Read diff input from a file                       |
-| `--diff-stdin`             | Read diff input from stdin                        |
-| `--commits=<sha1,sha2>`    | Review only the specified commits                 |
-| `--no-smart-merge-filter`  | Disable smart merge filtering                     |
+| Option                        | Description                                                   |
+| ----------------------------- | ------------------------------------------------------------- | ------------------------ |
+| `--json-logs`                 | Emit NDJSON events for service integration                    |
+| `--language=<zh               | en>`                                                          | Set output language      |
+| `--review-mode=<normal        | fast>`                                                        | Control validation depth |
+| `--validation-rounds=<n>`     | Validation rounds per issue (1..5; default: fast 2, normal 5) |
+| `--validation-max-turns=<n>`  | Per-issue validation turn budget (1..300; default 30)         |
+| `--validation-read-limit=<n>` | Lines per validator Read call (60..2000; default 140)         |
+| `--skip-validation`           | Skip validation for faster output                             |
+| `--verbose`                   | Emit extra debug information                                  |
+| `--config-dir=<path>`         | Auto-load rules, agents, and `.argusignore`                   |
+| `--rules-dir=<path>`          | Add a custom rules directory                                  |
+| `--agents-dir=<path>`         | Add a custom agents directory                                 |
+| `--previous-review=<file>`    | Load a previous review and verify fixes                       |
+| `--no-verify-fixes`           | Disable fix verification                                      |
+| `--pr-context=<file>`         | Inject PR business context, for example Jira data             |
+| `--local`                     | Use local branches and skip `git fetch`                       |
+| `--require-worktree`          | Require worktree creation or fail                             |
+| `--diff-file=<path>`          | Read diff input from a file                                   |
+| `--diff-stdin`                | Read diff input from stdin                                    |
+| `--commits=<sha1,sha2>`       | Review only the specified commits                             |
+| `--no-smart-merge-filter`     | Disable smart merge filtering                                 |
 
 ### Review modes
 
@@ -327,6 +360,12 @@ Reference auto-detection:
 | -------- | ------------------------------------------------- |
 | `normal` | Default mode with 5 progressive validation rounds |
 | `fast`   | Faster mode with 2 compressed validation rounds   |
+
+Validation cost tuning: `--validation-rounds`, `--validation-max-turns` and
+`--validation-read-limit` (or `ARGUS_VALIDATION_ROUNDS`, `ARGUS_VALIDATION_MAX_TURNS`,
+`ARGUS_VALIDATION_READ_LIMIT`) override the mode defaults per run. In `single` mode the
+validator is often the largest token consumer, so lower the rounds/turn budget or widen the
+Read window deliberately and measure the effect before changing production defaults.
 
 ## Examples
 

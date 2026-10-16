@@ -346,4 +346,24 @@ describe('repo context tools', () => {
     expect(text).toMatch(/\[\+\d+ chars\]/);
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u.test(text)).toBe(false);
   });
+
+  it('honours configurable Read limits for wide validator reads', async () => {
+    const repoPath = await createTempRepo('argus-read-window');
+    const lines = Array.from({ length: 500 }, (_, index) => `line ${index + 1}`);
+    await writeFile(join(repoPath, 'big.ts'), lines.join('\n'));
+
+    const read = async (options: Parameters<typeof createRepoContextTools>[1], args?: unknown) => {
+      const tool = createRepoContextTools(repoPath, options).find(
+        (entry) => entry.name === 'Read'
+      )!;
+      const result = await tool.execute(args ?? { file_path: 'big.ts' });
+      return result.content[0]?.text ?? '';
+    };
+
+    expect(await read({ defaultReadLimit: 140, maxReadLimit: 180 })).toContain('Lines: 1-140');
+    expect(
+      await read({ defaultReadLimit: 140, maxReadLimit: 180 }, { file_path: 'big.ts', limit: 1000 })
+    ).toContain('Lines: 1-180');
+    expect(await read({ defaultReadLimit: 400, maxReadLimit: 400 })).toContain('Lines: 1-400');
+  });
 });

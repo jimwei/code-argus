@@ -28,6 +28,24 @@ AI 驱动的自动化代码审查 CLI，提供多 Agent 编排，并同时支持
 - 自定义规则与 Agent：支持 `rules/`、`agents/`、`.argusignore`
 - 服务集成：支持 JSON 事件流，便于接入 CI/CD 或外部平台
 
+## 审核策略
+
+默认 `ARGUS_REVIEW_STRATEGY=multi`，使用现有多 reviewer。设为 `single` 后，由一个配置定义的综合 reviewer 替代四个内置 reviewer，其他自定义 Agents 仍按原有触发规则运行，validator 和适用时的修复验证继续执行。
+
+`ARGUS_PRIMARY_REVIEWER` 可指定 YAML 文件；留空使用包内综合定义。YAML 支持内联 `prompt` 或相对的 Markdown `prompt_file`，以及可选的 `max_turns`（24..500）。明确选中的主定义必跑且不重复作为补充 Agent 执行。该策略与 `normal` / `fast` 验证模式独立。
+
+包内综合定义包含 severity 分级标准：确认的安全回归（尤其是 diff 移除或弱化既有校验、不可信输入仍可达）不低于 `error`，`suggestion` 仅用于非缺陷的可选改进。
+
+验证成本可通过 `--validation-rounds`（1..5）、`--validation-max-turns`（1..300）和 `--validation-read-limit`（60..2000，单次 Read 行数窗口）调整，也可用对应的 `ARGUS_VALIDATION_*` 环境变量；不设置时维持 fast=2/normal=5 轮、30 轮预算、140 行窗口的现有行为。`single` 模式下验证阶段常是 token 大头，调整前建议先实测。
+
+```bash
+export ARGUS_REVIEW_STRATEGY=single
+export ARGUS_PRIMARY_REVIEWER=/config/team-primary.yaml
+argus review /path/to/repo feature-branch main
+```
+
+详见 [综合规则示例与预算、完整性说明](./README.md#审核策略与可配置主-reviewer)。审核未完成时保留部分 findings，并在 `metadata.review_complete=false` 和可读报告中说明原因；零 findings 不能证明审核完成。
+
 ## 安装
 
 需要 Node.js 22 或更高版本（OpenAI Responses 运行时依赖 `openai` v7，该 SDK 要求 Node 22+）。
