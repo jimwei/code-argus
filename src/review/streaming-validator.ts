@@ -85,6 +85,11 @@ function isValidationContextLimitText(text: string): boolean {
     normalized.includes('request too large') ||
     normalized.includes('request entity too large') ||
     normalized.includes('payload too large') ||
+    // sdk 运行时把 provider 错误转成 result 事件后不再携带 error.status；openai-node 对
+    // 「有状态码、无响应体」的响应给出固定文案 "413 status code (no body)"。413 在
+    // Responses API 上就是请求体超限，显式识别它，保证结果事件路径与抛错路径（按
+    // error.status 判定）分类一致。
+    normalized.includes('413 status code (no body)') ||
     (normalized.includes('413') &&
       (normalized.includes('openresty') ||
         normalized.includes('too large') ||

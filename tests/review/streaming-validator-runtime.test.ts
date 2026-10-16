@@ -526,6 +526,92 @@ describe('streaming validator runtime bridge', () => {
     });
   });
 
+  it('treats a bare 413 result event as a validation context-limit failure', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementationOnce(() => ({
+        async *[Symbol.asyncIterator]() {
+          const firstRoundText = JSON.stringify({
+            validation_status: 'confirmed',
+            final_confidence: 0.9,
+            grounding_evidence: {
+              checked_files: ['src/api/service.ts'],
+              checked_symbols: [],
+              related_context: 'Observed the guard before the provider error.',
+              reasoning: 'The challenge turn then overflowed the request body.',
+            },
+          });
+
+          yield {
+            type: 'assistant.text',
+            text: firstRoundText,
+          };
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: {
+              inputTokens: 6,
+              outputTokens: 5,
+            },
+            text: firstRoundText,
+          };
+
+          // 挑战回合里上游返回 413：sdk 运行时把 provider 错误转成 result 事件，
+          // error.status 不再传到调用方，只剩 openai-node 的固定文案。
+          yield {
+            type: 'result',
+            status: 'error',
+            error: '413 status code (no body)',
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: true,
+      maxChallengeRounds: 5,
+      language: 'en',
+    });
+
+    validator.enqueue({
+      id: 'issue-413',
+      file: 'src/api/service.ts',
+      line_start: 10,
+      line_end: 12,
+      category: 'logic',
+      severity: 'error',
+      title: 'Oversized validation context',
+      description: 'The challenge turn overflows the request body.',
+      confidence: 0.9,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush();
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({
+      id: 'issue-413',
+      validation_status: 'uncertain',
+      grounding_evidence: {
+        related_context: expect.stringContaining('413 status code (no body)'),
+      },
+    });
+  });
+
   it('closes the runtime prompt stream after the final queued issue is validated', async () => {
     let secondPromptResult: { done: boolean; value?: unknown | 'timeout' } | undefined;
 
