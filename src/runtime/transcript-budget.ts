@@ -7,8 +7,8 @@
  * 思考块整块移除（pi-ai 依 `thinkingSignature` 重放推理项，是体积的主要来源），
  * 保留最近若干条工具输出、最近若干条 assistant 回合与全部 user 消息：
  * - 折叠是 `best effort`：无法达到低水位时保持原文并返回 `budgetMet: false`，
- *   避免每轮改写历史；但一次能省下 {@link DEFAULT_MIN_FOLD_TOKENS} 以上时仍会折叠，
- *   以免上下文无界增长（此时 `budgetMet` 可能仍为 false）。最近 N 条工具输出 +
+ *   避免每轮改写历史；但一次能省下 max({@link DEFAULT_MIN_FOLD_TOKENS}, 溢出量一半)
+ *   以上时仍会折叠，以免上下文无界增长（此时 `budgetMet` 可能仍为 false）。最近 N 条工具输出 +
  *   全部 user 消息 + 最近 N 条 assistant 回合的思考块始终保留；
  * - 占位文本保留 tool 名与调用 ID，function_call / function_call_output 配对不变；
  * - 代价说明：每次折叠都会改写历史内容，缓存只能匹配到首个改写点之前；
@@ -49,7 +49,10 @@ export interface TranscriptBudgetOptions {
   keepRecentToolResults?: number;
   /** 保留最近 N 条 assistant 消息的思考块（缺省 {@link DEFAULT_KEEP_RECENT_ASSISTANT_MESSAGES}）。 */
   keepRecentAssistantMessages?: number;
-  /** 低水位不可达时仍允许折叠的最小节省量（缺省 {@link DEFAULT_MIN_FOLD_TOKENS}）。 */
+  /**
+   * 低水位不可达时仍允许折叠的最小节省量（缺省 {@link DEFAULT_MIN_FOLD_TOKENS}）；
+   * 实际门槛取它与溢出量一半的较大者。
+   */
   minFoldTokens?: number;
 }
 
