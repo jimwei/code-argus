@@ -209,7 +209,8 @@ Notes:
   calls (agent selector / dedup / matcher) are ignored on this path
 - The pi-ai runtime replays native reasoning blocks exactly like the SDK implementation:
   `reasoning.summary` / `include: ["reasoning.encrypted_content"]` stay in the payload and
-  historical thinking blocks are written back to the transcript. The former
+  historical thinking blocks are written back to the transcript (older ones may later be
+  dropped by transcript folding, see below). The former
   `ARGUS_OPENAI_REASONING_REPLAY=drop` mode was removed after a real-PR A/B showed it
   roughly doubled review cost — without its own reasoning the model re-explores instead
   of continuing from prior analysis
@@ -219,10 +220,14 @@ Notes:
   explore ~1.5–2× longer (3.3–4.7M tokens vs 2.3–3.1M after the lift; SDK 2.2–2.5M)
 - `ARGUS_TRANSCRIPT_BUDGET_TOKENS` (default `160000`, `0` disables) bounds the pi-ai
   transcript on a best-effort basis: once the estimated request size crosses the
-  budget, the oldest tool outputs are folded toward 60% of it. The most recent six tool
-  outputs and all user/assistant messages are preserved, so tool-call pairing stays
-  intact. Folding only proceeds if it can reach the low watermark; otherwise history
-  stays unchanged and the runtime warns once. Every fold invalidates the cached suffix
+  budget, the oldest tool outputs are folded (and the thinking blocks of older assistant
+  turns are dropped — pi-ai replays reasoning from `thinkingSignature`, so they dominate
+  long sessions) toward 60% of it. The most recent six tool outputs, the most recent four
+  assistant turns and all user messages are preserved, so tool-call pairing stays
+  intact. When the low watermark is unreachable, folding still proceeds
+  if one pass can save at least 8k estimated tokens, so the transcript stays bounded
+  instead of growing without limit; a once-per-session warning records the first
+  over-budget turn. Every fold invalidates the cached suffix
   after the first changed item; the prefix is stable between folds, not necessarily
   for the rest of the session. The budget is not a hard context limit: if retained
   content stays above the low watermark, compaction may stay inactive until requests

@@ -43,6 +43,38 @@ function toolResultMessage(id: string, text: string): Message {
   } as unknown as Message;
 }
 
+function assistantThinkingMessage(thinking: string): Message {
+  return {
+    role: 'assistant',
+    content: [
+      {
+        type: 'thinking',
+        thinking: 'summary',
+        // pi-ai 发送的是 thinkingSignature 解析出的 reasoning item
+        thinkingSignature: JSON.stringify({
+          type: 'reasoning',
+          id: 'rs_1',
+          content: [{ type: 'reasoning_text', text: thinking }],
+        }),
+      },
+      { type: 'text', text: 'working' },
+    ],
+    api: 'openai-responses',
+    provider: 'openai',
+    model: 'deepseek-v4.1-flash',
+    usage: {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: 'stop',
+    timestamp: 2,
+  } as unknown as Message;
+}
+
 const BIG_OUTPUT = 'a'.repeat(20000); // ASCII ≈ 5000 tokens per result
 
 describe('transcript budget estimation', () => {
@@ -195,5 +227,49 @@ describe('compactTranscript', () => {
     expect(result.messages).toBe(messages);
     expect(result.elidedCount).toBe(0);
     expect(result.budgetMet).toBe(false);
+  });
+
+  it('drops old thinking blocks entirely and keeps the newest assistant turns intact', () => {
+    const thinking = 't'.repeat(25_000);
+    const messages: Message[] = [userMessage('diff context')];
+    for (let i = 1; i <= 6; i++) {
+      messages.push(assistantThinkingMessage(`${thinking}-${i}`));
+    }
+
+    const result = compactTranscript(messages, {
+      budgetTokens: 30_000,
+      lowWatermarkRatio: 0.5,
+      keepRecentAssistantMessages: 2,
+    });
+
+    const assistants = result.messages.filter((message) => message.role === 'assistant');
+    // 旧回合的思考块整块移除：pi-ai 从 thinkingSignature 重放推理项，只有移除才真正缩小请求。
+    expect(result.elidedCount).toBe(4);
+    expect(
+      (assistants[0]!.content as Array<{ type: string }>).some((block) => block.type === 'thinking')
+    ).toBe(false);
+    const lastThinking = (
+      assistants[assistants.length - 1]!.content as Array<{ type: string; thinking?: string }>
+    ).find((block) => block.type === 'thinking');
+    expect(lastThinking).toBeDefined();
+    expect(result.tokensAfter).toBeLessThanOrEqual(result.tokensBefore);
+  });
+
+  it('folds worthwhile savings even when the low watermark is unreachable', () => {
+    const thinking = 't'.repeat(80_000);
+    const messages: Message[] = [userMessage('x'.repeat(40_000))];
+    for (let i = 1; i <= 5; i++) messages.push(assistantThinkingMessage(`${thinking}-${i}`));
+
+    const result = compactTranscript(messages, {
+      budgetTokens: 30_000,
+      lowWatermarkRatio: 0.5,
+      keepRecentAssistantMessages: 1,
+    });
+
+    // 保留项（10k 提示词 + 最近一条 20k 思考）本身就超过 15k 的低水位，
+    // 但只要一次能省下可观体积，就折叠而不是放任上下文无界增长。
+    expect(result.elidedCount).toBe(4);
+    expect(result.messages).not.toBe(messages);
+    expect(result.tokensAfter).toBeLessThan(result.tokensBefore);
   });
 });

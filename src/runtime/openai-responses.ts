@@ -680,7 +680,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                 messages = compacted.messages;
                 console.log(
                   `[OpenAIResponsesRuntime] Compacted transcript: ~${compacted.tokensBefore} → ~${compacted.tokensAfter} est. tokens ` +
-                    `(elided ${compacted.elidedCount} tool outputs)`
+                    `(elided ${compacted.elidedCount} items)`
                 );
                 if (!compacted.budgetMet) {
                   warnTranscriptBudgetMiss(compacted.tokensAfter);
