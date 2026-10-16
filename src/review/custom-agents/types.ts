@@ -167,6 +167,12 @@ export interface CustomAgentDefinition {
    */
   prompt: string;
 
+  /** Markdown prompt loaded relative to the YAML definition; exclusive with prompt. */
+  prompt_file?: string;
+
+  /** Optional execution budget for a selected primary reviewer (24..500). */
+  max_turns?: number;
+
   /**
    * Output configuration
    */
@@ -395,6 +401,8 @@ export interface CustomAgentIssue {
  * Options for loading custom agents
  */
 export interface CustomAgentLoaderOptions {
+  /** Explicitly selected primary definitions are not supplemental agents. */
+  excludeFiles?: string[];
   /**
    * Enable verbose logging
    */

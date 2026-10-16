@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const { createRuntimeFromEnvMock, executeMock, closeMock, queryMock } = vi.hoisted(() => ({
   createRuntimeFromEnvMock: vi.fn(),
@@ -20,11 +23,15 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 import { createStreamingValidator } from '../../src/review/streaming-validator.js';
 
 describe('streaming validator runtime bridge', () => {
+  const tempDirs: string[] = [];
   beforeEach(() => {
     createRuntimeFromEnvMock.mockReset();
     executeMock.mockReset();
     closeMock.mockClear();
     queryMock.mockClear();
+  });
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
   it('validates queued issues through the runtime abstraction', async () => {
@@ -169,6 +176,191 @@ describe('streaming validator runtime bridge', () => {
       final_confidence: 0.92,
     });
     expect(closeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours an explicit per-issue validation turn budget', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: { main: 'gpt-5.3-codex', light: 'gpt-5-mini', validator: 'gpt-5.3-codex' },
+        openai: { apiKey: 'openai-key', source: 'argus' },
+      },
+      execute: executeMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          const responseText = JSON.stringify({
+            validation_status: 'confirmed',
+            final_confidence: 0.9,
+            grounding_evidence: {
+              checked_files: [],
+              checked_symbols: [],
+              related_context: 'ok',
+              reasoning: 'ok',
+            },
+          });
+          yield { type: 'assistant.text', text: responseText };
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            text: responseText,
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const issue = {
+      id: 'issue-budget',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic' as const,
+      severity: 'warning' as const,
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer' as const,
+    };
+
+    const tuned = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxTurns: 15,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    tuned.enqueue(issue);
+    await tuned.flush();
+
+    const defaults = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    defaults.enqueue({ ...issue, id: 'issue-default-budget' });
+    await defaults.flush();
+
+    expect(executeMock.mock.calls[0]?.[0]?.maxTurns).toBe(15);
+    expect(executeMock.mock.calls[1]?.[0]?.maxTurns).toBe(30);
+  });
+
+  it('honours the configurable validator Read window', async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), 'argus-validator-read-'));
+    tempDirs.push(repoPath);
+    const lines = Array.from({ length: 500 }, (_, index) => `line ${index + 1}`);
+    await writeFile(join(repoPath, 'other.ts'), lines.join('\n'));
+    await writeFile(join(repoPath, 'big.ts'), lines.join('\n'));
+
+    const readSamples: string[] = [];
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: { main: 'gpt-5.3-codex', light: 'gpt-5-mini', validator: 'gpt-5.3-codex' },
+        openai: { apiKey: 'openai-key', source: 'argus' },
+      },
+      execute: executeMock.mockImplementation((options: any) => ({
+        async *[Symbol.asyncIterator]() {
+          const readTool = options.tools.find((tool: { name: string }) => tool.name === 'Read');
+          const sample = await readTool.execute({ file_path: 'other.ts' });
+          readSamples.push(sample.content[0]?.text ?? '');
+          const responseText = JSON.stringify({
+            validation_status: 'confirmed',
+            final_confidence: 0.9,
+            grounding_evidence: {
+              checked_files: [],
+              checked_symbols: [],
+              related_context: 'ok',
+              reasoning: 'ok',
+            },
+          });
+          yield { type: 'assistant.text', text: responseText };
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            text: responseText,
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const issue = {
+      id: 'issue-read-window',
+      file: 'big.ts',
+      line_start: 10,
+      line_end: 12,
+      category: 'logic' as const,
+      severity: 'warning' as const,
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer' as const,
+    };
+
+    const wide = createStreamingValidator({
+      repoPath,
+      maxChallengeRounds: 1,
+      readLimit: 400,
+      language: 'en',
+    });
+    wide.enqueue(issue);
+    await wide.flush();
+
+    const defaults = createStreamingValidator({
+      repoPath,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    defaults.enqueue({ ...issue, id: 'issue-read-window-default' });
+    await defaults.flush();
+
+    expect(readSamples[0]).toContain('Lines: 1-400');
+    expect(readSamples[1]).toContain('Lines: 1-140');
+  });
+
+  it('records an incomplete reason when the validation budget cuts a finding short', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: { main: 'gpt-5.3-codex', light: 'gpt-5-mini', validator: 'gpt-5.3-codex' },
+        openai: { apiKey: 'openai-key', source: 'argus' },
+      },
+      execute: executeMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'result', status: 'error_max_turns' };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxTurns: 15,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    validator.enqueue({
+      id: 'issue-budget-cut',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush();
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]?.validation_status).toBe('uncertain');
+    expect(result.incompleteReasons.join(' ')).toContain('Missing null guard');
+    expect(result.incompleteReasons.join(' ')).toMatch(/budget exhausted/i);
   });
 
   it('starts a fresh OpenAI validator execution for each queued issue in the same file', async () => {

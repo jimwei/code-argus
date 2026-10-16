@@ -30,6 +30,9 @@ export type AgentType =
   | 'validator'
   | 'fix-verifier';
 
+/** Reviewers selected from user definitions retain their own identity. */
+export type ReviewerId = AgentType | `custom:${string}`;
+
 /** Validation strategy for different agent types */
 export type ValidationStrategy = 'immediate' | 'batch-on-agent-complete';
 
@@ -98,7 +101,7 @@ export interface RawIssue {
   /** Initial confidence score (0-1) */
   confidence: number;
   /** Source agent that found this issue */
-  source_agent: AgentType;
+  source_agent: ReviewerId;
 }
 
 /**
@@ -315,7 +318,7 @@ export interface PreviousIssue {
   /** Confidence score (0-1) */
   confidence: number;
   /** Source agent that found this issue */
-  source_agent: AgentType;
+  source_agent: ReviewerId;
 }
 
 /**
@@ -469,7 +472,12 @@ export interface ReviewMetadata {
   /** Total tokens used */
   tokens_used: number;
   /** Agents that were used */
-  agents_used: AgentType[];
+  agents_used: ReviewerId[];
+  review_strategy?: 'multi' | 'single';
+  primary_reviewer?: string;
+  review_complete?: boolean;
+  incomplete_reasons?: string[];
+  reviewer_max_turns?: Record<string, number>;
 }
 
 /**
@@ -552,6 +560,16 @@ export interface OrchestratorOptions {
   verbose?: boolean;
   /** Custom agents to use (default: all) */
   agents?: AgentType[];
+  /** Built-in specialists or one explicitly selected configurable reviewer. */
+  reviewStrategy?: 'multi' | 'single';
+  /** YAML definition path; empty uses the packaged comprehensive definition. */
+  primaryReviewerFile?: string;
+  /** Challenge rounds per issue for validation (1..5; default: fast 2, normal 5) */
+  validationRounds?: number;
+  /** Explicit per-issue validation turn budget (default: 30) */
+  validationMaxTurns?: number;
+  /** Max lines the validator Read tool returns per call (60..2000; default 140) */
+  validationReadLimit?: number;
   /** Review mode: fast (2-round) or normal (5-round validation). Default: normal */
   reviewMode?: 'fast' | 'normal';
   /** Skip validation (not recommended) */

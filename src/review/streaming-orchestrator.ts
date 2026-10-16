@@ -14,6 +14,7 @@ import type {
   OrchestratorInput,
   ReviewInput,
   AgentType,
+  ReviewerId,
   ChecklistItem,
   RawIssue,
   ValidatedIssue,
@@ -84,6 +85,13 @@ import { preprocessDiff, formatDeletedFilesContext, needsSegmentation } from '..
 import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
 import { getSegmentSizeLimitForRuntime } from '../runtime/limits.js';
 import {
+  getPrimaryReviewerMaxTurns,
+  isPrimaryReviewer,
+  loadPrimaryReviewer,
+  parseReviewStrategy,
+} from './primary-reviewer.js';
+import { resolveValidationTuning, type ValidationTuningOptions } from './validation-config.js';
+import {
   extractFrontendDependencyContext,
   formatFrontendDependencyContext,
 } from './dependency-context/extractor.js';
@@ -101,6 +109,9 @@ const DEFAULT_OPTIONS: Required<
     | 'prContext'
     | 'local'
     | 'abortController'
+    | 'validationRounds'
+    | 'validationMaxTurns'
+    | 'validationReadLimit'
   >
 > & {
   onEvent?: OrchestratorOptions['onEvent'];
@@ -112,6 +123,8 @@ const DEFAULT_OPTIONS: Required<
   abortController?: AbortController;
 } = {
   maxConcurrency: 4,
+  reviewStrategy: 'multi',
+  primaryReviewerFile: '',
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
   skipValidation: false,
@@ -137,6 +150,14 @@ const DEFAULT_OPTIONS: Required<
 /**
  * Extended progress printer interface with state access
  */
+interface ReviewerBatchResult {
+  checklists: ChecklistItem[];
+  tokens: number;
+  inputTokensUsed: number;
+  cachedInputTokensUsed: number;
+  outputTokensUsed: number;
+}
+
 interface ExtendedProgressPrinter extends IProgressPrinter {
   getState?: () => ReviewStateSnapshot;
   getEmitter?: () => ReviewEventEmitter;
@@ -156,6 +177,12 @@ export class StreamingReviewOrchestrator {
   private autoRejectedIssues: ValidatedIssue[] = [];
   private rawIssuesForSkipMode: RawIssue[] = [];
   private loadedCustomAgents: LoadedCustomAgent[] = [];
+  private primaryReviewer?: LoadedCustomAgent;
+  /** Resolved validation tuning (rounds / turn budget / Read window). */
+  private validationTuning: ValidationTuningOptions = {};
+  private incompleteReasons: string[] = [];
+  private reviewerMaxTurns: Record<string, number> = {};
+  private executedReviewers = new Set<ReviewerId>();
   private fixVerificationResults?: FixVerificationSummary;
   /** Track issue count per agent for progress reporting */
   private issueCountByAgent: Map<string, number> = new Map();
@@ -164,6 +191,16 @@ export class StreamingReviewOrchestrator {
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.options.reviewStrategy = parseReviewStrategy(
+      options?.reviewStrategy ?? process.env.ARGUS_REVIEW_STRATEGY
+    );
+    this.options.primaryReviewerFile =
+      options?.primaryReviewerFile ?? process.env.ARGUS_PRIMARY_REVIEWER ?? '';
+    this.validationTuning = resolveValidationTuning({
+      rounds: options?.validationRounds,
+      maxTurns: options?.validationMaxTurns,
+      readLimit: options?.validationReadLimit,
+    });
 
     // Create progress printer based on mode
     this.progress = createProgressPrinterWithMode({
@@ -171,6 +208,35 @@ export class StreamingReviewOrchestrator {
       verbose: this.options.verbose,
       onEvent: this.options.onEvent as ((event: ReviewEvent) => void) | undefined,
     });
+  }
+
+  private resetReviewExecution(): void {
+    this.primaryReviewer = undefined;
+    this.incompleteReasons = [];
+    this.reviewerMaxTurns = {};
+    this.executedReviewers.clear();
+    this.fixVerificationResults = undefined;
+  }
+
+  private async preparePrimaryReviewer(): Promise<void> {
+    if (this.options.reviewStrategy === 'single' && !this.primaryReviewer) {
+      this.primaryReviewer = await loadPrimaryReviewer(this.options.primaryReviewerFile);
+      this.progress.info(`审核策略: single; 主 reviewer: ${this.primaryReviewer.name}`);
+    }
+  }
+
+  private getReviewExecutionMetadata() {
+    const executedReviewers = this.executedReviewers ?? new Set<string>();
+    const incompleteReasons = this.incompleteReasons ?? [];
+    const reviewerMaxTurns = this.reviewerMaxTurns ?? {};
+    return {
+      agents_used: [...executedReviewers],
+      review_strategy: this.options.reviewStrategy,
+      primary_reviewer: this.primaryReviewer?.id,
+      review_complete: incompleteReasons.length === 0,
+      incomplete_reasons: [...incompleteReasons],
+      reviewer_max_turns: { ...reviewerMaxTurns },
+    };
   }
 
   /**
@@ -256,7 +322,7 @@ export class StreamingReviewOrchestrator {
     return this.issueCountByInvocation.get(invocationKey) || 0;
   }
 
-  private createInvocationKey(agentType: AgentType): string {
+  private createInvocationKey(agentType: ReviewerId): string {
     return `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
@@ -264,6 +330,7 @@ export class StreamingReviewOrchestrator {
    * Execute the complete review process with streaming
    */
   async review(input: OrchestratorInput): Promise<ReviewReport> {
+    this.resetReviewExecution();
     const startTime = Date.now();
     let inputTokensUsed = 0;
     let cachedInputTokensUsed = 0;
@@ -308,6 +375,8 @@ export class StreamingReviewOrchestrator {
         }
       }
 
+      await this.preparePrimaryReviewer();
+
       // Load custom agents if specified
       let triggeredCustomAgents: LoadedCustomAgent[] = [];
       if (this.options.customAgentsDirs.length > 0) {
@@ -320,9 +389,12 @@ export class StreamingReviewOrchestrator {
 
         const loadResult = await loadCustomAgents(this.options.customAgentsDirs, {
           verbose: this.options.verbose,
+          excludeFiles: this.primaryReviewer ? [this.primaryReviewer.source_file] : [],
         });
 
-        this.loadedCustomAgents = loadResult.agents;
+        this.loadedCustomAgents = loadResult.agents.filter(
+          (agent) => !isPrimaryReviewer(agent, this.primaryReviewer)
+        );
 
         if (loadResult.errors.length > 0) {
           for (const err of loadResult.errors) {
@@ -370,10 +442,10 @@ export class StreamingReviewOrchestrator {
       }
 
       // Smart agent selection
-      let agentsToRun = this.options.agents;
+      let agentsToRun = this.options.reviewStrategy === 'single' ? [] : this.options.agents;
       let selectionResult: AgentSelectionResult | null = null;
 
-      if (this.options.smartAgentSelection) {
+      if (this.options.reviewStrategy === 'multi' && this.options.smartAgentSelection) {
         this.progress.progress('智能选择 Agents...');
         if (this.options.verbose) {
           console.log('[StreamingOrchestrator] Running smart agent selection...');
@@ -472,7 +544,9 @@ export class StreamingReviewOrchestrator {
 
       // Create streaming validator with progress callbacks
       // Pass project rules so validator can use rule priority logic
-      const projectRulesText = rulesToPromptText(this.rulesConfig);
+      const projectRulesText = [rulesToPromptText(this.rulesConfig), this.primaryReviewer?.prompt]
+        .filter(Boolean)
+        .join('\n\n');
       this.streamingValidator = this.options.skipValidation
         ? undefined
         : createStreamingValidator({
@@ -481,6 +555,9 @@ export class StreamingReviewOrchestrator {
             maxConcurrentSessions: 5,
             projectRules: projectRulesText || undefined,
             fastMode: this.options.reviewMode === 'fast',
+            maxChallengeRounds: this.validationTuning.rounds,
+            maxTurns: this.validationTuning.maxTurns,
+            readLimit: this.validationTuning.readLimit,
             language: this.options.language,
             dependencyContext: context.dependencyContext,
             callbacks: {
@@ -539,11 +616,13 @@ export class StreamingReviewOrchestrator {
         this.options.verifyFixes !== false;
 
       const totalAgentCount =
-        agentsToRun.length + triggeredCustomAgents.length + (shouldVerifyFixes ? 1 : 0);
+        (this.primaryReviewer ? 1 : agentsToRun.length) +
+        triggeredCustomAgents.length +
+        (shouldVerifyFixes ? 1 : 0);
       this.progress.phase(2, 4, `运行 ${totalAgentCount} 个 Agents (并行)...`);
       if (this.options.verbose) {
         console.log(
-          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${agentsToRun.length} built-in + ${triggeredCustomAgents.length} custom${shouldVerifyFixes ? ' + 1 fix-verifier' : ''})...`
+          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${this.primaryReviewer ? '1 primary' : `${agentsToRun.length} built-in`} + ${triggeredCustomAgents.length} custom${shouldVerifyFixes ? ' + 1 fix-verifier' : ''})...`
         );
       }
 
@@ -568,57 +647,7 @@ export class StreamingReviewOrchestrator {
         // Built-in agents
         this.runAgentsWithStreaming(context, reviewRepoPath, agentsToRun),
         // Custom agents (returns empty array if none triggered)
-        triggeredCustomAgents.length > 0
-          ? executeCustomAgents(
-              triggeredCustomAgents,
-              {
-                verbose: this.options.verbose,
-                repoPath: reviewRepoPath,
-                diffContent: context.diff.diff,
-                fileAnalysesSummary,
-                standardsText: standardsToText(context.standards),
-                language: this.options.language,
-              },
-              {
-                onAgentStart: () => {
-                  // No-op: progress is handled elsewhere
-                },
-                onAgentComplete: (agent, result) => {
-                  const elapsed = result.execution_time_ms;
-                  const elapsedStr =
-                    elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`;
-                  this.progress.agent(
-                    agent.name,
-                    'completed',
-                    `${result.issues.length} issues, ${elapsedStr}`
-                  );
-                },
-                onAgentError: (agent, error) => {
-                  this.progress.agent(agent.name, 'error', error.message);
-                },
-                onIssueDiscovered: (issue) => {
-                  // Enqueue custom agent issues for validation
-                  if (!this.options.skipValidation && this.streamingValidator) {
-                    const autoRejected = this.streamingValidator.enqueue(issue);
-                    if (autoRejected) {
-                      this.autoRejectedIssues.push(autoRejected);
-                    }
-                  } else if (this.options.skipValidation) {
-                    this.progress.issueDiscovered(
-                      issue.title,
-                      issue.file,
-                      issue.severity,
-                      issue.line_start,
-                      issue.description,
-                      issue.suggestion
-                    );
-                    this.rawIssuesForSkipMode.push(issue);
-                  }
-                },
-              },
-              this.options.maxConcurrency
-            )
-          : Promise.resolve([] as CustomAgentResult[]),
+        this.runSupplementalAgents(triggeredCustomAgents, context, reviewRepoPath),
         // Fix verifier (if previous review data is provided)
         shouldVerifyFixes
           ? executeFixVerifier({
@@ -633,15 +662,15 @@ export class StreamingReviewOrchestrator {
           : Promise.resolve(undefined as FixVerificationSummary | undefined),
       ]);
 
-      // Handle built-in agents result (required - throw if failed)
-      if (builtInSettled.status === 'rejected') {
-        throw builtInSettled.reason;
-      }
-      const builtInResult = builtInSettled.value;
+      // Keep usable partial findings after exhausted main-reviewer failures.
+      const builtInResult = this.recoverReviewerBatch(builtInSettled, customSettled);
 
       // Handle custom agents result (optional - log error and continue)
       let customAgentResults: CustomAgentResult[] = [];
       if (customSettled.status === 'rejected') {
+        this.incompleteReasons.push(
+          `Supplemental reviewers failed: ${String(customSettled.reason)}`
+        );
         console.error('[StreamingOrchestrator] Custom agents failed:', customSettled.reason);
         this.progress.warn('自定义 Agents 执行失败，继续处理内置 Agents 结果');
       } else {
@@ -650,6 +679,7 @@ export class StreamingReviewOrchestrator {
 
       // Handle fix verifier result (optional - log error and continue)
       if (fixVerifierSettled.status === 'rejected') {
+        this.incompleteReasons.push(`fix-verifier: ${String(fixVerifierSettled.reason)}`);
         console.error('[StreamingOrchestrator] Fix verifier failed:', fixVerifierSettled.reason);
         this.progress.warn('修复验证失败，继续处理其他结果');
         this.progress.agent('fix-verifier', 'error', String(fixVerifierSettled.reason));
@@ -732,6 +762,7 @@ export class StreamingReviewOrchestrator {
 
         try {
           const validationResult = await this.streamingValidator.flush();
+          this.incompleteReasons.push(...(validationResult.incompleteReasons ?? []));
           validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
           validationInputTokens = validationResult.inputTokensUsed;
           cachedInputTokensUsed += validationResult.cachedInputTokensUsed;
@@ -829,7 +860,7 @@ export class StreamingReviewOrchestrator {
         cached_input_tokens_used: cachedInputTokensUsed,
         output_tokens_used: outputTokensUsed,
         tokens_used: tokensUsed,
-        agents_used: agentsToRun,
+        ...this.getReviewExecutionMetadata(),
       };
 
       const report = generateReport(
@@ -880,6 +911,7 @@ export class StreamingReviewOrchestrator {
    * and uses the appropriate diff strategy.
    */
   async reviewByRefs(input: ReviewInput): Promise<ReviewReport> {
+    this.resetReviewExecution();
     const startTime = Date.now();
     let inputTokensUsed = 0;
     let cachedInputTokensUsed = 0;
@@ -959,6 +991,8 @@ export class StreamingReviewOrchestrator {
         }
       }
 
+      await this.preparePrimaryReviewer();
+
       // Load custom agents if specified
       let triggeredCustomAgents: LoadedCustomAgent[] = [];
       if (this.options.customAgentsDirs.length > 0) {
@@ -971,9 +1005,12 @@ export class StreamingReviewOrchestrator {
 
         const loadResult = await loadCustomAgents(this.options.customAgentsDirs, {
           verbose: this.options.verbose,
+          excludeFiles: this.primaryReviewer ? [this.primaryReviewer.source_file] : [],
         });
 
-        this.loadedCustomAgents = loadResult.agents;
+        this.loadedCustomAgents = loadResult.agents.filter(
+          (agent) => !isPrimaryReviewer(agent, this.primaryReviewer)
+        );
 
         if (loadResult.errors.length > 0) {
           for (const err of loadResult.errors) {
@@ -1021,10 +1058,10 @@ export class StreamingReviewOrchestrator {
       }
 
       // Smart agent selection
-      let agentsToRun = this.options.agents;
+      let agentsToRun = this.options.reviewStrategy === 'single' ? [] : this.options.agents;
       let selectionResult: AgentSelectionResult | null = null;
 
-      if (this.options.smartAgentSelection) {
+      if (this.options.reviewStrategy === 'multi' && this.options.smartAgentSelection) {
         this.progress.progress('智能选择 Agents...');
         if (this.options.verbose) {
           console.log('[StreamingOrchestrator] Running smart agent selection...');
@@ -1145,7 +1182,9 @@ export class StreamingReviewOrchestrator {
 
       // Create streaming validator with progress callbacks
       // Pass project rules so validator can use rule priority logic
-      const projectRulesText = rulesToPromptText(this.rulesConfig);
+      const projectRulesText = [rulesToPromptText(this.rulesConfig), this.primaryReviewer?.prompt]
+        .filter(Boolean)
+        .join('\n\n');
       this.streamingValidator = this.options.skipValidation
         ? undefined
         : createStreamingValidator({
@@ -1154,6 +1193,9 @@ export class StreamingReviewOrchestrator {
             maxConcurrentSessions: 5,
             projectRules: projectRulesText || undefined,
             fastMode: this.options.reviewMode === 'fast',
+            maxChallengeRounds: this.validationTuning.rounds,
+            maxTurns: this.validationTuning.maxTurns,
+            readLimit: this.validationTuning.readLimit,
             language: this.options.language,
             dependencyContext: context.dependencyContext,
             callbacks: {
@@ -1243,7 +1285,9 @@ export class StreamingReviewOrchestrator {
             cached_input_tokens_used: 0,
             output_tokens_used: 0,
             tokens_used: 0,
-            agents_used: [],
+            ...this.getReviewExecutionMetadata(),
+            review_complete: false,
+            incomplete_reasons: [skipReason],
           },
         };
       }
@@ -1259,6 +1303,7 @@ export class StreamingReviewOrchestrator {
           diffFiles,
           reviewRepoPath,
           agentsToRun,
+          triggeredCustomAgents,
           startTime,
           segmentSizeLimit,
         });
@@ -1273,11 +1318,13 @@ export class StreamingReviewOrchestrator {
         this.options.verifyFixes !== false;
 
       const totalAgentCount =
-        agentsToRun.length + triggeredCustomAgents.length + (shouldVerifyFixes ? 1 : 0);
+        (this.primaryReviewer ? 1 : agentsToRun.length) +
+        triggeredCustomAgents.length +
+        (shouldVerifyFixes ? 1 : 0);
       this.progress.phase(2, 4, `运行 ${totalAgentCount} 个 Agents (并行)...`);
       if (this.options.verbose) {
         console.log(
-          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${agentsToRun.length} built-in + ${triggeredCustomAgents.length} custom${shouldVerifyFixes ? ' + 1 fix-verifier' : ''})...`
+          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${this.primaryReviewer ? '1 primary' : `${agentsToRun.length} built-in`} + ${triggeredCustomAgents.length} custom${shouldVerifyFixes ? ' + 1 fix-verifier' : ''})...`
         );
       }
 
@@ -1302,57 +1349,7 @@ export class StreamingReviewOrchestrator {
         // Built-in agents
         this.runAgentsWithStreaming(context, reviewRepoPath, agentsToRun),
         // Custom agents (returns empty array if none triggered)
-        triggeredCustomAgents.length > 0
-          ? executeCustomAgents(
-              triggeredCustomAgents,
-              {
-                verbose: this.options.verbose,
-                repoPath: reviewRepoPath,
-                diffContent: context.diff.diff,
-                fileAnalysesSummary,
-                standardsText: standardsToText(context.standards),
-                language: this.options.language,
-              },
-              {
-                onAgentStart: () => {
-                  // No-op: progress is handled elsewhere
-                },
-                onAgentComplete: (agent, result) => {
-                  const elapsed = result.execution_time_ms;
-                  const elapsedStr =
-                    elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`;
-                  this.progress.agent(
-                    agent.name,
-                    'completed',
-                    `${result.issues.length} issues, ${elapsedStr}`
-                  );
-                },
-                onAgentError: (agent, error) => {
-                  this.progress.agent(agent.name, 'error', error.message);
-                },
-                onIssueDiscovered: (issue) => {
-                  // Enqueue custom agent issues for validation
-                  if (!this.options.skipValidation && this.streamingValidator) {
-                    const autoRejected = this.streamingValidator.enqueue(issue);
-                    if (autoRejected) {
-                      this.autoRejectedIssues.push(autoRejected);
-                    }
-                  } else if (this.options.skipValidation) {
-                    this.progress.issueDiscovered(
-                      issue.title,
-                      issue.file,
-                      issue.severity,
-                      issue.line_start,
-                      issue.description,
-                      issue.suggestion
-                    );
-                    this.rawIssuesForSkipMode.push(issue);
-                  }
-                },
-              },
-              this.options.maxConcurrency
-            )
-          : Promise.resolve([] as CustomAgentResult[]),
+        this.runSupplementalAgents(triggeredCustomAgents, context, reviewRepoPath),
         // Fix verifier (if previous review data is provided)
         shouldVerifyFixes
           ? executeFixVerifier({
@@ -1367,15 +1364,15 @@ export class StreamingReviewOrchestrator {
           : Promise.resolve(undefined as FixVerificationSummary | undefined),
       ]);
 
-      // Handle built-in agents result (required - throw if failed)
-      if (builtInSettled.status === 'rejected') {
-        throw builtInSettled.reason;
-      }
-      const builtInResult = builtInSettled.value;
+      // Keep usable partial findings after exhausted main-reviewer failures.
+      const builtInResult = this.recoverReviewerBatch(builtInSettled, customSettled);
 
       // Handle custom agents result (optional - log error and continue)
       let customAgentResults: CustomAgentResult[] = [];
       if (customSettled.status === 'rejected') {
+        this.incompleteReasons.push(
+          `Supplemental reviewers failed: ${String(customSettled.reason)}`
+        );
         console.error('[StreamingOrchestrator] Custom agents failed:', customSettled.reason);
         this.progress.warn('自定义 Agents 执行失败，继续处理内置 Agents 结果');
       } else {
@@ -1384,6 +1381,7 @@ export class StreamingReviewOrchestrator {
 
       // Handle fix verifier result (optional - log error and continue)
       if (fixVerifierSettled.status === 'rejected') {
+        this.incompleteReasons.push(`fix-verifier: ${String(fixVerifierSettled.reason)}`);
         console.error('[StreamingOrchestrator] Fix verifier failed:', fixVerifierSettled.reason);
         this.progress.warn('修复验证失败，继续处理其他结果');
         this.progress.agent('fix-verifier', 'error', String(fixVerifierSettled.reason));
@@ -1466,6 +1464,7 @@ export class StreamingReviewOrchestrator {
 
         try {
           const validationResult = await this.streamingValidator.flush();
+          this.incompleteReasons.push(...(validationResult.incompleteReasons ?? []));
           validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
           validationInputTokens = validationResult.inputTokensUsed;
           cachedInputTokensUsed += validationResult.cachedInputTokensUsed;
@@ -1563,7 +1562,7 @@ export class StreamingReviewOrchestrator {
         cached_input_tokens_used: cachedInputTokensUsed,
         output_tokens_used: outputTokensUsed,
         tokens_used: tokensUsed,
-        agents_used: agentsToRun,
+        ...this.getReviewExecutionMetadata(),
       };
 
       const report = generateReport(
@@ -2058,6 +2057,87 @@ export class StreamingReviewOrchestrator {
     };
   }
 
+  private recoverReviewerBatch(
+    settled: PromiseSettledResult<ReviewerBatchResult>,
+    supplemental: PromiseSettledResult<CustomAgentResult[]>
+  ): ReviewerBatchResult {
+    if (settled.status === 'fulfilled') return settled.value;
+    const hasPartialFindings =
+      this.issueCountByAgent.size > 0 ||
+      this.rawIssuesForSkipMode.length > 0 ||
+      this.autoRejectedIssues.length > 0 ||
+      (supplemental.status === 'fulfilled' &&
+        supplemental.value.some((result) => result.issues.length > 0));
+    if (!hasPartialFindings) throw settled.reason;
+    const reason = `Main reviewers failed: ${String(settled.reason)}`;
+    this.incompleteReasons.push(reason);
+    this.progress.warn(`${reason}; keeping partial findings and known usage`);
+    const usage = settled.reason?.reviewUsage;
+    return {
+      checklists: usage?.checklists ?? [],
+      tokens: usage?.tokens ?? 0,
+      inputTokensUsed: usage?.inputTokensUsed ?? 0,
+      cachedInputTokensUsed: usage?.cachedInputTokensUsed ?? 0,
+      outputTokensUsed: usage?.outputTokensUsed ?? 0,
+    };
+  }
+
+  private async runSupplementalAgents(
+    agents: LoadedCustomAgent[],
+    context: ReviewContext,
+    repoPath: string
+  ): Promise<CustomAgentResult[]> {
+    if (agents.length === 0) return [];
+    return executeCustomAgents(
+      agents,
+      {
+        verbose: this.options.verbose,
+        repoPath,
+        diffContent: context.diff.diff,
+        fileAnalysesSummary: context.fileAnalyses
+          .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
+          .join('\n'),
+        standardsText: standardsToText(context.standards),
+        language: this.options.language,
+      },
+      {
+        onAgentStart: (agent) => {
+          this.executedReviewers.add(agent.id as ReviewerId);
+          this.progress.agent(agent.name, 'running');
+        },
+        onAgentComplete: (agent, result) => {
+          if (result.error) this.incompleteReasons.push(`${agent.id}: ${result.error}`);
+          this.progress.agent(
+            agent.name,
+            result.error ? 'error' : 'completed',
+            result.error || `${result.issues.length} issues`
+          );
+        },
+        onAgentError: (agent, error) => {
+          this.incompleteReasons.push(`${agent.id}: ${error.message}`);
+          this.progress.agent(agent.name, 'error', error.message);
+        },
+        onIssueDiscovered: (issue) => {
+          if (this.streamingValidator) {
+            const rejected = this.streamingValidator.enqueue(issue);
+            if (rejected) this.autoRejectedIssues.push(rejected);
+          } else if (this.options.skipValidation) {
+            this.progress.issueDiscovered(
+              issue.title,
+              issue.file,
+              issue.severity,
+              issue.line_start,
+              issue.description,
+              issue.suggestion
+            );
+            this.rawIssuesForSkipMode.push(issue);
+          }
+        },
+      },
+      this.options.maxConcurrency
+    );
+  }
+
   /**
    * Run specialist agents with streaming issue reporting via MCP
    */
@@ -2072,6 +2152,10 @@ export class StreamingReviewOrchestrator {
     cachedInputTokensUsed: number;
     outputTokensUsed: number;
   }> {
+    await this.preparePrimaryReviewer();
+    const reviewersToRun: ReviewerId[] = this.primaryReviewer
+      ? [this.primaryReviewer.id as ReviewerId]
+      : agentsToRun;
     const standardsText = standardsToText(context.standards);
     let totalTokens = 0;
     let totalInputTokens = 0;
@@ -2132,29 +2216,38 @@ export class StreamingReviewOrchestrator {
     );
 
     // Show agents starting
-    for (const agentType of agentsToRun) {
+    for (const agentType of reviewersToRun) {
       this.progress.agent(agentType, 'running');
+      this.executedReviewers.add(agentType);
     }
 
     // Run all agents in parallel with timing
     if (this.options.verbose) {
-      console.log(`[StreamingOrchestrator] Running ${agentsToRun.length} agents in parallel...`);
+      console.log(
+        `[StreamingOrchestrator] Running ${reviewersToRun.length} reviewers in parallel...`
+      );
     }
 
-    const agentPromises = agentsToRun.map(async (agentType) => {
+    const agentPromises = reviewersToRun.map(async (agentType) => {
       const startTime = Date.now();
-      const invocationKey = this.createInvocationKey(agentType as AgentType);
+      const invocationKey = this.createInvocationKey(agentType);
       let lastError: unknown = null;
       let zeroIssueMaxTurnsRetry = false;
       const exploration: string[] = [];
 
       // Retry loop for transient failures
       for (let attempt = 1; attempt <= MAX_AGENT_RETRIES; attempt++) {
-        const agentMaxTurns = this.getAgentMaxTurns(
-          agentType as AgentType,
-          dynamicMaxTurns,
-          attempt,
-          zeroIssueMaxTurnsRetry
+        const agentMaxTurns = this.primaryReviewer
+          ? getPrimaryReviewerMaxTurns(this.primaryReviewer, fileCount, attempt)
+          : this.getAgentMaxTurns(
+              agentType as AgentType,
+              dynamicMaxTurns,
+              attempt,
+              zeroIssueMaxTurnsRetry
+            );
+        this.reviewerMaxTurns[agentType] = Math.max(
+          this.reviewerMaxTurns[agentType] ?? 0,
+          agentMaxTurns
         );
 
         if (this.options.verbose) {
@@ -2167,7 +2260,7 @@ export class StreamingReviewOrchestrator {
         try {
           this.issueCountByInvocation.set(invocationKey, 0);
           const result = await this.runStreamingAgent(
-            agentType as AgentType,
+            agentType,
             context,
             standardsText,
             runtime,
@@ -2175,7 +2268,14 @@ export class StreamingReviewOrchestrator {
             reviewRepoPath,
             agentMaxTurns,
             invocationKey,
-            exploration
+            exploration,
+            this.primaryReviewer,
+            (usage) => {
+              totalTokens += usage.tokensUsed;
+              totalInputTokens += usage.inputTokensUsed;
+              totalCachedInputTokens += usage.cachedInputTokensUsed;
+              totalOutputTokens += usage.outputTokensUsed;
+            }
           );
           const elapsed = Date.now() - startTime;
 
@@ -2190,6 +2290,11 @@ export class StreamingReviewOrchestrator {
           const errorMsg = error instanceof Error ? error.message : String(error);
           const errorStack = error instanceof Error ? error.stack : undefined;
           zeroIssueMaxTurnsRetry = errorMsg.includes('reached maxTurns with 0 reported issues');
+          if (
+            this.options.abortController?.signal.aborted ||
+            (error instanceof Error && error.name === 'AbortError')
+          )
+            break;
 
           // Log error details (will be output as JSON in json-logs mode)
           console.error(
@@ -2235,15 +2340,15 @@ export class StreamingReviewOrchestrator {
         res.elapsed < 1000 ? `${res.elapsed}ms` : `${(res.elapsed / 1000).toFixed(1)}s`;
 
       if (res.success) {
-        totalTokens += res.result.tokensUsed;
-        totalInputTokens += res.result.inputTokensUsed;
-        totalCachedInputTokens += res.result.cachedInputTokensUsed;
-        totalOutputTokens += res.result.outputTokensUsed;
+        // Usage is counted for every attempt, including failed attempts, by the callback above.
         allChecklists.push(...res.result.checklists);
 
         // Get issue count for this agent
         const issueCount = this.issueCountByAgent.get(res.agentType) || 0;
-        this.progress.agent(res.agentType, 'completed', `${issueCount} issues, ${elapsedStr}`);
+        // runStreamingAgent already emitted the terminal error for an incomplete result.
+        if (!res.result.incompleteReason) {
+          this.progress.agent(res.agentType, 'completed', `${issueCount} issues, ${elapsedStr}`);
+        }
 
         if (this.options.verbose) {
           console.log(`[StreamingOrchestrator] Agent ${res.agentType} completed in ${elapsedStr}`);
@@ -2264,8 +2369,19 @@ export class StreamingReviewOrchestrator {
       const firstError = failedAgents[0]?.error;
       const errorMsg =
         firstError instanceof Error ? firstError.message : String(firstError ?? 'Unknown error');
-      throw new Error(
-        `Review failed: ${failedAgents.length} agent(s) failed after ${MAX_AGENT_RETRIES} retries [${failedNames}]. First error: ${errorMsg}`
+      throw Object.assign(
+        new Error(
+          `Review failed: ${failedAgents.length} agent(s) failed after ${MAX_AGENT_RETRIES} retries [${failedNames}]. First error: ${errorMsg}`
+        ),
+        {
+          reviewUsage: {
+            checklists: allChecklists,
+            tokens: totalTokens,
+            inputTokensUsed: totalInputTokens,
+            cachedInputTokensUsed: totalCachedInputTokens,
+            outputTokensUsed: totalOutputTokens,
+          },
+        }
       );
     }
 
@@ -2340,7 +2456,7 @@ export class StreamingReviewOrchestrator {
     changedLinesByFile?: Map<string, Set<number>>,
     whitespaceOnlyLinesByFile?: Map<string, Set<number>>,
     additionalTools: RuntimeToolDefinition[] = []
-  ): (agentType: AgentType, invocationKey: string) => RuntimeToolDefinition[] {
+  ): (agentType: ReviewerId, invocationKey: string) => RuntimeToolDefinition[] {
     const validator = this.streamingValidator;
     const deduplicator = this.realtimeDeduplicator;
     const verbose = this.options.verbose;
@@ -2348,7 +2464,7 @@ export class StreamingReviewOrchestrator {
     const progress = this.progress;
     const langLabel = this.options.language === 'en' ? 'English' : 'Chinese';
 
-    return (agentType: AgentType, invocationKey: string): RuntimeToolDefinition[] => [
+    return (agentType: ReviewerId, invocationKey: string): RuntimeToolDefinition[] => [
       {
         name: 'report_issue',
         description: `Report a discovered code issue. Call this for EACH issue found during review.
@@ -2383,7 +2499,11 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           const currentInvocationCount = this.issueCountByInvocation.get(invocationKey) || 0;
           this.issueCountByInvocation.set(invocationKey, currentInvocationCount + 1);
 
-          if (agentType === 'style-reviewer' && args.category === 'style' && changedLinesByFile) {
+          if (
+            (agentType === 'style-reviewer' || agentType.startsWith('custom:')) &&
+            args.category === 'style' &&
+            changedLinesByFile
+          ) {
             const changedLines = changedLinesByFile.get(args.file);
             if (!changedLines || changedLines.size === 0) {
               if (verbose) {
@@ -2431,7 +2551,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           }
 
           if (
-            agentType === 'style-reviewer' &&
+            (agentType === 'style-reviewer' || agentType.startsWith('custom:')) &&
             args.category === 'style' &&
             whitespaceOnlyLinesByFile
           ) {
@@ -2521,35 +2641,48 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
    * Run a single streaming agent
    */
   private async runStreamingAgent(
-    agentType: AgentType,
+    agentType: ReviewerId,
     context: ReviewContext,
     standardsText: string,
     runtime: AgentRuntime,
-    runtimeToolsFactory: (agentType: AgentType, invocationKey: string) => RuntimeToolDefinition[],
+    runtimeToolsFactory: (agentType: ReviewerId, invocationKey: string) => RuntimeToolDefinition[],
     reviewRepoPath: string,
     maxTurns: number = 30,
     invocationKey: string = 'default',
-    exploration: string[] = []
+    exploration: string[] = [],
+    definition?: LoadedCustomAgent,
+    onUsage?: (usage: {
+      tokensUsed: number;
+      inputTokensUsed: number;
+      cachedInputTokensUsed: number;
+      outputTokensUsed: number;
+    }) => void
   ): Promise<{
     tokensUsed: number;
     inputTokensUsed: number;
     cachedInputTokensUsed: number;
     outputTokensUsed: number;
     checklists: ChecklistItem[];
+    incompleteReason?: string;
   }> {
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Starting agent: ${agentType}`);
     }
 
-    const projectRules =
-      agentType !== 'validator'
+    const projectRules = definition
+      ? rulesToPromptText(this.rulesConfig)
+      : agentType !== 'validator'
         ? getRulesForAgent(this.rulesConfig, agentType as RuleAgentType)
         : undefined;
 
-    const systemPrompt = buildStreamingSystemPrompt(agentType, this.options.language);
+    const systemPrompt =
+      buildStreamingSystemPrompt(definition?.description || agentType, this.options.language) +
+      (definition ? `\n\n## Configured Reviewer: ${definition.name}\n\n${definition.prompt}` : '');
 
     const deletedFilesContext =
-      agentType === 'logic-reviewer' && context.deletedFiles && context.deletedFiles.length > 0
+      (definition || agentType === 'logic-reviewer') &&
+      context.deletedFiles &&
+      context.deletedFiles.length > 0
         ? formatDeletedFilesContext(context.deletedFiles)
         : undefined;
 
@@ -2635,6 +2768,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     let outputTokensUsed = 0;
     let tokensUsed = 0;
     let turnCount = 0;
+    let sawTerminalResult = false;
     let execution: RuntimeExecution | null = null;
 
     try {
@@ -2659,6 +2793,8 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         if (event.type !== 'result') {
           continue;
         }
+
+        sawTerminalResult = true;
 
         const inputTokens = event.usage?.inputTokens ?? 0;
         const cachedInputTokens = event.usage?.cachedInputTokens ?? 0;
@@ -2697,6 +2833,13 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           this.progress.warn(
             `Agent ${agentType} reached max turns (${maxTurns}); keeping ${issueCount} reported issues as partial output`
           );
+          incompleteReason = `Turn budget exhausted (${maxTurns}); review coverage is incomplete`;
+          continue;
+        }
+
+        if (definition && event.status === 'incomplete') {
+          incompleteReason =
+            event.error || event.rawStopReason || 'Runtime returned an incomplete review';
           continue;
         }
 
@@ -2709,20 +2852,13 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           `Agent ${agentType} failed: runtime returned ${event.status}${errorDetail !== event.status ? ` - ${errorDetail}` : ''}`
         );
       }
+      if (!sawTerminalResult) throw new Error(`Agent ${agentType} ended without a terminal result`);
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        console.log(`[StreamingOrchestrator] Agent ${agentType} aborted by user`);
-        return {
-          tokensUsed,
-          inputTokensUsed,
-          cachedInputTokensUsed,
-          outputTokensUsed,
-          checklists: [],
-        };
-      }
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       console.error(`[StreamingOrchestrator] Agent ${agentType} threw error:`, error);
       throw error;
     } finally {
+      onUsage?.({ tokensUsed, inputTokensUsed, cachedInputTokensUsed, outputTokensUsed });
       if (execution) {
         try {
           await execution.close();
@@ -2739,6 +2875,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     );
 
     if (incompleteReason) {
+      this.incompleteReasons.push(`${agentType}: ${incompleteReason}`);
       // An incomplete declaration is a coverage signal, not a fatal error: keep the findings the
       // agent already reported and mark the agent as incomplete so the review is not rated clean.
       console.warn(
@@ -2758,6 +2895,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       cachedInputTokensUsed,
       outputTokensUsed,
       checklists: [],
+      incompleteReason,
     };
   }
 
@@ -2770,10 +2908,19 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     diffFiles: DiffFile[];
     reviewRepoPath: string;
     agentsToRun: AgentType[];
+    triggeredCustomAgents?: LoadedCustomAgent[];
     startTime: number;
     segmentSizeLimit: number;
   }): Promise<ReviewReport> {
-    const { context, diffFiles, reviewRepoPath, agentsToRun, startTime, segmentSizeLimit } = params;
+    const {
+      context,
+      diffFiles,
+      reviewRepoPath,
+      agentsToRun,
+      triggeredCustomAgents = [],
+      startTime,
+      segmentSizeLimit,
+    } = params;
 
     // Execute segmentation
     this.progress.progress('执行智能分段...');
@@ -2794,7 +2941,28 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
     // Phase 2: Run agents for each segment in parallel
     const totalSegments = segmentResult.segments.length;
-    this.progress.phase(2, 4, `运行 ${agentsToRun.length} 个 Agents × ${totalSegments} 分段...`);
+    this.progress.phase(
+      2,
+      4,
+      `运行 ${(this.primaryReviewer ? 1 : agentsToRun.length) + triggeredCustomAgents.length} 个 Agents × ${totalSegments} 分段...`
+    );
+
+    const previousReview = this.options.previousReviewData;
+    const fixPromise = Promise.allSettled(
+      previousReview?.issues.length && this.options.verifyFixes !== false
+        ? [
+            executeFixVerifier({
+              repoPath: reviewRepoPath,
+              previousReview,
+              diffContent: context.diff.diff,
+              fileChangesSummary: context.fileAnalyses.map((f) => `- ${f.file_path}`).join('\n'),
+              verbose: this.options.verbose,
+              progress: this.progress,
+              language: this.options.language,
+            }),
+          ]
+        : []
+    );
 
     // Create segment review promises
     const segmentPromises = segmentResult.segments.map(async (segment, index) => {
@@ -2821,19 +2989,20 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         deletedFiles: context.deletedFiles,
       };
 
-      // Run agents for this segment
-      try {
-        const result = await this.runAgentsWithStreaming(
-          segmentContext,
-          reviewRepoPath,
-          agentsToRun
-        );
+      const [main, custom] = await Promise.allSettled([
+        this.runAgentsWithStreaming(segmentContext, reviewRepoPath, agentsToRun),
+        this.runSupplementalAgents(triggeredCustomAgents, segmentContext, reviewRepoPath),
+      ]);
+      if (custom.status === 'rejected')
+        this.incompleteReasons.push(`${segmentLabel} supplemental: ${String(custom.reason)}`);
+      const customResults = custom.status === 'fulfilled' ? custom.value : [];
+      if (main.status === 'fulfilled') {
         this.progress.success(`[${segmentLabel}] 完成: ${segment.name}`);
-        return { segment, result, error: null };
-      } catch (error) {
-        this.progress.error(`[${segmentLabel}] 失败: ${segment.name} - ${error}`);
-        return { segment, result: null, error };
+        return { segment, result: main.value, error: null, customResults };
       }
+      this.incompleteReasons.push(`${segment.name}: ${String(main.reason)}`);
+      this.progress.error(`[${segmentLabel}] 失败: ${segment.name} - ${main.reason}`);
+      return { segment, result: null, error: main.reason, customResults };
     });
 
     // Wait for all segments to complete
@@ -2847,7 +3016,13 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     const allChecklists: ChecklistItem[] = [];
     const failedSegments: string[] = [];
 
-    for (const { segment, result, error } of segmentResults) {
+    for (const { segment, result, error, customResults } of segmentResults) {
+      for (const custom of customResults) {
+        totalTokens += custom.tokens_used;
+        totalInputTokens += custom.input_tokens_used;
+        totalCachedInputTokens += custom.cached_input_tokens_used;
+        totalOutputTokens += custom.output_tokens_used;
+      }
       if (result) {
         totalTokens += result.tokens;
         totalInputTokens += result.inputTokensUsed;
@@ -2856,11 +3031,29 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         allChecklists.push(...result.checklists);
       } else if (error) {
         failedSegments.push(segment.name);
+        const usage = error?.reviewUsage;
+        totalTokens += usage?.tokens ?? 0;
+        totalInputTokens += usage?.inputTokensUsed ?? 0;
+        totalCachedInputTokens += usage?.cachedInputTokensUsed ?? 0;
+        totalOutputTokens += usage?.outputTokensUsed ?? 0;
       }
     }
 
     if (failedSegments.length > 0) {
       this.progress.warn(`部分分段审核失败: ${failedSegments.join(', ')}`);
+    }
+
+    const [fixResult] = await fixPromise;
+    if (fixResult?.status === 'fulfilled') {
+      this.fixVerificationResults = fixResult.value;
+      totalTokens += fixResult.value.tokens_used;
+      totalInputTokens += fixResult.value.input_tokens_used;
+      totalCachedInputTokens += fixResult.value.cached_input_tokens_used;
+      totalOutputTokens += fixResult.value.output_tokens_used;
+      this.progress.agent('fix-verifier', 'completed');
+    } else if (fixResult?.status === 'rejected') {
+      this.incompleteReasons.push(`fix-verifier: ${String(fixResult.reason)}`);
+      this.progress.agent('fix-verifier', 'error', String(fixResult.reason));
     }
 
     // Phase 3: Wait for validations (if validator exists)
@@ -2879,6 +3072,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
       try {
         const validationResult = await this.streamingValidator.flush();
+        this.incompleteReasons.push(...(validationResult.incompleteReasons ?? []));
         validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
         totalInputTokens += validationResult.inputTokensUsed;
         totalCachedInputTokens += validationResult.cachedInputTokensUsed;
@@ -2914,6 +3108,8 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     // Phase 4: Generate report
     this.progress.phase(4, 4, '生成报告...');
 
+    if (this.options.reviewMode === 'fast')
+      validatedIssues = this.filterIssuesByDiffScope(validatedIssues, diffFiles);
     const aggregationResult = aggregate(validatedIssues, allChecklists);
     const aggregatedIssues = aggregationResult.issues;
     const aggregatedChecklist = aggregationResult.checklist;
@@ -2942,7 +3138,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       cached_input_tokens_used: totalCachedInputTokens,
       output_tokens_used: totalOutputTokens,
       tokens_used: totalTokens,
-      agents_used: agentsToRun,
+      ...this.getReviewExecutionMetadata(),
     };
 
     const report = generateReport(
@@ -2951,7 +3147,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       metrics,
       context,
       metadata,
-      'zh',
+      this.options.language,
       this.fixVerificationResults
     );
 

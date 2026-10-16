@@ -38,6 +38,12 @@ process.on('SIGTERM', () => handleGlobalShutdown('SIGTERM'));
 process.on('SIGINT', () => handleGlobalShutdown('SIGINT'));
 
 import 'dotenv/config';
+import { parseReviewStrategy } from './review/primary-reviewer.js';
+import {
+  parseValidationMaxTurns,
+  parseValidationReadLimit,
+  parseValidationRounds,
+} from './review/validation-config.js';
 import { initializeEnv } from './config/env.js';
 
 // Initialize environment variables for the active runtime provider
@@ -158,7 +164,7 @@ function printUsage(): void {
 Usage: argus <command> [options]
 
 Commands:
-  review <repo> <source> <target>    Run AI code review with multiple agents
+  review <repo> <source> <target>    Run AI code review with the configured review strategy
   config                             Manage configuration (API key, base URL, model)
   upgrade                            Upgrade to the latest version
 
@@ -184,6 +190,11 @@ Options (review command):
   --agents-dir=<path>      Custom agent definitions directory
   --skip-validation        Skip issue validation (faster but less accurate)
   --review-mode=<mode>     Review mode: normal (default, 5-round validation) | fast (2-round compressed)
+  --review-strategy=<mode> 审核策略：multi（默认）| single（主 reviewer + supplemental agents）
+  --primary-reviewer=<yaml> single 的可选主定义；留空使用内置综合 reviewer
+  --validation-rounds=<n>  每个 issue 的验证轮数 1..5（fast 默认 2，normal 默认 5）
+  --validation-max-turns=<n> 每个 issue 的验证轮预算 1..300（默认 30）
+  --validation-read-limit=<n> 验证时单次 Read 的行数窗口 60..2000（默认 140，原上限 180）
   --verbose                Enable verbose output
   --previous-review=<file> Previous review JSON file for fix verification
   --no-verify-fixes        Disable fix verification (when previous-review is set)
@@ -214,6 +225,15 @@ Runtime environment:
   ARGUS_OPENAI_RESPONSE_IMPL  sdk (default) | pi-ai   (openai-responses protocol stack)
   Claude credentials   ARGUS_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
   OpenAI credentials   ARGUS_OPENAI_API_KEY / OPENAI_API_KEY
+  ARGUS_REVIEW_STRATEGY  multi（默认）| single；CLI 参数优先，与 normal/fast 验证模式独立
+  ARGUS_PRIMARY_REVIEWER  single 的 YAML 路径；空值使用内置综合定义
+
+主 reviewer 定义：
+  YAML 使用 name、description，以及 prompt 或 prompt_file（二选一）。
+  prompt_file 相对于 YAML 所在目录；可选 max_turns 为 24..500 的整数。
+  主定义必跑，同一主文件不作为 supplemental agent 重复运行；其他 custom agents 按触发规则运行。
+  未指定预算时按文件数动态计算，重试可能放大预算；预算增加也会增加时间和 token 成本。
+  预算耗尽或证据不足会保留部分 findings，并标记 review_complete=false 与 incomplete_reasons。
 
 PR Context (--pr-context):
   Provides business context for code review, typically from Jira integration.
@@ -466,6 +486,11 @@ function parseOptions(args: string[]): {
   reviewIgnorePatterns: string[];
   skipValidation: boolean;
   reviewMode: 'fast' | 'normal';
+  reviewStrategy?: 'multi' | 'single';
+  primaryReviewerFile?: string;
+  validationRounds?: number;
+  validationMaxTurns?: number;
+  validationReadLimit?: number;
   jsonLogs: boolean;
   verbose: boolean;
   previousReview?: string;
@@ -483,6 +508,11 @@ function parseOptions(args: string[]): {
     reviewIgnorePatterns: string[];
     skipValidation: boolean;
     reviewMode: 'fast' | 'normal';
+    reviewStrategy?: 'multi' | 'single';
+    primaryReviewerFile?: string;
+    validationRounds?: number;
+    validationMaxTurns?: number;
+    validationReadLimit?: number;
     jsonLogs: boolean;
     verbose: boolean;
     previousReview?: string;
@@ -530,6 +560,20 @@ function parseOptions(args: string[]): {
       if (dir) {
         options.customAgentsDirs.push(dir);
       }
+    } else if (arg.startsWith('--review-strategy=')) {
+      options.reviewStrategy = parseReviewStrategy(arg.slice('--review-strategy='.length));
+    } else if (arg.startsWith('--primary-reviewer=')) {
+      options.primaryReviewerFile = arg.slice('--primary-reviewer='.length);
+    } else if (arg.startsWith('--validation-rounds=')) {
+      options.validationRounds = parseValidationRounds(arg.slice('--validation-rounds='.length));
+    } else if (arg.startsWith('--validation-max-turns=')) {
+      options.validationMaxTurns = parseValidationMaxTurns(
+        arg.slice('--validation-max-turns='.length)
+      );
+    } else if (arg.startsWith('--validation-read-limit=')) {
+      options.validationReadLimit = parseValidationReadLimit(
+        arg.slice('--validation-read-limit='.length)
+      );
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
     } else if (arg.startsWith('--review-mode=')) {
@@ -729,6 +773,11 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       verbose: options.verbose,
       skipValidation: options.skipValidation,
       reviewMode: options.reviewMode,
+      reviewStrategy: options.reviewStrategy,
+      primaryReviewerFile: options.primaryReviewerFile,
+      validationRounds: options.validationRounds,
+      validationMaxTurns: options.validationMaxTurns,
+      validationReadLimit: options.validationReadLimit,
       rulesDirs: options.rulesDirs,
       customAgentsDirs: options.customAgentsDirs,
       // Use JSON logs mode if specified, otherwise auto-detect
