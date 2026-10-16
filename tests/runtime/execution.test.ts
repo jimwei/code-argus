@@ -47,11 +47,7 @@ import {
   OpenAIResponsesRuntime,
   createRuntimeFromEnv,
 } from '../../src/runtime/index.js';
-import {
-  escalateMaxOutputTokens,
-  toPiTool,
-  toThinkingLevel,
-} from '../../src/runtime/openai-responses.js';
+import { toPiTool, toThinkingLevel } from '../../src/runtime/openai-responses.js';
 import { convertResponsesTools } from '@earendil-works/pi-ai/api/openai-responses-shared';
 import type { ArgusRuntimeConfig } from '../../src/config/env.js';
 import type { RuntimeToolDefinition } from '../../src/runtime/types.js';
@@ -437,7 +433,7 @@ describe('openai-responses runtime (pi-ai)', () => {
         type: 'result',
         status: 'success',
         text: 'Reviewed.',
-        usage: { inputTokens: 12, cachedInputTokens: 2, outputTokens: 4 },
+        usage: { inputTokens: 24, cachedInputTokens: 4, outputTokens: 8 },
       },
     ]);
 
@@ -483,6 +479,245 @@ describe('openai-responses runtime (pi-ai)', () => {
 
     expect(seenPrompts).toEqual(['first prompt', 'second prompt']);
     expect(events.filter((event: any) => event.type === 'result')).toHaveLength(2);
+  });
+
+  it.each(['stop', 'length', 'error', 'empty', 'maxTurns', 'throw', 'missing'])(
+    'counts earlier tool turns when the final turn ends with %s',
+    async (ending) => {
+      const first = toolCallMessage('read', 'call_1|fc_1', { title: 'fixture' });
+      const final = createAssistantMessage({
+        content:
+          ending === 'maxTurns'
+            ? first.content
+            : ending === 'empty'
+              ? []
+              : [{ type: 'text', text: 'done' }],
+        stopReason: ending === 'length' ? 'length' : ending === 'error' ? 'error' : 'stop',
+      });
+      const streamSimple = vi
+        .fn()
+        .mockReturnValueOnce(createPiStream([doneEvent(first)]))
+        .mockImplementationOnce(() => {
+          if (ending === 'throw') throw new Error('connection lost');
+          return createPiStream(ending === 'missing' ? [] : [doneEvent(final)]);
+        });
+      const runtime = new OpenAIResponsesRuntime(config, { streamSimple });
+      const events = await collectEvents(
+        runtime.execute({
+          prompt: 'Review',
+          cwd: '.',
+          maxTurns: 2,
+          tools: [createTool('read', async () => ({ content: [{ type: 'text', text: 'ok' }] }))],
+        })
+      );
+      const countedTurns = ending === 'throw' || ending === 'missing' ? 1 : 2;
+      expect(events.at(-1)?.usage).toEqual({
+        inputTokens: 12 * countedTurns,
+        cachedInputTokens: 2 * countedTurns,
+        outputTokens: 4 * countedTurns,
+      });
+    }
+  );
+
+  it('reports disjoint prompt usage for streamed validator challenge rounds', async () => {
+    const streamSimple = vi
+      .fn()
+      .mockReturnValueOnce(createPiStream([doneEvent(toolCallMessage('read', 'call_1', {}))]))
+      .mockReturnValueOnce(createPiStream([doneEvent(createAssistantMessage())]))
+      .mockReturnValueOnce(createPiStream([doneEvent(createAssistantMessage())]));
+    async function* prompts() {
+      yield 'first';
+      yield 'challenge';
+    }
+    const runtime = new OpenAIResponsesRuntime(config, { streamSimple });
+    const events = await collectEvents(
+      runtime.execute({
+        prompt: prompts(),
+        cwd: '.',
+        maxTurns: 3,
+        tools: [createTool('read', async () => ({ content: [{ type: 'text', text: 'ok' }] }))],
+      })
+    );
+    expect(events.filter((event) => event.type === 'result').map((event) => event.usage)).toEqual([
+      { inputTokens: 24, cachedInputTokens: 4, outputTokens: 8 },
+      { inputTokens: 12, cachedInputTokens: 2, outputTokens: 4 },
+    ]);
+  });
+
+  it('replays pi-ai native reasoning blocks', async () => {
+    const calls: PiStreamCall[] = [];
+    const report = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }));
+    const streams = [
+      createPiStream([
+        toolCallEvent('report_issue', 'call_1', { title: 'bug' }),
+        doneEvent(
+          createAssistantMessage({
+            content: [
+              {
+                type: 'thinking',
+                thinking: 'internal reasoning',
+                thinkingSignature: '{"type":"reasoning","id":"rs_1"}',
+              },
+              { type: 'toolCall', id: 'call_1', name: 'report_issue', arguments: { title: 'bug' } },
+            ],
+            stopReason: 'toolUse',
+          })
+        ),
+      ]),
+      createPiStream([
+        doneEvent(createAssistantMessage({ content: [{ type: 'text', text: 'Reviewed.' }] })),
+      ]),
+    ];
+    const streamSimple = vi.fn(
+      (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+        calls.push({ model, context, options });
+        return streams.shift()!;
+      }
+    );
+
+    const runtime = new OpenAIResponsesRuntime(config, { streamSimple });
+    await collectEvents(
+      runtime.execute({
+        prompt: 'Review',
+        cwd: '.',
+        maxTurns: 4,
+        tools: [createTool('report_issue', report)],
+      })
+    );
+
+    const onPayload = calls[0]!.options?.onPayload;
+    expect(typeof onPayload).toBe('function');
+    const adjusted = onPayload!(
+      {
+        input: [
+          { role: 'developer', content: 'Review budget: 41 requests for this review.' },
+          { role: 'user', content: [{ type: 'input_text', text: 'Review' }] },
+        ],
+        reasoning: { effort: 'high', summary: 'auto' },
+        store: false,
+      },
+      calls[0]!.model
+    );
+    expect(adjusted).toEqual({
+      instructions: 'Review budget: 41 requests for this review.',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Review' }] }],
+      reasoning: { effort: 'high', summary: 'auto' },
+      store: false,
+    });
+    const replayed = calls[1]!.context.messages.find((message) => message.role === 'assistant');
+    expect(replayed?.content.some((block) => block.type === 'thinking')).toBe(true);
+  });
+
+  it('preserves transcript prefixes and warns once when the low watermark is unreachable', async () => {
+    const budgetConfig: ArgusRuntimeConfig = {
+      ...config,
+      openai: { ...config.openai!, transcriptBudgetTokens: 3000 },
+    };
+    const read = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'z'.repeat(8000) }],
+    }));
+    const calls: PiStreamCall[] = [];
+    const streams: AssistantMessageEventStream[] = [];
+    for (let i = 1; i <= 8; i++) {
+      streams.push(
+        createPiStream([
+          toolCallEvent('read', `call_${i}`, { title: `t${i}` }),
+          doneEvent(
+            createAssistantMessage({
+              content: [
+                { type: 'toolCall', id: `call_${i}`, name: 'read', arguments: { title: `t${i}` } },
+              ],
+              stopReason: 'toolUse',
+            })
+          ),
+        ])
+      );
+    }
+    streams.push(
+      createPiStream([
+        doneEvent(createAssistantMessage({ content: [{ type: 'text', text: 'Reviewed.' }] })),
+      ])
+    );
+    const streamSimple = vi.fn(
+      (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+        calls.push({ model, context, options });
+        return streams.shift()!;
+      }
+    );
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const runtime = new OpenAIResponsesRuntime(budgetConfig, { streamSimple });
+    await collectEvents(
+      runtime.execute({
+        prompt: 'Review',
+        cwd: '.',
+        maxTurns: 12,
+        tools: [createTool('read', read)],
+      })
+    );
+
+    const finalToolResults = calls
+      .at(-1)!
+      .context.messages.filter((message) => message.role === 'toolResult');
+    expect(finalToolResults).toHaveLength(8);
+    const firstText = (finalToolResults[0]!.content as Array<{ text?: string }>)[0]!.text!;
+    const lastText = (finalToolResults.at(-1)!.content as Array<{ text?: string }>)[0]!.text!;
+    expect(firstText).toBe('z'.repeat(8000));
+    expect(lastText.startsWith('z')).toBe(true);
+    // 保留的最近 6 条本身超预算：不部分折叠，每次会话只告警一次。
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('best effort'));
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('keeps the folded prefix stable on the next request when the low watermark is reachable', async () => {
+    const budgetConfig: ArgusRuntimeConfig = {
+      ...config,
+      openai: { ...config.openai!, transcriptBudgetTokens: 3000 },
+    };
+    const read = vi.fn(async () => ({
+      content: [
+        { type: 'text' as const, text: read.mock.calls.length === 1 ? 'z'.repeat(16000) : 'ok' },
+      ],
+    }));
+    const calls: PiStreamCall[] = [];
+    const streams = Array.from({ length: 8 }, (_, index) =>
+      createPiStream([doneEvent(toolCallMessage('read', `call_${index + 1}`, {}))])
+    );
+    streams.push(
+      createPiStream([
+        doneEvent(createAssistantMessage({ content: [{ type: 'text', text: 'Reviewed.' }] })),
+      ])
+    );
+    const streamSimple = vi.fn(
+      (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+        calls.push({ model, context, options });
+        return streams.shift()!;
+      }
+    );
+    const runtime = new OpenAIResponsesRuntime(budgetConfig, { streamSimple });
+    await collectEvents(
+      runtime.execute({
+        prompt: 'Review',
+        cwd: '.',
+        maxTurns: 10,
+        tools: [createTool('read', read)],
+      })
+    );
+
+    const foldedMessages = calls[7]!.context.messages;
+    const toolResults = foldedMessages.filter((message) => message.role === 'toolResult');
+    expect(toolResults).toHaveLength(7);
+    expect(toolResults[0]).toMatchObject({ toolCallId: 'call_1', toolName: 'read' });
+    expect((toolResults[0]!.content as Array<{ text?: string }>)[0]!.text).toContain(
+      'removedChars=16000'
+    );
+    expect(
+      toolResults
+        .slice(1)
+        .every((message) => (message.content as Array<{ text?: string }>)[0]?.text === 'ok')
+    ).toBe(true);
+    expect(calls[8]!.context.messages.slice(0, foldedMessages.length)).toEqual(foldedMessages);
   });
 
   it('normalizes tool schemas for strict mode and converts null tool args to undefined', async () => {
@@ -699,19 +934,14 @@ describe('openai-responses runtime (pi-ai)', () => {
     ]);
   });
 
-  it('declares strict tool mode and the gateway max_output_tokens capability to pi-ai', () => {
+  it('declares strict tools and never lets pi-ai send max_output_tokens', () => {
     const runtime = new OpenAIResponsesRuntime(config, { streamSimple: vi.fn() });
     expect(runtime.model.compat).toEqual({
       supportsStrictMode: true,
-      supportsMaxOutputTokens: true,
+      // 整个 pi-ai 路径不发送 max_output_tokens：32k 上限被长推理吃光会触发整轮 agent 重试
+      supportsMaxOutputTokens: false,
       supportsDeveloperRole: true,
     });
-
-    const limitedRuntime = new OpenAIResponsesRuntime(
-      { ...config, openai: { ...config.openai!, supportsMaxOutputTokens: false } },
-      { streamSimple: vi.fn() }
-    );
-    expect(limitedRuntime.model.compat?.supportsMaxOutputTokens).toBe(false);
 
     const systemRoleRuntime = new OpenAIResponsesRuntime(
       { ...config, openai: { ...config.openai!, supportsDeveloperRole: false } },
@@ -818,70 +1048,7 @@ describe('openai-responses text generation (pi-ai)', () => {
     expect(completeSimple).toHaveBeenCalledTimes(1);
   });
 
-  it('escalates the output budget once when reasoning exhausted it', async () => {
-    const completeSimple = vi
-      .fn()
-      .mockResolvedValueOnce(
-        createAssistantMessage({
-          content: [{ type: 'thinking', thinking: 'scratchpad' }],
-          stopReason: 'length',
-          rawStopReason: 'incomplete.max_output_tokens',
-        })
-      )
-      .mockResolvedValueOnce(
-        createAssistantMessage({ content: [{ type: 'text', text: 'recovered' }] })
-      );
-    const runtime = new OpenAIResponsesRuntime(config, { completeSimple });
-
-    const result = await runtime.generateText({ prompt: 'Summarize', maxOutputTokens: 512 });
-
-    expect(result.text).toBe('recovered');
-    expect(completeSimple.mock.calls[1]![2]).toMatchObject({ maxTokens: 2048 });
-    // 两次尝试的 token 都要计入用量
-    expect(result.usage).toEqual({ inputTokens: 24, cachedInputTokens: 4, outputTokens: 8 });
-  });
-
-  it('stops escalating once the local ceiling is reached', async () => {
-    const completeSimple = vi.fn(async () =>
-      createAssistantMessage({
-        content: [{ type: 'thinking', thinking: 'scratchpad' }],
-        stopReason: 'length',
-        rawStopReason: 'incomplete.max_output_tokens',
-      })
-    );
-    const runtime = new OpenAIResponsesRuntime(config, { completeSimple });
-
-    await expect(
-      runtime.generateText({ prompt: 'Summarize', maxOutputTokens: 8192 })
-    ).rejects.toThrow(/without text output/);
-    expect(completeSimple).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not escalate when the gateway rejects max_output_tokens anyway', async () => {
-    const completeSimple = vi.fn(async () =>
-      createAssistantMessage({
-        content: [{ type: 'thinking', thinking: 'scratchpad' }],
-        stopReason: 'length',
-        rawStopReason: 'incomplete.max_output_tokens',
-      })
-    );
-    const runtime = new OpenAIResponsesRuntime(
-      { ...config, openai: { ...config.openai!, supportsMaxOutputTokens: false } },
-      { completeSimple }
-    );
-
-    // pi-ai 不会发送该参数，重试只会重复同一个请求
-    await expect(
-      runtime.generateText({ prompt: 'Summarize', maxOutputTokens: 512 })
-    ).rejects.toThrow(/without text output/);
-    expect(completeSimple).toHaveBeenCalledTimes(1);
-  });
-
-  it('escalates and caps the budget inside the documented policy window', () => {
-    expect(escalateMaxOutputTokens(512)).toBe(2048);
-    expect(escalateMaxOutputTokens(2048)).toBe(4096);
-    expect(escalateMaxOutputTokens(8192)).toBeUndefined();
-    expect(escalateMaxOutputTokens(-1)).toBeUndefined();
+  it('maps reasoning effort through the documented thinking level vocabulary', () => {
     expect(toThinkingLevel('none')).toBeUndefined();
     expect(toThinkingLevel(undefined)).toBeUndefined();
     expect(toThinkingLevel('max')).toBe('max');

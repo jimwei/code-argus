@@ -1186,7 +1186,9 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
   execute(options: RuntimeExecuteOptions): RuntimeExecution {
     const client = this.client;
     const defaultModel = this.config.models.main;
-    const reasoningRequest = buildReasoningRequest(this.config.reasoningEffort);
+    const reasoningRequest = buildReasoningRequest(
+      options.reasoningEffort ?? this.config.reasoningEffort
+    );
     const abortController = options.abortController ?? new AbortController();
     const ownsAbortController = !options.abortController;
     const runtimeTools = options.tools ?? [];
@@ -1284,6 +1286,17 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
                     : await createOpenAIStreamSnapshot(client, request, abortController.signal);
                 break;
               } catch (error) {
+                if (error instanceof Error && error.name === 'AbortError') {
+                  throw error;
+                }
+                // SDK 的 APIUserAbortError 与静默断流不一定带 AbortError 名称。
+                if (abortController.signal.aborted) {
+                  const abortError = new Error('OpenAI Responses request aborted', {
+                    cause: error,
+                  });
+                  abortError.name = 'AbortError';
+                  throw abortError;
+                }
                 const shouldFallbackToStatelessReplay =
                   continuationMode === 'managed' &&
                   ((previousResponseId &&
@@ -1314,14 +1327,21 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
                   continue;
                 }
 
-                throw error;
+                yield {
+                  type: 'result',
+                  status: 'error',
+                  usage: lastUsage,
+                  error: error instanceof Error ? error.message : String(error),
+                };
+                return;
               }
             }
 
             if (continuationMode === 'managed') {
               previousResponseId = response.id;
             }
-            lastUsage = normalizeUsage(response.usage);
+            // 每个 result 汇总当前 prompt 的全部工具轮次；下个 prompt 重新计数。
+            lastUsage = mergeUsage(lastUsage, normalizeUsage(response.usage));
             const responseText = getResponseText(response);
             const responseOutputItems = Array.isArray(response.output)
               ? (response.output as OpenAIResponseInputItem[])

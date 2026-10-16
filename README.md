@@ -171,6 +171,7 @@ export ARGUS_MODEL=gpt-5
 export ARGUS_LIGHT_MODEL=gpt-5-mini
 export ARGUS_VALIDATOR_MODEL=gpt-5
 export ARGUS_REASONING_EFFORT=medium
+export ARGUS_VALIDATOR_REASONING_EFFORT=medium
 ```
 
 You can also persist the default main model:
@@ -192,19 +193,57 @@ Notes:
   (`off`, i.e. `reasoning.effort=none`) instead of reporting an error, so the runtime
   validates the value and falls back to the provider default (with a one-time warning)
   rather than silently disabling reasoning
-- The next four bullets describe the `pi-ai` implementation only
-  (`ARGUS_OPENAI_RESPONSE_IMPL=pi-ai`); with the default `sdk` implementation the
-  pre-migration behaviour applies instead
+- Validator sessions, including fix verification, default to `medium` reasoning whenever
+  `ARGUS_REASONING_EFFORT` is
+  higher than `medium` (the validator model itself keeps using `ARGUS_VALIDATOR_MODEL`).
+  Set `ARGUS_VALIDATOR_REASONING_EFFORT` to override; when no main effort is configured
+  the validator keeps the provider default
+- The following bullets, through the `systemPrompt` note, describe the `pi-ai` implementation
+  (`ARGUS_OPENAI_RESPONSE_IMPL=pi-ai`)
 - `openai-responses` traffic goes through `@earendil-works/pi-ai`, which always sends
-  `store: false` plus the full transcript, and (unless disabled) a `max_output_tokens`
-  cap taken from the runtime default. Set `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false`
-  for gateways that reject that parameter
-- When `ARGUS_REASONING_EFFORT` is set, pi-ai sends the leading instructions with the
-  `developer` role (plain `system` when reasoning is off). Gateways that only accept
-  `system` should set `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE=false`
+  `store: false` plus the full transcript. The whole `pi-ai` path omits
+  `max_output_tokens` (the SDK path never sent one on agent turns either): a
+  reasoning-heavy turn can exhaust a fixed output cap, and an `incomplete` response
+  can make the orchestrator retry the whole agent. Explicit `maxOutputTokens` budgets on light-path
+  calls (agent selector / dedup / matcher) are ignored on this path
+- The pi-ai runtime replays native reasoning blocks exactly like the SDK implementation:
+  `reasoning.summary` / `include: ["reasoning.encrypted_content"]` stay in the payload and
+  historical thinking blocks are written back to the transcript (older ones may later be
+  dropped by transcript folding, see below). There is no reasoning-replay mode setting;
+  native reasoning replay is always enabled
+- The pi-ai runtime also lifts the session instructions from the leading `developer`
+  input message into the top-level `instructions` field, matching the SDK request shape.
+- `ARGUS_TRANSCRIPT_BUDGET_TOKENS` (default `160000`, `0` disables) bounds the pi-ai
+  transcript on a best-effort basis: once the estimated request size crosses the
+  budget, the oldest tool outputs are folded (and the thinking blocks of older assistant
+  turns are dropped — pi-ai replays reasoning from `thinkingSignature`, so they dominate
+  long sessions) toward 60% of it. The most recent six tool outputs, the most recent four
+  assistant turns and all user messages are preserved, so tool-call pairing stays
+  intact. Folding proceeds when it can reach the low watermark, or when one pass can
+  save at least `max(8k, half the overflow)` estimated tokens even if that watermark is
+  unreachable. Otherwise history is preserved. If the request remains over budget
+  after the compaction check, a warning is emitted once per session. Previously folded
+  tool results remain unchanged in later folds. Each fold can invalidate the cached
+  suffix after the first newly changed item; the prefix is stable between folds,
+  not necessarily for the rest of the session. The budget is not a hard context limit: if retained
+  content stays above the low watermark, compaction may stay inactive until requests
+  exceed the provider context limit. The default
+  160k leaves estimated 32k output headroom inside the 200k window when the budget is
+  met; verify net cost using cached/input counters if cached tokens are cheap
 - The runtime sends a `systemPrompt` on every request (the reviewer budget text is
-  appended when a completion budget is present). Unknown values of the two gateway
-  flags above fall back to `true` with a warning in the logs
+  appended when a completion budget is present)
+- Both Responses implementations report all provider-reported usage across tool turns
+  for each prompt in `result.usage`, including earlier turns when a later request fails.
+  Subsequent streamed prompts have disjoint usage, so validators can sum their results
+  without double counting. Cache rate is cached input divided by input (which already
+  includes cached input). Unreported usage from transport/provider-internal retries
+  cannot be recovered and is not included
+- See [reasoning replay and transcript budget](docs/reasoning-replay-probe-2026-10-14.md)
+  for current behavior and compatibility limits. Official strict-interface item-pairing
+  compatibility remains unverified
+- The [pi-ai vs SDK review A/B report](docs/pi-ai-vs-sdk-review-ab-2026-10-16.md)
+  records the current build on prm-g1-103: four fixed PR snapshots, both implementations,
+  serial runs with a 40-minute cap
 - A turn truncated by the output budget (`stopReason=length`) is reported as
   `incomplete` and its tool calls are **not** executed: their arguments may be cut off
   or mixed up (upstream fixed the same class of bug for unfinished Responses tool calls
@@ -213,28 +252,26 @@ Notes:
   runtime: `sdk` (default, the self-maintained `openai` SDK implementation) or `pi-ai`
   (`@earendil-works/pi-ai`, opt-in). Both share the same
   `AgentRuntime` contract and event statuses, so nothing else in the pipeline changes;
-  an unknown value falls back to `sdk` with a warning. The two gateway flags above
-  (`ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS` / `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`)
-  only affect the `pi-ai` implementation and are therefore ignored on the default path
+  an unknown value falls back to `sdk` with a warning
 
 ### Environment variable summary
 
-| Purpose                             | Variables                                       |
-| ----------------------------------- | ----------------------------------------------- |
-| Runtime selection                   | `ARGUS_RUNTIME`                                 |
-| OpenAI Responses protocol stack     | `ARGUS_OPENAI_RESPONSE_IMPL`                    |
-| OpenAI shared model                 | `ARGUS_OPENAI_MODEL`                            |
-| Main model                          | `ARGUS_MODEL`                                   |
-| Light model                         | `ARGUS_LIGHT_MODEL`                             |
-| Validator model                     | `ARGUS_VALIDATOR_MODEL`                         |
-| Reasoning effort                    | `ARGUS_REASONING_EFFORT`                        |
-| Claude API key                      | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
-| Claude OAuth or proxy               | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
-| Claude base URL                     | `ARGUS_ANTHROPIC_BASE_URL`                      |
-| OpenAI API key                      | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
-| OpenAI base URL                     | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
-| Gateway `max_output_tokens` support | `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS`       |
-| Gateway `developer` role support    | `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`          |
+| Purpose                         | Variables                                       |
+| ------------------------------- | ----------------------------------------------- |
+| Runtime selection               | `ARGUS_RUNTIME`                                 |
+| OpenAI Responses protocol stack | `ARGUS_OPENAI_RESPONSE_IMPL`                    |
+| OpenAI shared model             | `ARGUS_OPENAI_MODEL`                            |
+| Main model                      | `ARGUS_MODEL`                                   |
+| Light model                     | `ARGUS_LIGHT_MODEL`                             |
+| Validator model                 | `ARGUS_VALIDATOR_MODEL`                         |
+| Reasoning effort                | `ARGUS_REASONING_EFFORT`                        |
+| Validator reasoning effort      | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
+| pi-ai transcript budget         | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
+| Claude API key                  | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
+| Claude OAuth or proxy           | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
+| Claude base URL                 | `ARGUS_ANTHROPIC_BASE_URL`                      |
+| OpenAI API key                  | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
+| OpenAI base URL                 | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
 
 ## Configuration Management
 

@@ -235,6 +235,26 @@ describe('groupByCategory', () => {
     expect(result.logic).toHaveLength(1);
     expect(result.performance).toHaveLength(0);
   });
+
+  it('should bucket unrecognized categories instead of crashing', () => {
+    const issues: ValidatedIssue[] = [
+      createMockIssue({ id: '1', category: 'documentation' as ValidatedIssue['category'] }),
+      createMockIssue({ id: '2', category: 'toString' as ValidatedIssue['category'] }),
+    ];
+
+    const result = groupByCategory(issues);
+
+    expect(result.maintainability).toHaveLength(2);
+  });
+});
+
+describe('normalizeSeverity', () => {
+  it('should map aliases and never return prototype properties', () => {
+    expect(normalizeSeverity('style')).toBe('suggestion');
+    expect(normalizeSeverity(' WARN ')).toBe('warning');
+    expect(normalizeSeverity('toString')).toBe('warning');
+    expect(normalizeSeverity(undefined)).toBe('warning');
+  });
 });
 
 describe('groupByFile', () => {

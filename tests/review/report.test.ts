@@ -78,6 +78,31 @@ describe('calculateMetrics', () => {
     expect(metrics.by_category.logic).toBe(1);
   });
 
+  it('should bucket unrecognized categories instead of writing NaN', () => {
+    const rawIssues = [
+      createMockRawIssue({ id: '1', category: 'documentation' as RawIssue['category'] }),
+      createMockRawIssue({ id: '2', category: 'Correctness' as RawIssue['category'] }),
+    ];
+    const validatedIssues = [
+      createMockValidatedIssue({
+        id: '1',
+        validation_status: 'confirmed',
+        category: 'documentation' as ValidatedIssue['category'],
+      }),
+      createMockValidatedIssue({
+        id: '2',
+        validation_status: 'confirmed',
+        category: 'Correctness' as ValidatedIssue['category'],
+      }),
+    ];
+
+    const metrics = calculateMetrics(rawIssues, validatedIssues);
+
+    expect(metrics.by_category.maintainability).toBe(1);
+    expect(metrics.by_category.logic).toBe(1);
+    expect(Object.values(metrics.by_category).every(Number.isFinite)).toBe(true);
+  });
+
   it('should handle empty arrays', () => {
     const metrics = calculateMetrics([], []);
 

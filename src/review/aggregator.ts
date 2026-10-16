@@ -5,12 +5,13 @@
  * Note: Deduplication is now handled by the LLM-based deduplicator.
  */
 
-import type {
-  ValidatedIssue,
-  ChecklistItem,
-  Severity,
-  IssueCategory,
-  ChecklistResult,
+import {
+  normalizeIssueCategory,
+  type ValidatedIssue,
+  type ChecklistItem,
+  type Severity,
+  type IssueCategory,
+  type ChecklistResult,
 } from './types.js';
 import { shouldIncludeIssueInFinalReport } from './high-signal-policy.js';
 
@@ -255,7 +256,8 @@ export function groupByCategory(issues: ValidatedIssue[]): Record<IssueCategory,
   };
 
   for (const issue of issues) {
-    groups[issue.category].push(issue);
+    // `category` 是模型回传值：未知取值在这里归一，避免索引 undefined 直接抛错。
+    groups[normalizeIssueCategory(issue.category)].push(issue);
   }
 
   return groups;
@@ -311,7 +313,11 @@ export function normalizeSeverity(value: unknown, fallback: Severity = 'warning'
   }
 
   const key = value.trim().toLowerCase();
-  return SEVERITY_ALIASES[key] ?? fallback;
+  // hasOwnProperty 兜底：原型链上的属性（如 `toString`）不能被当成别名。
+  const alias = Object.prototype.hasOwnProperty.call(SEVERITY_ALIASES, key)
+    ? SEVERITY_ALIASES[key]
+    : undefined;
+  return alias ?? fallback;
 }
 
 /**

@@ -247,6 +247,9 @@ Call this after deep investigation of unresolved/unclear issues.`,
       cwd: repoPath,
       maxTurns: Math.max(30, previousReview.issues.length * 5),
       model: runtime.config.models.validator,
+      ...(runtime.config.validatorReasoningEffort
+        ? { reasoningEffort: runtime.config.validatorReasoningEffort }
+        : {}),
       tools: runtimeTools,
       toolNamespace: 'fix-verifier-tools',
     });
@@ -280,6 +283,9 @@ Call this after deep investigation of unresolved/unclear issues.`,
         tokensUsed = inputTokensUsed + outputTokensUsed;
       }
 
+      if (event.status === 'error') {
+        throw new Error(event.error || 'Fix verifier runtime returned error');
+      }
       if (event.status !== 'success' && verbose) {
         console.error(`[FixVerifier] Runtime result status: ${event.status}`, event.error);
       }
