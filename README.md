@@ -250,6 +250,9 @@ Notes:
 - The [reasoning replay probe](docs/reasoning-replay-probe-2026-10-14.md) did not
   reproduce item-pairing failures on the tested gateway; official strict-interface
   compatibility remains unverified, so this result does not apply to every deployment
+- The [pi-ai vs SDK review A/B report](docs/pi-ai-vs-sdk-review-ab-2026-10-16.md)
+  holds the on-host measurements behind the pi-ai payload changes above: four real
+  PRs on prm-g1-103, both implementations, 40-minute cap
 - A turn truncated by the output budget (`stopReason=length`) is reported as
   `incomplete` and its tool calls are **not** executed: their arguments may be cut off
   or mixed up (upstream fixed the same class of bug for unfinished Responses tool calls

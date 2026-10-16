@@ -220,6 +220,8 @@ argus config set model gpt-5
   传输失败或 provider 内部重试未上报的用量无法恢复，不包含在此统计中
 - [reasoning 重放实测报告](docs/reasoning-replay-probe-2026-10-14.md)：当前网关未复现
   item 配对失败；官方严格接口尚未验证，不能把结果推广到所有部署
+- [pi-ai 与 SDK 真实 PR 审核对比报告](docs/pi-ai-vs-sdk-review-ab-2026-10-16.md)：
+  上文 pi-ai 请求形态改动的 103 实测依据（4 个真实 PR、40 分钟上限、两臂同窗口）
 
 ### 环境变量总表
 
