@@ -186,6 +186,51 @@ describe('compactTranscript', () => {
     expect(result.budgetMet).toBe(true);
   });
 
+  it('preserves previously folded results and the stable prefix across later folds', () => {
+    const output = 'x'.repeat(12_000);
+    const messages = [userMessage('review')];
+    for (let i = 1; i <= 60; i++) {
+      messages.push(toolResultMessage(`call_${i}`, output));
+    }
+    const options = { budgetTokens: 160_000 };
+    const first = compactTranscript(messages, options);
+    expect(first.elidedCount).toBeGreaterThan(0);
+
+    const next = [...first.messages];
+    for (let i = 61; i <= 90; i++) {
+      next.push(toolResultMessage(`call_${i}`, output));
+    }
+    const second = compactTranscript(next, options);
+    expect(second.elidedCount).toBeGreaterThan(0);
+    expect(second.budgetMet).toBe(true);
+
+    const firstUnfolded = first.messages.findIndex(
+      (message, index) => message.role === 'toolResult' && message === messages[index]
+    );
+    expect(firstUnfolded).toBeGreaterThan(1);
+    for (let i = 0; i < firstUnfolded; i++) {
+      expect(second.messages[i]).toBe(first.messages[i]);
+    }
+    expect(second.messages[1]!.content).toEqual([
+      {
+        type: 'text',
+        text: `${TRANSCRIPT_ELISION_PREFIX} tool=Read call=call_1 removedChars=12000`,
+      },
+    ]);
+  });
+
+  it('still folds raw tool output that happens to start with the elision prefix', () => {
+    const raw = toolResultMessage('call_1', `${TRANSCRIPT_ELISION_PREFIX}\n${BIG_OUTPUT}`);
+    const messages = [raw, toolResultMessage('call_2', 'recent')];
+    const result = compactTranscript(messages, {
+      budgetTokens: 1_000,
+      keepRecentToolResults: 1,
+    });
+    expect(result.elidedCount).toBe(1);
+    expect(result.messages[0]).not.toBe(raw);
+    expect(result.budgetMet).toBe(true);
+  });
+
   it('reports budgetMet=false when the preserved messages alone exceed the budget', () => {
     const messages: Message[] = [
       toolResultMessage('call_1', BIG_OUTPUT),

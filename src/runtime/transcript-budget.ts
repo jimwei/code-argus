@@ -14,13 +14,17 @@
  * - 代价说明：每次折叠都会改写历史内容，缓存只能匹配到首个改写点之前；
  *   两次折叠之间前缀稳定，不保证整个会话只失效一次。是否净收益取决于网关的
  *   cached token 折扣与折叠后的剩余轮数，请结合 cached/input 计数验证；
- *   折叠可以降低上下文占用；无法达到低水位时不折叠，仍可能触发 provider 上下文超限。
+ *   折叠可以降低上下文占用；保留项持续超预算时，仍可能触发 provider 上下文超限。
  */
 
 import type { AssistantMessage, Message, ToolResultMessage } from '@earendil-works/pi-ai';
 
 /** 折叠占位文本前缀（同时用于测试与线上排查）。 */
 export const TRANSCRIPT_ELISION_PREFIX = '[tool output elided to bound transcript size]';
+
+// 内部标记不参与 JSON 序列化；对象 spread 仍会保留它，避免后续轮次重复改写占位文本。
+const ELIDED_TOOL_RESULT = Symbol('elidedToolResult');
+type ElidedToolResultMessage = ToolResultMessage & { [ELIDED_TOOL_RESULT]: true };
 
 /** 默认折叠目标：预算的比例，避免刚折叠完又立刻触发下一轮折叠。 */
 export const DEFAULT_TRANSCRIPT_LOW_WATERMARK_RATIO = 0.6;
@@ -134,10 +138,11 @@ export function estimateTranscriptTokens(messages: Message[], fixedTokens = 0): 
   return tokens;
 }
 
-function buildElidedToolResult(message: ToolResultMessage): ToolResultMessage {
+function buildElidedToolResult(message: ToolResultMessage): ElidedToolResultMessage {
   const removedChars = contentToText(message.content).length;
   return {
     ...message,
+    [ELIDED_TOOL_RESULT]: true,
     content: [
       {
         type: 'text',
@@ -206,10 +211,9 @@ export function compactTranscript(
     }
   }
 
-  const foldableToolResults = toolResultIndexes.slice(
-    0,
-    Math.max(0, toolResultIndexes.length - keepRecentToolResults)
-  );
+  const foldableToolResults = toolResultIndexes
+    .slice(0, Math.max(0, toolResultIndexes.length - keepRecentToolResults))
+    .filter((index) => !(messages[index] as Partial<ElidedToolResultMessage>)[ELIDED_TOOL_RESULT]);
   const foldableAssistantMessages = assistantIndexes
     .slice(0, Math.max(0, assistantIndexes.length - keepRecentAssistantMessages))
     .filter((index) =>

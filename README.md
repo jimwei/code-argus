@@ -224,12 +224,13 @@ Notes:
   turns are dropped — pi-ai replays reasoning from `thinkingSignature`, so they dominate
   long sessions) toward 60% of it. The most recent six tool outputs, the most recent four
   assistant turns and all user messages are preserved, so tool-call pairing stays
-  intact. When the low watermark is unreachable, folding still proceeds
-  if one pass can save at least `max(8k, half the overflow)` estimated tokens, so the
-  transcript stays bounded instead of growing without limit; a once-per-session
-  warning records the first over-budget turn. Every fold invalidates the cached suffix
-  after the first changed item; the prefix is stable between folds, not necessarily
-  for the rest of the session. The budget is not a hard context limit: if retained
+  intact. Folding proceeds when it can reach the low watermark, or when one pass can
+  save at least `max(8k, half the overflow)` estimated tokens even if that watermark is
+  unreachable. Otherwise history is preserved. If the request remains over budget
+  after the compaction check, a warning is emitted once per session. Previously folded
+  tool results remain unchanged in later folds. Each fold can invalidate the cached
+  suffix after the first newly changed item; the prefix is stable between folds,
+  not necessarily for the rest of the session. The budget is not a hard context limit: if retained
   content stays above the low watermark, compaction may stay inactive until requests
   exceed the provider context limit. The default
   160k leaves estimated 32k output headroom inside the 200k window when the budget is
