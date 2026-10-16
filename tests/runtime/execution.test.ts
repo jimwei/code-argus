@@ -599,9 +599,11 @@ describe('openai-responses runtime (pi-ai)', () => {
         ],
         reasoning: { effort: 'high', summary: 'auto' },
         store: false,
+        max_output_tokens: 32_768,
       },
       calls[0]!.model
     );
+    // agent 轮次同时剥掉 max_output_tokens：32k 上限被长推理吃光会触发整轮 agent 重试
     expect(adjusted).toEqual({
       instructions: 'Review budget: 41 requests for this review.',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Review' }] }],
@@ -1039,6 +1041,32 @@ describe('openai-responses text generation (pi-ai)', () => {
       apiKey: 'test-key',
       maxTokens: 512,
       reasoning: 'high',
+    });
+  });
+
+  it('keeps max_output_tokens on light-path calls', async () => {
+    const completeSimple = vi.fn(async () =>
+      createAssistantMessage({ content: [{ type: 'text', text: 'summary' }] })
+    );
+    const runtime = new OpenAIResponsesRuntime(config, { completeSimple });
+
+    await runtime.generateText({ prompt: 'Summarize', maxOutputTokens: 512 });
+
+    const onPayload = completeSimple.mock.calls[0]![2]?.onPayload;
+    expect(typeof onPayload).toBe('function');
+    const adjusted = onPayload!(
+      {
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'Summarize' }] }],
+        max_output_tokens: 512,
+        store: false,
+      },
+      runtime.model
+    );
+    // selector/dedup 之类的小调用仍按调用方预算发送 max_output_tokens
+    expect(adjusted).toEqual({
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Summarize' }] }],
+      max_output_tokens: 512,
+      store: false,
     });
   });
 

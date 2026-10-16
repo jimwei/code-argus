@@ -201,9 +201,12 @@ Notes:
   (`ARGUS_OPENAI_RESPONSE_IMPL=pi-ai`); with the default `sdk` implementation the
   pre-migration behaviour applies instead
 - `openai-responses` traffic goes through `@earendil-works/pi-ai`, which always sends
-  `store: false` plus the full transcript, and (unless disabled) a `max_output_tokens`
-  cap taken from the runtime default. Set `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false`
-  for gateways that reject that parameter
+  `store: false` plus the full transcript. Agent turns do not send `max_output_tokens`
+  (the SDK path never sent one either): a reasoning-heavy turn could exhaust the former
+  32k default, and the resulting `incomplete` response made the orchestrator retry the
+  whole agent — measured at ~600k wasted tokens per event. Light-path calls
+  (agent selector / dedup / matcher) still send the caller's explicit budget, and set
+  `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false` for gateways that reject the parameter
 - The pi-ai runtime replays native reasoning blocks exactly like the SDK implementation:
   `reasoning.summary` / `include: ["reasoning.encrypted_content"]` stay in the payload and
   historical thinking blocks are written back to the transcript. The former

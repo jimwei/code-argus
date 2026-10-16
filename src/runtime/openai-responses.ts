@@ -221,6 +221,21 @@ function liftInstructionsToPayload(payload: unknown): unknown {
   return params;
 }
 
+/**
+ * agent 轮次不发送 `max_output_tokens`（与 SDK 实现的 agent 请求形态一致）。
+ * 旧实现沿用模型默认的 32k 上限：某一轮推理特别长时会把它整轮吃光，上游以
+ * `response.incomplete (max_output_tokens)` 结束，编排层随后整轮重试该 agent——
+ * 103 实测单次浪费约 600K token 与数分钟墙钟。轻量调用（selector/dedup/matcher）
+ * 仍按调用方预算发送该参数，保持不变。
+ */
+function dropAgentTurnMaxOutputTokens(payload: unknown): unknown {
+  const params = liftInstructionsToPayload(payload);
+  if (params && typeof params === 'object') {
+    delete (params as Record<string, unknown>).max_output_tokens;
+  }
+  return params;
+}
+
 type JsonSchema = Record<string, unknown>;
 
 /** 可选字段在 strict 模式下必须显式允许 null，否则网关会以 400 拒绝。 */
@@ -588,14 +603,15 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
 
   private buildStreamOptions(
     extra: SimpleStreamOptions = {},
-    effort: string | undefined = this.config.reasoningEffort
+    effort: string | undefined = this.config.reasoningEffort,
+    policy: { agentTurn?: boolean } = {}
   ): SimpleStreamOptions {
     const reasoning = toThinkingLevel(effort);
     return {
       apiKey: this.apiKey,
       maxRetries: PI_PROVIDER_MAX_RETRIES,
       ...(reasoning ? { reasoning } : {}),
-      onPayload: liftInstructionsToPayload,
+      onPayload: policy.agentTurn ? dropAgentTurnMaxOutputTokens : liftInstructionsToPayload,
       ...extra,
     };
   }
@@ -699,7 +715,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     const transcriptBudgetTokens = this.config.openai?.transcriptBudgetTokens;
     const streamFn = this.streamFn;
     const buildOptions = (extra: SimpleStreamOptions = {}) =>
-      this.buildStreamOptions(extra, activeEffort);
+      this.buildStreamOptions(extra, activeEffort, { agentTurn: true });
 
     let closed = false;
 
