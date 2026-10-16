@@ -1,106 +1,47 @@
-# Reasoning 重放实际验证与 Review 修正
+# Reasoning 重放与 transcript 预算
 
-## 结论
+本文描述当前实现。真实 PR 的耗时、token、缓存和问题数见
+[pi-ai 与 SDK 完整实测报告](pi-ai-vs-sdk-review-ab-2026-10-16.md)。
 
-2026-10-14 在 `ssh-bridge` 主机别名 `prm-g1-103` 上，通过 PR Manager 已配置的
-`api.aicr.gccode.cn` 网关和服务器凭据测试了真实 Responses 工具调用。
-当前网关没有复现“删除 reasoning、保留工具 item ID 后第二轮报错”。因此不把这项
-风险当作已确认的生产 P1；当日未修改 `ARGUS_OPENAI_REASONING_REPLAY=drop` 默认值
-（该开关已于 2026-10-15 按下方更新整体移除）。
-官方严格接口的兼容性仍未实际验证；这不等于证明所有 OpenAI 部署都安全。
+## 当前重放行为
 
-> 后续更新（2026-10-15）：本页只验证了"drop 的请求形态能被网关接受"，没有验证
-> 净费用。随后的真实 PR A/B（LeySerFujiProject #7182 / #7191，103 隔离运行）实测
-> 推翻了"drop 更省"的前提：不重放推理会让模型失去自有分析、反复重新探索，同一
-> PR 上 pi-ai 的成本约为 keep 的 2–3 倍（例如小 PR：drop 8.7 分钟 / 2.19M tokens
-> vs keep 5.0 分钟 / 1.67M，SDK 4.2 分钟 / 1.42M）。因此
-> `ARGUS_OPENAI_REASONING_REPLAY` 已整体移除，pi-ai 固定按原生（keep）行为重放。
+pi-ai 按原生行为保留 `reasoning.summary` 与
+`include: ["reasoning.encrypted_content"]`，并重放历史 thinking block。
+无需配置重放模式。session instructions 提升到 Responses 顶层
+`instructions`，pi-ai 路径不发送 `max_output_tokens`。
 
-## 方法与结果
+SDK 和 pi-ai 在每个 prompt 的 `result.usage` 中汇总该 prompt 已上报的全部工具
+轮次消耗；后续请求失败时仍保留之前已上报的用量。streamed prompt 之间用量互斥。
+provider 没有上报的传输重试、断流消耗无法补算；reviewer 跨 attempt 的最终汇总
+也可能遗漏失败 attempt。因此费用对比以实测报告中的逐 HTTP 请求记录为准。
 
-使用仓库的 `scripts/probe-reasoning-replay.mjs`，所有请求为 `store:false`、
-`reasoning.effort=high`、`tool_choice=auto`，工具只返回固定的合成 fixture。
-不查询真实 PR、不修改服务配置、不重启线上进程。凭据只在服务器进程中读取，
-不传回本地、不保存到报告。
+## transcript 折叠
 
-每个模型分别用 keep/drop 请求第一轮，从真实响应取工具调用和 item ID。
-keep 第一轮响应测试三种 follow-up：完整重放、删除 reasoning 保留 ID、删除
-reasoning 且去掉工具 item ID。drop 第一轮响应测试后两种 follow-up。
-同一第一轮响应用于三种重放，避免把模型第一次输出的随机变化当作兼容性差异。
+`ARGUS_TRANSCRIPT_BUDGET_TOKENS` 默认 `160000`，设为 `0` 可关闭。
+这是估算预算，不是 provider 上下文的硬上限，仅用于 pi-ai。
 
-| 模型                | 第一轮成功 | Follow-up 成功 | 实际 item 形态                                                  |
-| ------------------- | ---------- | -------------- | --------------------------------------------------------------- |
-| deepseek-v4.1-flash | 2/2        | 5/5            | reasoning 与工具 item 都是 UUID，返回 38 字符 encrypted content |
-| gpt-5.6-sol         | 2/2        | 5/5            | 工具 ID 为 `item_*`，第一轮没有 reasoning item                  |
-| gpt-5               | 2/2        | 5/5            | 工具 ID 为 `item_*`，第一轮没有 reasoning item                  |
+超过预算时，运行时尝试将较早工具输出替换为占位文本，并移除较早 assistant 回合
+的 thinking block，目标为预算的 60%。最近六条工具输出、最近四个 assistant 回合
+和全部 user 消息保留；工具调用与结果的配对保持不变。
 
-合计 6 次第一轮、15 次 follow-up 全部 `status=completed`，没有配对报错。
-前置探针中强制 function `tool_choice` 被 DeepSeek thinking 模式以 400 拒绝，
-`gpt-5.5` 被账号组以 404 拒绝；这两类失败发生在第一轮，不作为重放问题证据。
+满足以下任一条件时执行折叠：
 
-该网关没有返回官方 `rs_*`/`fc_*` 配对项，GPT 路由也没有 reasoning 输出；
-结果只能证明当前网关接受这些请求，不能验证官方 item 配对约束。
-需要严格 `store:false` reasoning 重放的部署无需再做配置——pi-ai 现在固定按原生
-行为重放加密推理项。注意：transcript 预算触发折叠时，较早回合的推理项会被整块移除，
-工具调用的 item id 保持不动（103 实测该形态被接受：12 次折叠、0 个非 200；
-而"连同 item id 一起删"的形态会被 400 拒绝）。最近 4 个 assistant 回合的重放保持完整；
-官方 OpenAI 的 pairing 校验语义仍未验证，严格部署如遇 400 可调大预算或设为 0 关闭折叠。
-此探针不是 PR 审核 A/B，不用于推导审核质量、净费用或缓存收益。
+- 折叠后可以达到 60% 低水位。
+- 即使无法达到低水位，一次预计节省也达到 `max(8000, ceil(超出预算量 / 2))`。
 
-## 复现
+否则保留历史。检查后仍超过预算时，每个 session 最多告警一次。保留内容过大时
+仍可能触及 provider 上下文限制，不能把预算视为硬性内存或 token 保证。
 
-在服务器上运行以下命令（脚本路径按上传位置调整）：
+已折叠的工具输出不会在后续折叠中再次改写。每次新增折叠都可能使首个改写点之后
+的缓存失效；两次折叠之间前缀保持稳定，不代表整个 session 的缓存前缀始终不变。
+需要同时检查缓存率、未命中输入和输出 token，不能只按总 token 判断费用。
 
-```bash
-node /tmp/argus-reasoning-replay-20261014.mjs \
-  --package-root=/home/xaadmin/gc-ai-code-reviewer/packages/server \
-  --env-file=/home/xaadmin/gc-ai-code-reviewer/.env \
-  --models=deepseek-v4.1-flash,gpt-5.6-sol,gpt-5
-```
+## 兼容性边界
 
-脚本使用部署里的 OpenAI SDK 解析流，目的是直接检验协议 payload，不依赖本地 mock。
-不重试 API 请求；每个请求超时 90 秒。`--list-models` 查询当前凭据可用模型。
+折叠会移除旧 reasoning item，但保留工具调用 item ID。当前完整 PR 实测仅能
+验证报告所列网关、模型和请求形态。官方 OpenAI 严格接口的 item-pairing 兼容性
+仍未现场验证；如部署出现与折叠相关的 400，可调高预算或设为 `0` 关闭折叠后定位。
 
-## 其余 Review 修复
-
-- SDK/pi-ai 每个 prompt 的结果用量汇总其全部工具调用轮次，不再仅保留最后一轮；
-  streamed prompt 之间用量互斥，validator 可直接相加。
-- 后续异常或无最终响应时保留之前已上报的消耗。无法统计 provider 未上报的重试、
-  断流消耗；历史报告不会自动重算，旧 A/B 需要原始请求级日志才能校正。
-- 本轮修正的是 runtime 每 prompt 的统计契约，不是完整账单审计：用户取消仍按异常退出，
-  reviewer 的跨 attempt 重试也仍存在最终汇总遗漏失败 attempt 的既有局限。
-- transcript 折叠先检查能否达到 60% 低水位；不可达时不改写历史，并告警。
-  这保护缓存前缀，但不保证上下文不会溢出，预算依然是 best effort。
-- fix-verifier 同普通 validator 一样传递 `validatorReasoningEffort`，默认高档降到 medium。
-- PR Manager 增加真实客户端配置构造到日志输出的回归测试，不再仅依赖手写配置。
-- SDK 异常结果处理仍需区分用户取消：真实 `APIUserAbortError` 的 `name` 是 `Error`，
-  SSE 中断也可能静默结束。runtime 按调用方 signal 归一化为 `AbortError`，
-  取消不输出普通 error result，也不进入兼容性 fallback；回归覆盖首轮、工具续轮和静默断流。
-- custom agent / fix-verifier 消费 `error` result 后进入既有错误回调 / progress 路径，
-  避免 SDK 异常改为 result 后失去失败信号，同时保留 result 中上报的用量。
-
-## 本地验证
-
-- Code Argus 全量：32 个测试文件、375 项测试通过；类型检查与改动文件 ESLint / Prettier 通过。
-- Code Argus `pnpm build` 通过；Windows 的默认 PATH 不包含 `cp`，本次仅在构建进程中
-  临时加入 Git 的 `usr/bin`，没有修改项目构建脚本或系统配置。
-- PR Manager 的 log-context、client-selection、client-sdk、client、config.openai-runtime
-  测试通过；server 类型检查与构建通过。client-selection 新增 5 条真实日志断言。
-- 取消边界测试先复现 3 项失败，再修复为 5 项通过；SDK 真实错误类与静默断流都被覆盖。
-- 本次不是费用 A/B：不推导 token 节省比例，也不自动校正历史测试结论。
-
-## 独立复核与范围边界
-
-通过 Codex CLI 对两个仓库的本轮工作区做只读独立复核，并在修正 SDK 取消与
-调用方失败信号后补做定向复核。最终没有发现本次新增代码的确定性缺陷。
-实时去重使用 `generateText()`，其基于 API 错误对象的重试策略未被 `execute()` 改动影响；
-PR Manager 启动、子进程和真实客户端的日志都传递所选 `impl`。
-
-以下既有局限不在本轮五项反馈的修复范围内，也没有声称已解决：
-
-- transcript 不是硬上限；保留项持续超过低水位时可能始终无法折叠，最终触发上下文超限。
-- reviewer 跨 attempt 的最终统计仍可能遗漏失败 attempt，用户取消也不产出 usage result。
-- custom agent / fix-verifier 对 `incomplete`、`error_empty_output`、`error_max_turns`
-  仍沿用既有处理；本轮仅修正 `error` result 丢失失败信号的回归，没有统一所有终止状态。
-- fix-verifier 既有 catch 后仍返回部分 summary，并发出完成提示；summary 没有独立的
-  incomplete/error 标记。因此不能只凭完成提示认定所有 issue 都完成了验证。
+模型发现的问题数不是已知真值召回率。`review:complete`、最终 `report`、
+`incomplete`、失败 agent 与重试记录应结合检查，不能仅凭退出码或零 findings
+认定审核完整。

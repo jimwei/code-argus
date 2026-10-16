@@ -197,27 +197,21 @@ Notes:
   higher than `medium` (the validator model itself keeps using `ARGUS_VALIDATOR_MODEL`).
   Set `ARGUS_VALIDATOR_REASONING_EFFORT` to override; when no main effort is configured
   the validator keeps the provider default
-- The next four bullets describe the `pi-ai` implementation only
-  (`ARGUS_OPENAI_RESPONSE_IMPL=pi-ai`); with the default `sdk` implementation the
-  pre-migration behaviour applies instead
+- The following bullets, through the `systemPrompt` note, describe the `pi-ai` implementation
+  (`ARGUS_OPENAI_RESPONSE_IMPL=pi-ai`)
 - `openai-responses` traffic goes through `@earendil-works/pi-ai`, which always sends
   `store: false` plus the full transcript. The whole `pi-ai` path omits
   `max_output_tokens` (the SDK path never sent one on agent turns either): a
-  reasoning-heavy turn could exhaust the former 32k default, and the resulting
-  `incomplete` response made the orchestrator retry the whole agent — measured at
-  ~600k wasted tokens per event. Explicit `maxOutputTokens` budgets on light-path
+  reasoning-heavy turn can exhaust a fixed output cap, and an `incomplete` response
+  can make the orchestrator retry the whole agent. Explicit `maxOutputTokens` budgets on light-path
   calls (agent selector / dedup / matcher) are ignored on this path
 - The pi-ai runtime replays native reasoning blocks exactly like the SDK implementation:
   `reasoning.summary` / `include: ["reasoning.encrypted_content"]` stay in the payload and
   historical thinking blocks are written back to the transcript (older ones may later be
-  dropped by transcript folding, see below). The former
-  `ARGUS_OPENAI_REASONING_REPLAY=drop` mode was removed after a real-PR A/B showed it
-  roughly doubled review cost — without its own reasoning the model re-explores instead
-  of continuing from prior analysis
+  dropped by transcript folding, see below). There is no reasoning-replay mode setting;
+  native reasoning replay is always enabled
 - The pi-ai runtime also lifts the session instructions from the leading `developer`
   input message into the top-level `instructions` field, matching the SDK request shape.
-  A real-PR A/B on prm-g1-103 showed the developer-message placement made the agents
-  explore ~1.5–2× longer (3.3–4.7M tokens vs 2.3–3.1M after the lift; SDK 2.2–2.5M)
 - `ARGUS_TRANSCRIPT_BUDGET_TOKENS` (default `160000`, `0` disables) bounds the pi-ai
   transcript on a best-effort basis: once the estimated request size crosses the
   budget, the oldest tool outputs are folded (and the thinking blocks of older assistant
@@ -235,25 +229,20 @@ Notes:
   exceed the provider context limit. The default
   160k leaves estimated 32k output headroom inside the 200k window when the budget is
   met; verify net cost using cached/input counters if cached tokens are cheap
-- `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE=false` only changes the role pi-ai uses while
-  building the leading instruction (`system` instead of `developer`); the runtime then
-  lifts that message into the top-level `instructions` field, so the flag no longer
-  changes the outgoing request and is deprecated
 - The runtime sends a `systemPrompt` on every request (the reviewer budget text is
-  appended when a completion budget is present). Unknown values of the gateway flag
-  above fall back to its default with a warning in the logs
+  appended when a completion budget is present)
 - Both Responses implementations report all provider-reported usage across tool turns
   for each prompt in `result.usage`, including earlier turns when a later request fails.
   Subsequent streamed prompts have disjoint usage, so validators can sum their results
   without double counting. Cache rate is cached input divided by input (which already
   includes cached input). Unreported usage from transport/provider-internal retries
   cannot be recovered and is not included
-- The [reasoning replay probe](docs/reasoning-replay-probe-2026-10-14.md) did not
-  reproduce item-pairing failures on the tested gateway; official strict-interface
-  compatibility remains unverified, so this result does not apply to every deployment
+- See [reasoning replay and transcript budget](docs/reasoning-replay-probe-2026-10-14.md)
+  for current behavior and compatibility limits. Official strict-interface item-pairing
+  compatibility remains unverified
 - The [pi-ai vs SDK review A/B report](docs/pi-ai-vs-sdk-review-ab-2026-10-16.md)
-  holds the on-host measurements behind the pi-ai payload changes above: four real
-  PRs on prm-g1-103, both implementations, 40-minute cap
+  records the current build on prm-g1-103: four fixed PR snapshots, both implementations,
+  serial runs with a 40-minute cap
 - A turn truncated by the output budget (`stopReason=length`) is reported as
   `incomplete` and its tool calls are **not** executed: their arguments may be cut off
   or mixed up (upstream fixed the same class of bug for unfinished Responses tool calls
@@ -266,23 +255,22 @@ Notes:
 
 ### Environment variable summary
 
-| Purpose                                       | Variables                                       |
-| --------------------------------------------- | ----------------------------------------------- |
-| Runtime selection                             | `ARGUS_RUNTIME`                                 |
-| OpenAI Responses protocol stack               | `ARGUS_OPENAI_RESPONSE_IMPL`                    |
-| OpenAI shared model                           | `ARGUS_OPENAI_MODEL`                            |
-| Main model                                    | `ARGUS_MODEL`                                   |
-| Light model                                   | `ARGUS_LIGHT_MODEL`                             |
-| Validator model                               | `ARGUS_VALIDATOR_MODEL`                         |
-| Reasoning effort                              | `ARGUS_REASONING_EFFORT`                        |
-| Validator reasoning effort                    | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
-| pi-ai transcript budget                       | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
-| Claude API key                                | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
-| Claude OAuth or proxy                         | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
-| Claude base URL                               | `ARGUS_ANTHROPIC_BASE_URL`                      |
-| OpenAI API key                                | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
-| OpenAI base URL                               | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
-| Gateway `developer` role support (deprecated) | `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`          |
+| Purpose                         | Variables                                       |
+| ------------------------------- | ----------------------------------------------- |
+| Runtime selection               | `ARGUS_RUNTIME`                                 |
+| OpenAI Responses protocol stack | `ARGUS_OPENAI_RESPONSE_IMPL`                    |
+| OpenAI shared model             | `ARGUS_OPENAI_MODEL`                            |
+| Main model                      | `ARGUS_MODEL`                                   |
+| Light model                     | `ARGUS_LIGHT_MODEL`                             |
+| Validator model                 | `ARGUS_VALIDATOR_MODEL`                         |
+| Reasoning effort                | `ARGUS_REASONING_EFFORT`                        |
+| Validator reasoning effort      | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
+| pi-ai transcript budget         | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
+| Claude API key                  | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
+| Claude OAuth or proxy           | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
+| Claude base URL                 | `ARGUS_ANTHROPIC_BASE_URL`                      |
+| OpenAI API key                  | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
+| OpenAI base URL                 | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
 
 ## Configuration Management
 

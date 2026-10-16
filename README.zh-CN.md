@@ -186,22 +186,24 @@ argus config set model gpt-5
   main/light/validator 三个模型槽位的默认来源（个别槽位显式覆盖时以覆盖值为准）
 - `ARGUS_REASONING_EFFORT` 是单一全局值，会传递给每一个 OpenAI Responses 请求
   （`minimal`、`low`、`medium`、`high` 等）；不设置则沿用 Provider 默认值
+- `ARGUS_REASONING_EFFORT` 支持 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。
+  runtime 会校验取值；无效值仅告警一次并回退到 Provider 默认值，避免 pi-ai 将未知值
+  静默映射为 `off`（即 `reasoning.effort=none`）而关闭推理
 - 验证阶段（含 fix-verifier 修复验证）缺省把推理强度压到 `medium`（仅在主流程高于 `medium` 时生效），
   验证模型本身仍取 `ARGUS_VALIDATOR_MODEL`；可用
-  `ARGUS_VALIDATOR_REASONING_EFFORT` 显式覆盖
+  `ARGUS_VALIDATOR_REASONING_EFFORT` 显式覆盖；主流程未配置推理强度时，验证阶段沿用 Provider 默认值
+- `ARGUS_OPENAI_RESPONSE_IMPL` 选择 `openai-responses` 的协议实现：`sdk` 为默认值，
+  使用自行维护的 `openai` SDK 实现；设为 `pi-ai` 时使用 `@earendil-works/pi-ai`。
+  两者使用相同的 `AgentRuntime` 接口约定和事件状态；未知值会告警并回退到 `sdk`
+- `pi-ai` 实现每次请求均发送 `store: false` 和完整 transcript
 - `pi-ai` 实现现在与 SDK 实现一样重放原生推理块：保留 `reasoning.summary` /
   `include: ["reasoning.encrypted_content"]`，并把历史思考块写回 transcript。
-  旧的 `ARGUS_OPENAI_REASONING_REPLAY=drop` 已移除——真实 PR A/B 实测该模式会让
-  模型失去自有推理、反复重新探索，整体成本约翻倍
+  无需配置重放模式；较早回合的思考块仍可能被下述 transcript 折叠移除
 - `pi-ai` 实现还会把会话指令从 `input[0]` 的 `developer` 消息搬到顶层
-  `instructions` 字段，与 SDK 的请求形态一致。103 实测：沿用 developer 消息时四个
-  reviewer 要 80–103 轮、3.3–4.7M tokens；搬运后降到 44–67 轮、2.3–3.1M（同窗 SDK
-  为 2.2–2.5M）
-- `pi-ai` 的 agent 轮次不再发送 `max_output_tokens`（SDK 也从不发送）：旧实现沿用
-  模型默认的 32k 上限，长推理会把它整轮吃光，上游返回 `incomplete` 后编排层整轮
-  重试该 agent——103 实测单次浪费约 60 万 token。selector / dedup / matcher 等轻量
-  调用同样不再发送——整个 `pi-ai` 路径都不带该参数，其显式 `maxOutputTokens` 预算
-  在该路径上会被忽略
+  `instructions` 字段，与 SDK 的请求形态一致
+- `pi-ai` 整条路径均不发送 `max_output_tokens`，包括 agent 轮次和
+  selector / dedup / matcher 等轻量调用；显式 `maxOutputTokens` 预算在该路径上被忽略。
+  SDK 的 agent 轮次同样不设置输出上限，SDK 轻量调用仍可显式设置预算
 - 选用 `pi-ai` 实现时：`ARGUS_TRANSCRIPT_BUDGET_TOKENS`（缺省 `160000`，
   `0` 表示禁用）用于控制长会话体积，属于 best-effort 约束：估算请求超过预算时，
   最旧的工具输出会被折叠成占位文本、较早回合的思考块会被整块移除（pi-ai 依
@@ -219,16 +221,21 @@ argus config set model gpt-5
   已上报用量；后续 streamed prompt 单独计数，validator 可以累加而不重复计算。
   后续请求失败时保留前面已知消耗；缓存命中率为 cached input / input（input 已含缓存）。
   传输失败或 provider 内部重试未上报的用量无法恢复，不包含在此统计中
-- [reasoning 重放实测报告](docs/reasoning-replay-probe-2026-10-14.md)：当前网关未复现
-  item 配对失败；官方严格接口尚未验证，不能把结果推广到所有部署
+- `pi-ai` runtime 每次请求都发送 `systemPrompt`；存在 completion budget 时，
+  会在其中追加 reviewer 的预算说明
+- pi-ai 的响应若以 `stopReason=length` 截断，会被标记为 `incomplete`；该响应中的工具调用
+  不会执行，因为工具参数可能不完整或已混乱
+- [reasoning 重放与 transcript 预算](docs/reasoning-replay-probe-2026-10-14.md)：
+  当前行为与兼容性边界；官方严格接口的 item 配对约束尚未现场验证
 - [pi-ai 与 SDK 真实 PR 审核对比报告](docs/pi-ai-vs-sdk-review-ab-2026-10-16.md)：
-  上文 pi-ai 请求形态改动的 103 实测依据（4 个真实 PR、40 分钟上限、两臂同窗口）
+  当前构建的 103 实测数据（4 个固定 PR 快照、40 分钟上限、两臂串行）
 
 ### 环境变量总表
 
 | 目的                    | 环境变量                                        |
 | ----------------------- | ----------------------------------------------- |
 | 运行时切换              | `ARGUS_RUNTIME`                                 |
+| OpenAI Responses 实现   | `ARGUS_OPENAI_RESPONSE_IMPL`                    |
 | OpenAI 共享模型         | `ARGUS_OPENAI_MODEL`                            |
 | 主模型                  | `ARGUS_MODEL`                                   |
 | 轻量模型                | `ARGUS_LIGHT_MODEL`                             |
