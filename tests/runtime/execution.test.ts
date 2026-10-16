@@ -47,11 +47,7 @@ import {
   OpenAIResponsesRuntime,
   createRuntimeFromEnv,
 } from '../../src/runtime/index.js';
-import {
-  escalateMaxOutputTokens,
-  toPiTool,
-  toThinkingLevel,
-} from '../../src/runtime/openai-responses.js';
+import { toPiTool, toThinkingLevel } from '../../src/runtime/openai-responses.js';
 import { convertResponsesTools } from '@earendil-works/pi-ai/api/openai-responses-shared';
 import type { ArgusRuntimeConfig } from '../../src/config/env.js';
 import type { RuntimeToolDefinition } from '../../src/runtime/types.js';
@@ -599,11 +595,9 @@ describe('openai-responses runtime (pi-ai)', () => {
         ],
         reasoning: { effort: 'high', summary: 'auto' },
         store: false,
-        max_output_tokens: 32_768,
       },
       calls[0]!.model
     );
-    // agent 轮次同时剥掉 max_output_tokens：32k 上限被长推理吃光会触发整轮 agent 重试
     expect(adjusted).toEqual({
       instructions: 'Review budget: 41 requests for this review.',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Review' }] }],
@@ -940,19 +934,14 @@ describe('openai-responses runtime (pi-ai)', () => {
     ]);
   });
 
-  it('declares strict tool mode and the gateway max_output_tokens capability to pi-ai', () => {
+  it('declares strict tools and never lets pi-ai send max_output_tokens', () => {
     const runtime = new OpenAIResponsesRuntime(config, { streamSimple: vi.fn() });
     expect(runtime.model.compat).toEqual({
       supportsStrictMode: true,
-      supportsMaxOutputTokens: true,
+      // 整个 pi-ai 路径不发送 max_output_tokens：32k 上限被长推理吃光会触发整轮 agent 重试
+      supportsMaxOutputTokens: false,
       supportsDeveloperRole: true,
     });
-
-    const limitedRuntime = new OpenAIResponsesRuntime(
-      { ...config, openai: { ...config.openai!, supportsMaxOutputTokens: false } },
-      { streamSimple: vi.fn() }
-    );
-    expect(limitedRuntime.model.compat?.supportsMaxOutputTokens).toBe(false);
 
     const systemRoleRuntime = new OpenAIResponsesRuntime(
       { ...config, openai: { ...config.openai!, supportsDeveloperRole: false } },
@@ -1044,32 +1033,6 @@ describe('openai-responses text generation (pi-ai)', () => {
     });
   });
 
-  it('keeps max_output_tokens on light-path calls', async () => {
-    const completeSimple = vi.fn(async () =>
-      createAssistantMessage({ content: [{ type: 'text', text: 'summary' }] })
-    );
-    const runtime = new OpenAIResponsesRuntime(config, { completeSimple });
-
-    await runtime.generateText({ prompt: 'Summarize', maxOutputTokens: 512 });
-
-    const onPayload = completeSimple.mock.calls[0]![2]?.onPayload;
-    expect(typeof onPayload).toBe('function');
-    const adjusted = onPayload!(
-      {
-        input: [{ role: 'user', content: [{ type: 'input_text', text: 'Summarize' }] }],
-        max_output_tokens: 512,
-        store: false,
-      },
-      runtime.model
-    );
-    // selector/dedup 之类的小调用仍按调用方预算发送 max_output_tokens
-    expect(adjusted).toEqual({
-      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Summarize' }] }],
-      max_output_tokens: 512,
-      store: false,
-    });
-  });
-
   it('throws when the model returns no text', async () => {
     const completeSimple = vi.fn(async () =>
       createAssistantMessage({
@@ -1085,70 +1048,7 @@ describe('openai-responses text generation (pi-ai)', () => {
     expect(completeSimple).toHaveBeenCalledTimes(1);
   });
 
-  it('escalates the output budget once when reasoning exhausted it', async () => {
-    const completeSimple = vi
-      .fn()
-      .mockResolvedValueOnce(
-        createAssistantMessage({
-          content: [{ type: 'thinking', thinking: 'scratchpad' }],
-          stopReason: 'length',
-          rawStopReason: 'incomplete.max_output_tokens',
-        })
-      )
-      .mockResolvedValueOnce(
-        createAssistantMessage({ content: [{ type: 'text', text: 'recovered' }] })
-      );
-    const runtime = new OpenAIResponsesRuntime(config, { completeSimple });
-
-    const result = await runtime.generateText({ prompt: 'Summarize', maxOutputTokens: 512 });
-
-    expect(result.text).toBe('recovered');
-    expect(completeSimple.mock.calls[1]![2]).toMatchObject({ maxTokens: 2048 });
-    // 两次尝试的 token 都要计入用量
-    expect(result.usage).toEqual({ inputTokens: 24, cachedInputTokens: 4, outputTokens: 8 });
-  });
-
-  it('stops escalating once the local ceiling is reached', async () => {
-    const completeSimple = vi.fn(async () =>
-      createAssistantMessage({
-        content: [{ type: 'thinking', thinking: 'scratchpad' }],
-        stopReason: 'length',
-        rawStopReason: 'incomplete.max_output_tokens',
-      })
-    );
-    const runtime = new OpenAIResponsesRuntime(config, { completeSimple });
-
-    await expect(
-      runtime.generateText({ prompt: 'Summarize', maxOutputTokens: 8192 })
-    ).rejects.toThrow(/without text output/);
-    expect(completeSimple).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not escalate when the gateway rejects max_output_tokens anyway', async () => {
-    const completeSimple = vi.fn(async () =>
-      createAssistantMessage({
-        content: [{ type: 'thinking', thinking: 'scratchpad' }],
-        stopReason: 'length',
-        rawStopReason: 'incomplete.max_output_tokens',
-      })
-    );
-    const runtime = new OpenAIResponsesRuntime(
-      { ...config, openai: { ...config.openai!, supportsMaxOutputTokens: false } },
-      { completeSimple }
-    );
-
-    // pi-ai 不会发送该参数，重试只会重复同一个请求
-    await expect(
-      runtime.generateText({ prompt: 'Summarize', maxOutputTokens: 512 })
-    ).rejects.toThrow(/without text output/);
-    expect(completeSimple).toHaveBeenCalledTimes(1);
-  });
-
-  it('escalates and caps the budget inside the documented policy window', () => {
-    expect(escalateMaxOutputTokens(512)).toBe(2048);
-    expect(escalateMaxOutputTokens(2048)).toBe(4096);
-    expect(escalateMaxOutputTokens(8192)).toBeUndefined();
-    expect(escalateMaxOutputTokens(-1)).toBeUndefined();
+  it('maps reasoning effort through the documented thinking level vocabulary', () => {
     expect(toThinkingLevel('none')).toBeUndefined();
     expect(toThinkingLevel(undefined)).toBeUndefined();
     expect(toThinkingLevel('max')).toBe('max');

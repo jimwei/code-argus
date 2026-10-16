@@ -201,12 +201,12 @@ Notes:
   (`ARGUS_OPENAI_RESPONSE_IMPL=pi-ai`); with the default `sdk` implementation the
   pre-migration behaviour applies instead
 - `openai-responses` traffic goes through `@earendil-works/pi-ai`, which always sends
-  `store: false` plus the full transcript. Agent turns do not send `max_output_tokens`
-  (the SDK path never sent one either): a reasoning-heavy turn could exhaust the former
-  32k default, and the resulting `incomplete` response made the orchestrator retry the
-  whole agent — measured at ~600k wasted tokens per event. Light-path calls
-  (agent selector / dedup / matcher) still send the caller's explicit budget, and set
-  `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS=false` for gateways that reject the parameter
+  `store: false` plus the full transcript. The whole `pi-ai` path omits
+  `max_output_tokens` (the SDK path never sent one on agent turns either): a
+  reasoning-heavy turn could exhaust the former 32k default, and the resulting
+  `incomplete` response made the orchestrator retry the whole agent — measured at
+  ~600k wasted tokens per event. Explicit `maxOutputTokens` budgets on light-path
+  calls (agent selector / dedup / matcher) are ignored on this path
 - The pi-ai runtime replays native reasoning blocks exactly like the SDK implementation:
   `reasoning.summary` / `include: ["reasoning.encrypted_content"]` stay in the payload and
   historical thinking blocks are written back to the transcript. The former
@@ -234,8 +234,8 @@ Notes:
   lifts that message into the top-level `instructions` field, so the flag no longer
   changes the outgoing request and is deprecated
 - The runtime sends a `systemPrompt` on every request (the reviewer budget text is
-  appended when a completion budget is present). Unknown values of the two gateway
-  flags above fall back to `true` with a warning in the logs
+  appended when a completion budget is present). Unknown values of the gateway flag
+  above fall back to its default with a warning in the logs
 - Both Responses implementations report all provider-reported usage across tool turns
   for each prompt in `result.usage`, including earlier turns when a later request fails.
   Subsequent streamed prompts have disjoint usage, so validators can sum their results
@@ -253,9 +253,7 @@ Notes:
   runtime: `sdk` (default, the self-maintained `openai` SDK implementation) or `pi-ai`
   (`@earendil-works/pi-ai`, opt-in). Both share the same
   `AgentRuntime` contract and event statuses, so nothing else in the pipeline changes;
-  an unknown value falls back to `sdk` with a warning.
-  `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS` only affects the `pi-ai` implementation and
-  is therefore ignored on the default path
+  an unknown value falls back to `sdk` with a warning
 
 ### Environment variable summary
 
@@ -275,7 +273,6 @@ Notes:
 | Claude base URL                               | `ARGUS_ANTHROPIC_BASE_URL`                      |
 | OpenAI API key                                | `ARGUS_OPENAI_API_KEY` / `OPENAI_API_KEY`       |
 | OpenAI base URL                               | `ARGUS_OPENAI_BASE_URL` / `OPENAI_BASE_URL`     |
-| Gateway `max_output_tokens` support           | `ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS`       |
 | Gateway `developer` role support (deprecated) | `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE`          |
 
 ## Configuration Management

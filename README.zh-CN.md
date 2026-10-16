@@ -200,7 +200,8 @@ argus config set model gpt-5
 - `pi-ai` 的 agent 轮次不再发送 `max_output_tokens`（SDK 也从不发送）：旧实现沿用
   模型默认的 32k 上限，长推理会把它整轮吃光，上游返回 `incomplete` 后编排层整轮
   重试该 agent——103 实测单次浪费约 60 万 token。selector / dedup / matcher 等轻量
-  调用仍按调用方预算发送该参数
+  调用同样不再发送——整个 `pi-ai` 路径都不带该参数，其显式 `maxOutputTokens` 预算
+  在该路径上会被忽略
 - 选用 `pi-ai` 实现时：`ARGUS_TRANSCRIPT_BUDGET_TOKENS`（缺省 `160000`，
   `0` 表示禁用）用于控制长会话体积，属于 best-effort 约束：估算请求超过预算时，
   最旧的工具输出会被折叠成占位文本，向预算的 60% 收敛（保留最近 6 条与全部

@@ -43,16 +43,8 @@ import { compactTranscript, estimateTextTokens } from './transcript-budget.js';
 
 /** 网关真实上下文长度不可知；pi-ai 用它裁剪 maxTokens。 */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
-/** 未显式指定输出上限时的模型上限（同时是升档重试的天花板）。 */
+/** pi-ai 内部使用的模型输出上限；出站请求不再携带 max_output_tokens（见 buildPiModel）。 */
 const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
-
-/**
- * 推理长度波动会让同一请求偶尔吃光输出预算：上游以 `incomplete`
- * （`incomplete_details.reason=max_output_tokens`）结束且没有任何文本。
- * 这里保留改造前的一次升档重试，区间沿用 [2048, 8192]。
- */
-const ESCALATED_MAX_OUTPUT_TOKENS_FLOOR = 2048;
-const ESCALATED_MAX_OUTPUT_TOKENS_CEILING = 8192;
 
 /** 与旧实现一致：没有会话级 instructions 时的兜底指令。 */
 const DEFAULT_RUNTIME_INSTRUCTIONS = 'Follow the user instructions and tool definitions exactly.';
@@ -116,9 +108,10 @@ export function buildPiModel(
       // 工具 schema 已由本文件归一化成 strict 形态（见 normalizeToolSchema），
       // 因此显式要求 pi-ai 发送 strict: true；该开关默认是 false。
       supportsStrictMode: true,
-      // 部分自建网关（Codex 协议网关）会拒绝 max_output_tokens：由
-      // ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS 声明，默认沿用 OpenAI 行为。
-      supportsMaxOutputTokens: config.openai?.supportsMaxOutputTokens ?? true,
+      // 整个 pi-ai 路径不再发送 max_output_tokens（SDK 也不为 agent 轮次发送）：
+      // 32k 上限会被长推理整轮吃光，上游返回 incomplete(max_output_tokens) 后编排层
+      // 整轮重试该 agent——103 实测单次浪费约 600K token 与数分钟墙钟。
+      supportsMaxOutputTokens: false,
       // 仅决定 pi-ai 构造首条指令的角色；该指令随后会被搬到顶层 `instructions`
       // （见 liftInstructionsToPayload），因此对出站请求不再有影响。
       supportsDeveloperRole: config.openai?.supportsDeveloperRole ?? true,
@@ -218,21 +211,6 @@ function liftInstructionsToPayload(payload: unknown): unknown {
     params.input = input.slice(1);
   }
 
-  return params;
-}
-
-/**
- * agent 轮次不发送 `max_output_tokens`（与 SDK 实现的 agent 请求形态一致）。
- * 旧实现沿用模型默认的 32k 上限：某一轮推理特别长时会把它整轮吃光，上游以
- * `response.incomplete (max_output_tokens)` 结束，编排层随后整轮重试该 agent——
- * 103 实测单次浪费约 600K token 与数分钟墙钟。轻量调用（selector/dedup/matcher）
- * 仍按调用方预算发送该参数，保持不变。
- */
-function dropAgentTurnMaxOutputTokens(payload: unknown): unknown {
-  const params = liftInstructionsToPayload(payload);
-  if (params && typeof params === 'object') {
-    delete (params as Record<string, unknown>).max_output_tokens;
-  }
   return params;
 }
 
@@ -491,32 +469,6 @@ export function normalizeUsage(message: AssistantMessage | undefined): RuntimeUs
   };
 }
 
-/**
- * 判断响应是否因为输出预算被 reasoning token 吃光而截断。
- * pi-ai 把 `incomplete_details.reason` 保留在 `rawStopReason`（如
- * `incomplete.max_output_tokens`），比只看 stopReason=length 更精确。
- */
-export function isOutputBudgetExhausted(message: AssistantMessage): boolean {
-  return message.rawStopReason?.includes('max_output_tokens') ?? false;
-}
-
-/**
- * 预算耗尽重试时使用的 maxTokens：在 [2048, 8192] 本地策略区间内按调用方预算翻倍。
- * 已达本地上限、或调用方预算非法时返回 undefined 表示不重试。
- */
-export function escalateMaxOutputTokens(maxOutputTokens: number): number | undefined {
-  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) {
-    return undefined;
-  }
-
-  const escalated = Math.min(
-    ESCALATED_MAX_OUTPUT_TOKENS_CEILING,
-    Math.max(ESCALATED_MAX_OUTPUT_TOKENS_FLOOR, maxOutputTokens * 2)
-  );
-
-  return escalated > maxOutputTokens ? escalated : undefined;
-}
-
 /** 预算耗尽或空响应时保留 stopReason 与已消耗的 token，便于线上定位。 */
 function buildNoTextError(
   message: AssistantMessage,
@@ -603,15 +555,14 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
 
   private buildStreamOptions(
     extra: SimpleStreamOptions = {},
-    effort: string | undefined = this.config.reasoningEffort,
-    policy: { agentTurn?: boolean } = {}
+    effort: string | undefined = this.config.reasoningEffort
   ): SimpleStreamOptions {
     const reasoning = toThinkingLevel(effort);
     return {
       apiKey: this.apiKey,
       maxRetries: PI_PROVIDER_MAX_RETRIES,
       ...(reasoning ? { reasoning } : {}),
-      onPayload: policy.agentTurn ? dropAgentTurnMaxOutputTokens : liftInstructionsToPayload,
+      onPayload: liftInstructionsToPayload,
       ...extra,
     };
   }
@@ -628,49 +579,9 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
       ...(options.abortController ? { signal: options.abortController.signal } : {}),
     });
 
-    let message = await this.completeFn(model, context, baseOptions);
-    let spentUsage: RuntimeUsage | undefined;
-    let retriedOutputBudget = false;
-
-    // 网关不接受 max_output_tokens 时 pi-ai 不会再发该参数，升档重试只会重复同一个请求。
-    const escalatedMaxOutputTokens =
-      this.config.openai?.supportsMaxOutputTokens === false || !options.maxOutputTokens
-        ? undefined
-        : escalateMaxOutputTokens(options.maxOutputTokens);
-
-    if (
-      !extractAssistantText(message) &&
-      escalatedMaxOutputTokens !== undefined &&
-      isOutputBudgetExhausted(message)
-    ) {
-      // 推理长度波动会让同一请求偶尔吃光输出预算；升档重试一次，避免整条调用直接失败。
-      spentUsage = normalizeUsage(message);
-      const exhaustedMessage = message;
-      retriedOutputBudget = true;
-      try {
-        message = await this.completeFn(model, context, {
-          ...baseOptions,
-          maxTokens: escalatedMaxOutputTokens,
-        });
-      } catch (retryFailure) {
-        // 只有「升档后的预算也被上游拒绝」才改写成无文本错误；其余错误原样抛出，
-        // 保留调用方按 status/消息分类重试的能力（旧实现同样只在这条路径改写）。
-        const retryMessage =
-          retryFailure instanceof Error ? retryFailure.message.toLowerCase() : '';
-        if (
-          !retryMessage.includes('max_output_tokens') &&
-          !retryMessage.includes('max output tokens')
-        ) {
-          throw retryFailure;
-        }
-
-        throw buildNoTextError(
-          exhaustedMessage,
-          { attempts: 2, tokensUsed: totalTokens(spentUsage) },
-          retryFailure
-        );
-      }
-    }
+    // 请求不再携带 max_output_tokens（见 buildPiModel 的 compat），因此没有
+    // 「升档重试」这条路径：上游若返回无文本结果，直接按无文本错误上报。
+    const message = await this.completeFn(model, context, baseOptions);
 
     if (message.stopReason === 'aborted') {
       throw createAbortError(message.errorMessage);
@@ -683,14 +594,14 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     const text = extractAssistantText(message);
     if (!text) {
       throw buildNoTextError(message, {
-        attempts: retriedOutputBudget ? 2 : 1,
-        tokensUsed: totalTokens(spentUsage) + totalTokens(normalizeUsage(message)),
+        attempts: 1,
+        tokensUsed: totalTokens(normalizeUsage(message)),
       });
     }
 
     return {
       text,
-      usage: mergeUsage(spentUsage, normalizeUsage(message)),
+      usage: normalizeUsage(message),
     };
   }
 
@@ -715,7 +626,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
     const transcriptBudgetTokens = this.config.openai?.transcriptBudgetTokens;
     const streamFn = this.streamFn;
     const buildOptions = (extra: SimpleStreamOptions = {}) =>
-      this.buildStreamOptions(extra, activeEffort, { agentTurn: true });
+      this.buildStreamOptions(extra, activeEffort);
 
     let closed = false;
 

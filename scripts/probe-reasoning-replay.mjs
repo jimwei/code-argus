@@ -30,9 +30,8 @@ if (args.includes('--list-models')) {
   process.exit(0);
 }
 const modelIds = option('--models')?.split(',') ?? [env.ARGUS_OPENAI_MODEL || env.ARGUS_MODEL];
-const supportsMaxTokens = !['false', '0', 'no', 'off'].includes(
-  (env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS ?? '').toLowerCase()
-);
+// Runtime 已不再发送 max_output_tokens；需要单独探测网关对该参数的处理时显式传入。
+const probeMaxOutputTokens = Number(option('--max-output-tokens') ?? 0) || undefined;
 const instructions =
   'Call lookup_review_fixture exactly once, then report its value in one sentence.';
 const input = [{ role: 'user', content: 'Look up fixture review-1 and report its status.' }];
@@ -107,7 +106,7 @@ console.log(
     models: modelIds,
     reasoningEffort: 'high',
     store: false,
-    supportsMaxTokens,
+    maxOutputTokens: probeMaxOutputTokens ?? null,
   })
 );
 for (const model of modelIds) {
@@ -118,7 +117,7 @@ for (const model of modelIds) {
       instructions,
       store: false,
       tools,
-      ...(supportsMaxTokens ? { max_output_tokens: 4096 } : {}),
+      ...(probeMaxOutputTokens ? { max_output_tokens: probeMaxOutputTokens } : {}),
     };
     const first = await request({
       ...common,

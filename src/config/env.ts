@@ -45,11 +45,6 @@ export interface OpenAIAuthConfig {
   baseUrl?: string;
   source: 'argus' | 'openai-api';
   /**
-   * 部署侧声明网关是否接受 `max_output_tokens`；不接受时由 pi-ai 省略该参数。
-   * 读自 ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS，未设置时按 true 处理。
-   */
-  supportsMaxOutputTokens?: boolean;
-  /**
    * 仅决定 pi-ai 构造首条指令时使用的角色（developer / system）；运行时随后会把
    * 该指令搬到顶层 `instructions` 字段，因此该开关不再改变出站请求，标记为废弃。
    * 读自 ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE，未设置时按 true 处理。
@@ -249,11 +244,6 @@ function getClaudeAuthConfig(): ClaudeAuthConfig {
 
 function getOpenAIAuthConfig(): OpenAIAuthConfig {
   const responseImpl = resolveOpenAIResponsesImpl(process.env.ARGUS_OPENAI_RESPONSE_IMPL);
-  const supportsMaxOutputTokens = resolveBooleanEnv(
-    process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS,
-    true,
-    'ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS'
-  );
   const supportsDeveloperRole = resolveBooleanEnv(
     process.env.ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE,
     true,
@@ -268,7 +258,6 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       apiKey: argusApiKey,
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'argus',
-      supportsMaxOutputTokens,
       supportsDeveloperRole,
       responseImpl,
       ...(transcriptBudgetTokens !== undefined ? { transcriptBudgetTokens } : {}),
@@ -281,7 +270,6 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       apiKey: openaiApiKey,
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'openai-api',
-      supportsMaxOutputTokens,
       supportsDeveloperRole,
       responseImpl,
       ...(transcriptBudgetTokens !== undefined ? { transcriptBudgetTokens } : {}),
