@@ -226,13 +226,16 @@ export class StreamingReviewOrchestrator {
   }
 
   private getReviewExecutionMetadata() {
+    const executedReviewers = this.executedReviewers ?? new Set<string>();
+    const incompleteReasons = this.incompleteReasons ?? [];
+    const reviewerMaxTurns = this.reviewerMaxTurns ?? {};
     return {
-      agents_used: [...this.executedReviewers],
+      agents_used: [...executedReviewers],
       review_strategy: this.options.reviewStrategy,
       primary_reviewer: this.primaryReviewer?.id,
-      review_complete: this.incompleteReasons.length === 0,
-      incomplete_reasons: [...this.incompleteReasons],
-      reviewer_max_turns: { ...this.reviewerMaxTurns },
+      review_complete: incompleteReasons.length === 0,
+      incomplete_reasons: [...incompleteReasons],
+      reviewer_max_turns: { ...reviewerMaxTurns },
     };
   }
 
@@ -2905,7 +2908,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     diffFiles: DiffFile[];
     reviewRepoPath: string;
     agentsToRun: AgentType[];
-    triggeredCustomAgents: LoadedCustomAgent[];
+    triggeredCustomAgents?: LoadedCustomAgent[];
     startTime: number;
     segmentSizeLimit: number;
   }): Promise<ReviewReport> {
@@ -2914,7 +2917,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       diffFiles,
       reviewRepoPath,
       agentsToRun,
-      triggeredCustomAgents,
+      triggeredCustomAgents = [],
       startTime,
       segmentSizeLimit,
     } = params;
@@ -2968,6 +2971,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
       // Create segment-specific context
       const segmentDiff = rebuildDiffFromSegment(segment);
+      const segmentPaths = new Set(segment.files.map((file) => file.path));
       const segmentContext: ReviewContext = {
         ...context,
         diff: {
@@ -2975,8 +2979,11 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           diff: segmentDiff,
         },
         diffFiles: segment.files,
+        // File Change Analysis 必须与本分段 diff 保持一致：如果沿用整个 PR 的
+        // fileAnalyses，agent 会看到清单里存在未包含在 diff 中的文件，从而调用
+        // report_incomplete，把分段审核误报成「agent 执行失败」。
         fileAnalyses: context.fileAnalyses.filter((analysis) =>
-          segment.files.some((file) => file.path === analysis.file_path)
+          segmentPaths.has(analysis.file_path)
         ),
         // Keep deletedFiles from original context for logic-reviewer
         deletedFiles: context.deletedFiles,
