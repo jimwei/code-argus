@@ -194,7 +194,7 @@ Options (review command):
   --primary-reviewer=<yaml> single 的可选主定义；留空使用内置综合 reviewer
   --validation-rounds=<n>  每个 issue 的验证轮数 1..5（fast 默认 2，normal 默认 5）
   --validation-max-turns=<n> 每个 issue 的验证轮预算 1..300（默认 30）
-  --validation-read-limit=<n> 验证时单次 Read 的行数窗口 60..2000（默认 140，原上限 180）
+  --validation-read-limit=<n> 验证时单次 Read 的行数窗口 60..400（默认 140；仅 openai-responses）
   --verbose                Enable verbose output
   --previous-review=<file> Previous review JSON file for fix verification
   --no-verify-fixes        Disable fix verification (when previous-review is set)

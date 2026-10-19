@@ -277,6 +277,7 @@ export class StreamingValidator {
   private totalEnqueued = 0;
   private allAgentsComplete = false;
   private incompleteReasons: string[] = [];
+  private warnedReadLimit = false;
 
   private recordIncomplete(reason: string): void {
     if (!this.incompleteReasons.includes(reason)) {
@@ -452,7 +453,7 @@ export class StreamingValidator {
       ]);
 
       if (result === 'timeout') {
-        // Timeout during wait - don't print again, just break
+        this.recordIncomplete('Validation flush timed out; partial validation results were used');
         break;
       }
 
@@ -950,7 +951,9 @@ export class StreamingValidator {
 
               console.error(`[StreamingValidator] Session ${session.file} error: ${event.status}`);
 
-              const interruptedText = `${event.status} ${event.error ?? ''}`;
+              const interruptedText = `${event.status} ${event.rawStopReason ?? ''} ${
+                event.error ?? ''
+              }`;
               const interruptedIssueLabel = currentIssue
                 ? `"${currentIssue.title}" (${currentIssue.file}:${currentIssue.line_start})`
                 : `session ${session.file}`;
@@ -961,6 +964,12 @@ export class StreamingValidator {
               } else if (isValidationContextLimitText(interruptedText)) {
                 this.recordIncomplete(
                   `Validation context limit reached: ${interruptedIssueLabel} was left unvalidated`
+                );
+              } else {
+                this.recordIncomplete(
+                  `Validation ended with status "${event.status}"${
+                    event.rawStopReason ? ` (${event.rawStopReason})` : ''
+                  }: ${interruptedIssueLabel} was left unvalidated`
                 );
               }
 
@@ -1074,6 +1083,13 @@ export class StreamingValidator {
       sigintHandler = () => cleanupAndExit('SIGINT');
       process.on('SIGTERM', sigtermHandler);
       process.on('SIGINT', sigintHandler);
+
+      if (this.options.readLimit && runtime.kind !== 'openai-responses' && !this.warnedReadLimit) {
+        this.warnedReadLimit = true;
+        console.warn(
+          `[StreamingValidator] --validation-read-limit applies to the openai-responses runtime only; ignoring it under ${runtime.kind}`
+        );
+      }
 
       if (runtime.kind === 'openai-responses') {
         await runOpenAIWithFreshExecutions();
@@ -1236,6 +1252,28 @@ export class StreamingValidator {
 
           console.error(`[StreamingValidator] Session ${session.file} error: ${event.status}`);
 
+          const interruptedText = `${event.status} ${event.rawStopReason ?? ''} ${
+            event.error ?? ''
+          }`;
+          const interruptedIssueLabel = currentIssue
+            ? `"${currentIssue.title}" (${currentIssue.file}:${currentIssue.line_start})`
+            : `session ${session.file}`;
+          if (isValidationTurnBudgetText(interruptedText)) {
+            this.recordIncomplete(
+              `Validation turn budget exhausted (${maxTurns} turns): ${interruptedIssueLabel} was left unvalidated`
+            );
+          } else if (isValidationContextLimitText(interruptedText)) {
+            this.recordIncomplete(
+              `Validation context limit reached: ${interruptedIssueLabel} was left unvalidated`
+            );
+          } else {
+            this.recordIncomplete(
+              `Validation ended with status "${event.status}"${
+                event.rawStopReason ? ` (${event.rawStopReason})` : ''
+              }: ${interruptedIssueLabel} was left unvalidated`
+            );
+          }
+
           if (currentIssue) {
             if (currentResponses.length > 0) {
               completeCurrentIssue(
@@ -1248,6 +1286,21 @@ export class StreamingValidator {
             } else {
               completeCurrentIssue(this.createUncertainIssue(currentIssue, 'Validation failed'));
             }
+          }
+
+          if (session.queue.length > 0) {
+            const remaining = session.queue.splice(0);
+            for (const queuedIssue of remaining) {
+              completeCurrentIssue(
+                this.createUncertainIssue(
+                  queuedIssue,
+                  'Validation session ended before this issue was validated'
+                )
+              );
+            }
+            this.recordIncomplete(
+              `Validation session ended before ${remaining.length} queued issue(s) in ${session.file} could be validated`
+            );
           }
 
           endSession();

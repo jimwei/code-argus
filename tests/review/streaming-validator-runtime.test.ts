@@ -363,6 +363,140 @@ describe('streaming validator runtime bridge', () => {
     expect(result.incompleteReasons.join(' ')).toMatch(/budget exhausted/i);
   });
 
+  it('records incomplete for a non-success status without keyword error text', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: { main: 'gpt-5.3-codex', light: 'gpt-5-mini', validator: 'gpt-5.3-codex' },
+        openai: { apiKey: 'openai-key', source: 'argus' },
+      },
+      execute: executeMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            status: 'incomplete',
+            rawStopReason: 'incomplete.max_output_tokens',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxTurns: 20,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    validator.enqueue({
+      id: 'issue-incomplete-status',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush();
+
+    expect(result.incompleteReasons.join(' ')).toContain('incomplete.max_output_tokens');
+    expect(result.issues[0]?.validation_status).toBe('uncertain');
+  });
+
+  it('drains queued issues when a claude-agent session ends early', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'claude-agent',
+      config: {
+        runtime: 'claude-agent',
+        models: { main: 'gpt-5.3-codex', light: 'gpt-5-mini', validator: 'gpt-5.3-codex' },
+      },
+      execute: executeMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            status: 'error_max_turns',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxTurns: 15,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    const baseIssue = {
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic' as const,
+      severity: 'warning' as const,
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer' as const,
+    };
+    validator.enqueue({ ...baseIssue, id: 'issue-claude-1' });
+    validator.enqueue({ ...baseIssue, id: 'issue-claude-2', line_start: 30, line_end: 32 });
+
+    const result = await validator.flush();
+
+    expect(result.issues).toHaveLength(2);
+    expect(result.issues.every((issue) => issue.validation_status === 'uncertain')).toBe(true);
+    expect(result.incompleteReasons.join(' ')).toMatch(/turn budget exhausted/i);
+    expect(result.incompleteReasons.join(' ')).toMatch(/queued issue/i);
+  });
+
+  it('records incomplete when flush times out with active sessions', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: { main: 'gpt-5.3-codex', light: 'gpt-5-mini', validator: 'gpt-5.3-codex' },
+        openai: { apiKey: 'openai-key', source: 'argus' },
+      },
+      execute: executeMock.mockImplementation(() => ({
+        // eslint-disable-next-line require-yield -- hanging stream used to force a flush timeout
+        async *[Symbol.asyncIterator]() {
+          await new Promise(() => {});
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxTurns: 20,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    validator.enqueue({
+      id: 'issue-flush-timeout',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush(50);
+
+    expect(result.incompleteReasons.join(' ')).toMatch(/flush timed out/i);
+  });
+
   it('starts a fresh OpenAI validator execution for each queued issue in the same file', async () => {
     createRuntimeFromEnvMock.mockReturnValue({
       kind: 'openai-responses',

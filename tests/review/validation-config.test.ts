@@ -27,7 +27,7 @@ describe('validation tuning config', () => {
     }
     expect(parseValidationReadLimit(undefined)).toBeUndefined();
     expect(parseValidationReadLimit('400')).toBe(400);
-    for (const invalid of ['59', '2001', 'abc']) {
+    for (const invalid of ['59', '401', 'abc']) {
       expect(() => parseValidationReadLimit(invalid)).toThrow(/validation read limit/i);
     }
   });

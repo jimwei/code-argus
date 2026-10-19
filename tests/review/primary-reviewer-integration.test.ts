@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const mocks = vi.hoisted(() => ({
   execute: vi.fn(),
@@ -157,7 +157,9 @@ it('runs the selected primary once, preserves supplemental matching and validato
   expect(mocks.select).not.toHaveBeenCalled();
   expect(mocks.execute).toHaveBeenCalledTimes(1);
   expect(mocks.custom.mock.calls[0]![0].map((agent: any) => agent.id)).toEqual(['custom:extra']);
-  expect(mocks.validator.mock.calls[0]![0].projectRules).toContain('Review all dimensions.');
+  expect(String(mocks.validator.mock.calls[0]![0].projectRules ?? '')).not.toContain(
+    'Review all dimensions.'
+  );
   expect(report.metadata.agents_used.sort()).toEqual(['custom:extra', 'custom:primary']);
   expect(report.metadata.review_complete).toBe(true);
   expect(report.metadata.tokens_used).toBe(18);
@@ -191,6 +193,21 @@ it('runs supplemental reviewers per segment and fix verification once for the wh
   expect(report.metadata.tokens_used).toBe(42);
   expect(report.metadata.agents_used.sort()).toEqual(['custom:extra', 'custom:primary']);
   expect(report.fix_verification).toBeDefined();
+});
+
+it('re-evaluates custom agent triggers per segment', async () => {
+  mocks.segmented = true;
+  const { orchestrator, primary } = await fixture();
+  await writeFile(
+    join(dirname(primary), 'b-only.yaml'),
+    'name: b-only\ndescription: B files only\nprompt: Review b.\ntrigger_mode: rule\ntriggers:\n  files: ["**/b.ts"]\n'
+  );
+  await review(orchestrator);
+  const agentIdsBySegment = mocks.custom.mock.calls.map((call: any[]) =>
+    (call[0] as any[]).map((agent) => agent.id)
+  );
+  expect(agentIdsBySegment).toHaveLength(2);
+  expect(agentIdsBySegment.filter((ids) => ids.includes('custom:b-only'))).toHaveLength(1);
 });
 
 it('marks a failed segment incomplete and retains successful usage and partial findings', async () => {

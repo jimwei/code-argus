@@ -546,9 +546,7 @@ export class StreamingReviewOrchestrator {
 
       // Create streaming validator with progress callbacks
       // Pass project rules so validator can use rule priority logic
-      const projectRulesText = [rulesToPromptText(this.rulesConfig), this.primaryReviewer?.prompt]
-        .filter(Boolean)
-        .join('\n\n');
+      const projectRulesText = rulesToPromptText(this.rulesConfig);
       this.streamingValidator = this.options.skipValidation
         ? undefined
         : createStreamingValidator({
@@ -1184,9 +1182,7 @@ export class StreamingReviewOrchestrator {
 
       // Create streaming validator with progress callbacks
       // Pass project rules so validator can use rule priority logic
-      const projectRulesText = [rulesToPromptText(this.rulesConfig), this.primaryReviewer?.prompt]
-        .filter(Boolean)
-        .join('\n\n');
+      const projectRulesText = rulesToPromptText(this.rulesConfig);
       this.streamingValidator = this.options.skipValidation
         ? undefined
         : createStreamingValidator({
@@ -2922,6 +2918,35 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
   }
 
   /**
+   * Re-evaluate rule-based custom agent triggers for a segment so an agent that
+   * only matched another segment's files does not run out of scope.
+   */
+  private async matchSegmentCustomAgents(
+    agents: LoadedCustomAgent[],
+    context: ReviewContext
+  ): Promise<LoadedCustomAgent[]> {
+    if (agents.length === 0) {
+      return [];
+    }
+    const ruleBased = agents.filter((agent) => agent.trigger_mode === 'rule' && agent.triggers);
+    const alwaysRun = agents.filter((agent) => agent.trigger_mode !== 'rule' || !agent.triggers);
+    if (ruleBased.length === 0) {
+      return alwaysRun;
+    }
+    const matched = await matchCustomAgents(
+      ruleBased,
+      context.diffFiles ?? [],
+      context.fileAnalyses,
+      {
+        verbose: this.options.verbose,
+        disableLLM: true,
+        diffContent: context.diff.diff,
+      }
+    );
+    return [...matched.triggeredAgents.map((entry) => entry.agent), ...alwaysRun];
+  }
+
+  /**
    * Run segmented review for large PRs
    * Splits diff into manageable segments and reviews each in parallel
    */
@@ -3013,7 +3038,11 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
       const [main, custom] = await Promise.allSettled([
         this.runAgentsWithStreaming(segmentContext, reviewRepoPath, agentsToRun),
-        this.runSupplementalAgents(triggeredCustomAgents, segmentContext, reviewRepoPath),
+        this.runSupplementalAgents(
+          await this.matchSegmentCustomAgents(triggeredCustomAgents, segmentContext),
+          segmentContext,
+          reviewRepoPath
+        ),
       ]);
       if (custom.status === 'rejected')
         this.incompleteReasons.push(`${segmentLabel} supplemental: ${String(custom.reason)}`);

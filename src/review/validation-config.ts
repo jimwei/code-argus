@@ -17,7 +17,7 @@ const ROUNDS_MAX = 5;
 const TURNS_MIN = 1;
 const TURNS_MAX = 300;
 const READ_LIMIT_MIN = 60;
-const READ_LIMIT_MAX = 2000;
+const READ_LIMIT_MAX = 400;
 
 function parseInteger(
   raw: string | number | undefined,
@@ -51,7 +51,7 @@ export function parseValidationMaxTurns(raw?: string | number): number | undefin
   return parseInteger(raw, TURNS_MIN, TURNS_MAX, 'validation max turns');
 }
 
-/** Max lines the validator Read tool returns per call (60..2000). */
+/** Max lines the validator Read tool returns per call (60..400). */
 export function parseValidationReadLimit(raw?: string | number): number | undefined {
   return parseInteger(raw, READ_LIMIT_MIN, READ_LIMIT_MAX, 'validation read limit');
 }

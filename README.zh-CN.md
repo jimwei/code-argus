@@ -37,7 +37,7 @@ AI 驱动的自动化代码审查 CLI，提供多 Agent 编排，并同时支持
 
 包内综合定义包含 severity 分级标准：确认的安全回归（尤其是 diff 移除或弱化既有校验、不可信输入仍可达）不低于 `error`，`suggestion` 仅用于非缺陷的可选改进。
 
-验证成本可通过 `--validation-rounds`（1..5）、`--validation-max-turns`（1..300）和 `--validation-read-limit`（60..2000，单次 Read 行数窗口）调整，也可用对应的 `ARGUS_VALIDATION_*` 环境变量；不设置时维持 fast=2/normal=5 轮、30 轮预算、140 行窗口的现有行为。`single` 模式下验证阶段常是 token 大头，调整前建议先实测。
+验证成本可通过 `--validation-rounds`（1..5）、`--validation-max-turns`（1..300）和 `--validation-read-limit`（60..400，单次 Read 行数窗口，仅 openai-responses runtime 生效）调整，也可用对应的 `ARGUS_VALIDATION_*` 环境变量；不设置时维持 fast=2/normal=5 轮、30 轮预算、140 行窗口的现有行为。`single` 模式下验证阶段常是 token 大头，调整前建议先实测。
 
 ```bash
 export ARGUS_REVIEW_STRATEGY=single

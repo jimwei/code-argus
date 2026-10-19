@@ -369,28 +369,28 @@ Reference auto-detection:
 
 ## Common Options
 
-| Option                        | Description                                                   |
-| ----------------------------- | ------------------------------------------------------------- | ------------------------ |
-| `--json-logs`                 | Emit NDJSON events for service integration                    |
-| `--language=<zh               | en>`                                                          | Set output language      |
-| `--review-mode=<normal        | fast>`                                                        | Control validation depth |
-| `--validation-rounds=<n>`     | Validation rounds per issue (1..5; default: fast 2, normal 5) |
-| `--validation-max-turns=<n>`  | Per-issue validation turn budget (1..300; default 30)         |
-| `--validation-read-limit=<n>` | Lines per validator Read call (60..2000; default 140)         |
-| `--skip-validation`           | Skip validation for faster output                             |
-| `--verbose`                   | Emit extra debug information                                  |
-| `--config-dir=<path>`         | Auto-load rules, agents, and `.argusignore`                   |
-| `--rules-dir=<path>`          | Add a custom rules directory                                  |
-| `--agents-dir=<path>`         | Add a custom agents directory                                 |
-| `--previous-review=<file>`    | Load a previous review and verify fixes                       |
-| `--no-verify-fixes`           | Disable fix verification                                      |
-| `--pr-context=<file>`         | Inject PR business context, for example Jira data             |
-| `--local`                     | Use local branches and skip `git fetch`                       |
-| `--require-worktree`          | Require worktree creation or fail                             |
-| `--diff-file=<path>`          | Read diff input from a file                                   |
-| `--diff-stdin`                | Read diff input from stdin                                    |
-| `--commits=<sha1,sha2>`       | Review only the specified commits                             |
-| `--no-smart-merge-filter`     | Disable smart merge filtering                                 |
+| Option                        | Description                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------- | ------------------------ |
+| `--json-logs`                 | Emit NDJSON events for service integration                                  |
+| `--language=<zh               | en>`                                                                        | Set output language      |
+| `--review-mode=<normal        | fast>`                                                                      | Control validation depth |
+| `--validation-rounds=<n>`     | Validation rounds per issue (1..5; default: fast 2, normal 5)               |
+| `--validation-max-turns=<n>`  | Per-issue validation turn budget (1..300; default 30)                       |
+| `--validation-read-limit=<n>` | Lines per validator Read call (60..400; default 140; openai-responses only) |
+| `--skip-validation`           | Skip validation for faster output                                           |
+| `--verbose`                   | Emit extra debug information                                                |
+| `--config-dir=<path>`         | Auto-load rules, agents, and `.argusignore`                                 |
+| `--rules-dir=<path>`          | Add a custom rules directory                                                |
+| `--agents-dir=<path>`         | Add a custom agents directory                                               |
+| `--previous-review=<file>`    | Load a previous review and verify fixes                                     |
+| `--no-verify-fixes`           | Disable fix verification                                                    |
+| `--pr-context=<file>`         | Inject PR business context, for example Jira data                           |
+| `--local`                     | Use local branches and skip `git fetch`                                     |
+| `--require-worktree`          | Require worktree creation or fail                                           |
+| `--diff-file=<path>`          | Read diff input from a file                                                 |
+| `--diff-stdin`                | Read diff input from stdin                                                  |
+| `--commits=<sha1,sha2>`       | Review only the specified commits                                           |
+| `--no-smart-merge-filter`     | Disable smart merge filtering                                               |
 
 ### Review modes
 
