@@ -108,4 +108,101 @@ describe('custom agent executor runtime bridge', () => {
     expect(result.tokens_used).toBe(18);
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
+
+  it('reports runtime error results as failures without losing their known usage', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      execute: () => ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'result',
+            status: 'error',
+            error: 'upstream disconnected',
+            usage: { inputTokens: 100, cachedInputTokens: 20, outputTokens: 10 },
+          };
+        },
+        close: closeMock,
+      }),
+    });
+    const callbacks = { onAgentComplete: vi.fn(), onAgentError: vi.fn() };
+    const result = await executeCustomAgent(
+      createAgent(),
+      {
+        repoPath: 'C:\\repo',
+        diffContent: '+fetch("/api/service")',
+        language: 'en',
+      },
+      callbacks
+    );
+
+    expect(result.error).toBe('upstream disconnected');
+    expect(result.tokens_used).toBe(110);
+    expect(result.cached_input_tokens_used).toBe(20);
+    expect(callbacks.onAgentError).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAgentComplete).not.toHaveBeenCalled();
+    expect(closeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects custom-agent issues with unknown categories and normalizes aliases', async () => {
+    let toolResultText = '';
+
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const reportIssue = options.tools?.find(
+            (tool: { name: string }) => tool.name === 'report_issue'
+          );
+          const rejected = await reportIssue?.execute({
+            file: 'src/api/service.ts',
+            line_start: 18,
+            line_end: 21,
+            title: 'Unknown category',
+            description: 'The model used a category outside the enum.',
+            confidence: 0.9,
+            category: 'correct-ness',
+          });
+          toolResultText = rejected?.content?.[0]?.text ?? '';
+
+          await reportIssue?.execute({
+            file: 'src/api/service.ts',
+            line_start: 18,
+            line_end: 21,
+            title: 'Alias category',
+            description: 'The model used a known alias.',
+            confidence: 0.9,
+            category: 'Correctness',
+          });
+
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 3, outputTokens: 2 },
+            text: 'Done',
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const result = await executeCustomAgent(createAgent(), {
+      repoPath: 'C:\\repo',
+      diffContent: '+fetch("/api/service")',
+      language: 'en',
+    });
+
+    expect(toolResultText).toMatch(/unknown category/i);
+    expect(toolResultText).toContain('maintainability');
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]?.title).toBe('Alias category');
+    expect(result.issues[0]?.category).toBe('logic');
+  });
 });

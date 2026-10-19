@@ -498,3 +498,81 @@ it('does not fail the whole review when an agent declares a review incomplete', 
     )
   ).toBeDefined();
 });
+
+describe('streaming orchestrator issue category validation', () => {
+  beforeEach(() => {
+    createRuntimeFromEnvMock.mockReset();
+    executeMock.mockReset();
+    closeMock.mockClear();
+  });
+
+  it('rejects report_issue calls that use an unknown category', async () => {
+    let toolResultText = '';
+    let issueCount = 0;
+
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const reportIssue = options.tools?.find(
+            (tool: { name: string }) => tool.name === 'report_issue'
+          );
+          const result = await reportIssue?.execute({
+            file: 'src/api/service.ts',
+            line_start: 18,
+            line_end: 21,
+            severity: 'warning',
+            category: 'documentation',
+            title: 'Doc drift',
+            description: 'The comment no longer matches the implementation.',
+            confidence: 0.8,
+          });
+          toolResultText = result?.content?.[0]?.text ?? '';
+          issueCount = result?.content?.[0]?.text?.includes('Doc drift') ? 1 : 0;
+
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            text: 'Done',
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const orchestrator = new StreamingReviewOrchestrator({
+      skipValidation: true,
+      progressMode: 'silent',
+    });
+
+    await (orchestrator as any).runAgentsWithStreaming(
+      {
+        repoPath: 'C:\\repo',
+        diff: {
+          diff: '+const ready = true',
+        },
+        fileAnalyses: [],
+        standards: {
+          source: [],
+        },
+        diffFiles: [],
+      },
+      'C:\\repo',
+      ['logic-reviewer']
+    );
+
+    expect(toolResultText).toMatch(/unknown category/i);
+    expect(toolResultText).toContain('maintainability');
+    expect(issueCount).toBe(0);
+    expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(0);
+  });
+});

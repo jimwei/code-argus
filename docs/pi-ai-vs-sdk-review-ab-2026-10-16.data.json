@@ -1,0 +1,2854 @@
+{
+  "generatedAt": "2026-10-16T08:54:27.435Z",
+  "config": {
+    "schemaVersion": 1,
+    "createdAt": "2026-10-16T07:50:22.951Z",
+    "hostAlias": "prm-g1-103",
+    "codeArgusCommit": "2dd07963fcb9fe68c703a65a6dbce6d9830db365",
+    "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+    "model": "deepseek-v4.1-flash",
+    "reasoningEffort": "high",
+    "validatorReasoningEffort": "medium",
+    "transcriptBudgetTokens": 160000,
+    "timeoutMs": 2400000,
+    "reviewMode": "fast",
+    "language": "zh",
+    "samples": [
+      {
+        "pr": 7182,
+        "title": "perf(ai): 伺書向量数据准备优化与轻量状态接口",
+        "url": "https://bitbucket.org/grapecity/leyserfujiproject/pull-requests/7182",
+        "sourceCommit": "d33c03767e0d",
+        "destCommit": "3a5df603767c",
+        "diffBytes": 67910,
+        "files": 9,
+        "diffSha256": "43184ee77bbdc0166ddc1a34c553aee08e9d5a2e940bdb9f4bd85a9967a79f3a",
+        "samplePath": "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample",
+        "sourcePath": "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source",
+        "sourceTreeSha256": "b9da7c3b196785152343f0613474d1069b7466dfd6d97da5cbb966f3ea521367",
+        "sourceTreeFiles": 12440,
+        "sourceTreeBytes": 575631405,
+        "prContextSha256": "bcd2925ec2bdaaffda3dc7b01efdfb44053e24c7c58cc253f8d4292cc87da1b1",
+        "snapshotState": "MERGED",
+        "snapshotMetadataIsLive": false
+      },
+      {
+        "pr": 7191,
+        "title": "后台 OCR 支持仅更新识别原值",
+        "url": "https://bitbucket.org/grapecity/leyserfujiproject/pull-requests/7191",
+        "sourceCommit": "0f8ebc580a8f",
+        "destCommit": "13f95f89bf96",
+        "diffBytes": 10200,
+        "files": 6,
+        "diffSha256": "22945dbe7ac65b78fd083d93ce191f342c2a6a4fe9640693ec10dc156f23e6d5",
+        "samplePath": "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample2",
+        "sourcePath": "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source2",
+        "sourceTreeSha256": "172b314cbebc066170d72df99511f59b4c7100df13c675a577c8c530d055283f",
+        "sourceTreeFiles": 12441,
+        "sourceTreeBytes": 575654141,
+        "prContextSha256": "f38db3a194ea78e390380fe49929109cc3820bdba1940bbcaf4677d325f4b948",
+        "snapshotState": "OPEN",
+        "snapshotMetadataIsLive": false
+      },
+      {
+        "pr": 7186,
+        "title": "Feature/zhy/ai qrcode",
+        "url": "https://bitbucket.org/grapecity/leyserfujiproject/pull-requests/7186",
+        "sourceCommit": "4b80f0b60f68",
+        "destCommit": "06bb71625ad6",
+        "diffBytes": 18474,
+        "files": 11,
+        "diffSha256": "c1b1511801da21fadffdb9655ea77f01d490f38f7e29a7125e3414ec87e14cd0",
+        "samplePath": "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample3",
+        "sourcePath": "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source3",
+        "sourceTreeSha256": "507d69e98dd951ab3c2794597f15a230d37f0aeb7d86d69e164715e2fda5131d",
+        "sourceTreeFiles": 12440,
+        "sourceTreeBytes": 575640606,
+        "prContextSha256": "6b39f1de8600d725186892f3ab3e285e89566af64272ddcee47e539596008250",
+        "snapshotState": "MERGED",
+        "snapshotMetadataIsLive": false
+      },
+      {
+        "pr": 7183,
+        "title": "feat(yosan): 重複チェック警告附带相手伺書信息（SaveCheck 响应返回）",
+        "url": "https://bitbucket.org/grapecity/leyserfujiproject/pull-requests/7183",
+        "sourceCommit": "8c658792c6af",
+        "destCommit": "b6a0a6b229c0",
+        "diffBytes": 41479,
+        "files": 10,
+        "diffSha256": "01e8ac008bf9b96f08f1210f319fdb15034396c708e3ad69291915c7dfbaa3cd",
+        "samplePath": "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample4",
+        "sourcePath": "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source4",
+        "sourceTreeSha256": "5a56c3e234f704b53e98677d58e3014491a690052864033e3abbb177347e3c16",
+        "sourceTreeFiles": 12441,
+        "sourceTreeBytes": 575651816,
+        "prContextSha256": "5fb26c3371dd076b78362b46c2a11dd4fd4deac804f3595651a6842f9be26320",
+        "snapshotState": "MERGED",
+        "snapshotMetadataIsLive": false
+      }
+    ],
+    "schedule": [
+      ["pi-ai", 7191, 1],
+      ["sdk", 7191, 1],
+      ["sdk", 7186, 1],
+      ["pi-ai", 7186, 1],
+      ["pi-ai", 7183, 1],
+      ["sdk", 7183, 1],
+      ["sdk", 7182, 1],
+      ["pi-ai", 7182, 1]
+    ],
+    "dependencies": {
+      "@earendil-works/pi-ai": "1.1.0",
+      "openai": "7.17.0"
+    }
+  },
+  "planCoverage": {
+    "planned": 8,
+    "finished": 8,
+    "missingCells": [],
+    "unexpectedCells": [],
+    "duplicateCells": [],
+    "invalidCells": [],
+    "complete": true
+  },
+  "comparisonReady": true,
+  "runs": [
+    {
+      "meta": {
+        "label": "pi-ai-pr7182-r1",
+        "impl": "pi-ai",
+        "round": 1,
+        "pr": 7182,
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "killSignals": [],
+        "start": "2026-10-16T08:45:11.474Z",
+        "end": "2026-10-16T08:53:16.028Z",
+        "wallMs": 484554,
+        "codeArgusCommit": "2dd07963fcb9fe68c703a65a6dbce6d9830db365",
+        "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+        "model": "deepseek-v4.1-flash",
+        "reasoningEffort": "high",
+        "validatorReasoningEffort": "medium",
+        "transcriptBudgetTokens": 160000,
+        "capMs": 2400000,
+        "diffSha256": "43184ee77bbdc0166ddc1a34c553aee08e9d5a2e940bdb9f4bd85a9967a79f3a",
+        "diffBytes": 67910,
+        "files": 9,
+        "sourceTreeSha256": "b9da7c3b196785152343f0613474d1069b7466dfd6d97da5cbb966f3ea521367",
+        "args": [
+          "--import",
+          "/tmp/argus-ab-2dd0796-20261016/observe-current.mjs",
+          "/tmp/argus-ab-2dd0796-20261016/runtime/dist/index.js",
+          "review",
+          "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source",
+          "--diff-file=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample/pr.diff",
+          "--review-mode=fast",
+          "--language=zh",
+          "--json-logs",
+          "--pr-context=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample/pr-context.json"
+        ],
+        "node": "v20.20.0"
+      },
+      "completion": {
+        "accepted": true,
+        "incompleteReasons": [],
+        "complete": {
+          "totalIssues": 0,
+          "elapsedMs": 483720,
+          "timestamp": "2026-10-16T08:53:16.006Z"
+        },
+        "reportMetadata": {
+          "review_time_ms": 483718,
+          "input_tokens_used": 2956651,
+          "cached_input_tokens_used": 2748032,
+          "output_tokens_used": 129036,
+          "tokens_used": 3085687,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        }
+      },
+      "comparisonAccepted": true,
+      "validationErrors": [],
+      "counts": {
+        "requests": 48,
+        "responses": 48,
+        "usage": 48,
+        "cache": 48,
+        "fetchErrors": 0,
+        "httpErrors": 0,
+        "nonCompleted": 0,
+        "responsesWithoutUsage": 0,
+        "maxOutputTokensPresent": 0,
+        "previousResponseId": 0,
+        "promptCacheKey": 0,
+        "requestsWithElisions": 0,
+        "placeholderAppearances": 0
+      },
+      "usage": {
+        "input": 2956651,
+        "cached": 2748032,
+        "uncached": 208619,
+        "output": 129036,
+        "reasoning": 116454,
+        "total": 3085687,
+        "cacheRate": 0.9294407760672464,
+        "complete": true
+      },
+      "latency": {
+        "requestDurationSumMs": 773168,
+        "p50Ms": 9815,
+        "p95Ms": 49811,
+        "maxInput": 140516,
+        "firstRequestCacheRate": 0.9890314845241795,
+        "remainingRequestsCacheRate": 0.9289834267851617,
+        "zeroCacheRequests": 0,
+        "observerDrainMs": 0
+      },
+      "reportUsageDelta": {
+        "input": 0,
+        "cached": 0,
+        "output": 0,
+        "total": 0
+      },
+      "endpoints": ["https://api.aicr.gccode.cn/v1/responses"],
+      "groups": {
+        "high": {
+          "requests": 48,
+          "input": 2956651,
+          "cached": 2748032,
+          "output": 129036,
+          "reasoning": 116454,
+          "total": 3085687,
+          "cacheRate": 0.9294407760672464,
+          "durationMs": 773168
+        }
+      },
+      "eventCounts": {
+        "unparsed": 8,
+        "phase:start": 4,
+        "log": 13,
+        "phase:complete": 4,
+        "agent:start": 4,
+        "validation:issue": 8,
+        "agent:complete": 4,
+        "validation:complete": 1,
+        "review:complete": 1,
+        "report": 1
+      },
+      "agents": [
+        {
+          "agent": "security-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 483687,
+          "timestamp": "2026-10-16T08:53:16.004Z"
+        },
+        {
+          "agent": "logic-reviewer",
+          "status": "completed",
+          "issuesFound": 2,
+          "elapsedMs": 483686,
+          "timestamp": "2026-10-16T08:53:16.004Z"
+        },
+        {
+          "agent": "performance-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 483686,
+          "timestamp": "2026-10-16T08:53:16.004Z"
+        },
+        {
+          "agent": "style-reviewer",
+          "status": "completed",
+          "issuesFound": 2,
+          "elapsedMs": 483686,
+          "timestamp": "2026-10-16T08:53:16.004Z"
+        }
+      ],
+      "agentTurns": [
+        {
+          "agent": "security-reviewer",
+          "turns": 7,
+          "totalTokens": 181608
+        },
+        {
+          "agent": "style-reviewer",
+          "turns": 8,
+          "totalTokens": 166729
+        },
+        {
+          "agent": "performance-reviewer",
+          "turns": 12,
+          "totalTokens": 364757
+        },
+        {
+          "agent": "logic-reviewer",
+          "turns": 46,
+          "totalTokens": 2372593
+        }
+      ],
+      "metrics": {
+        "total_scanned": 4,
+        "confirmed": 0,
+        "rejected": 4,
+        "uncertain": 0,
+        "by_severity": {
+          "critical": 0,
+          "error": 0,
+          "warning": 0,
+          "suggestion": 0
+        },
+        "by_category": {
+          "security": 0,
+          "logic": 0,
+          "performance": 0,
+          "style": 0,
+          "maintainability": 0
+        },
+        "files_reviewed": 9
+      },
+      "report": {
+        "risk_level": "low",
+        "metadata": {
+          "review_time_ms": 483718,
+          "input_tokens_used": 2956651,
+          "cached_input_tokens_used": 2748032,
+          "output_tokens_used": 129036,
+          "tokens_used": 3085687,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        },
+        "metrics": {
+          "total_scanned": 4,
+          "confirmed": 0,
+          "rejected": 4,
+          "uncertain": 0,
+          "by_severity": {
+            "critical": 0,
+            "error": 0,
+            "warning": 0,
+            "suggestion": 0
+          },
+          "by_category": {
+            "security": 0,
+            "logic": 0,
+            "performance": 0,
+            "style": 0,
+            "maintainability": 0
+          },
+          "files_reviewed": 9
+        },
+        "issues": []
+      },
+      "validationEvents": [
+        {
+          "issueId": "getchangedformidsasync--ShikkouVectorBackgroundJob",
+          "title": "GetChangedFormIdsAsync 名称与新增的删除副作用不符",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorBackgroundJobManager.cs",
+          "line": 145,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:45:49.549Z"
+        },
+        {
+          "issueId": "getchangedformidsasync--ShikkouVectorBackgroundJob",
+          "title": "GetChangedFormIdsAsync 名称与新增的删除副作用不符",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorBackgroundJobManager.cs",
+          "line": 145,
+          "severity": "warning",
+          "status": "auto_rejected",
+          "reason": "置信度过低 (0.7 < 0.75)",
+          "timestamp": "2026-10-16T08:45:49.549Z"
+        },
+        {
+          "issueId": "-optionitem-id--ShikkouVectorSourceDataRepository.",
+          "title": "删除具名常量后 OptionItem ID 退化为魔法数字",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorSourceDataRepository.cs",
+          "line": 1013,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:45:49.549Z"
+        },
+        {
+          "issueId": "-optionitem-id--ShikkouVectorSourceDataRepository.",
+          "title": "删除具名常量后 OptionItem ID 退化为魔法数字",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorSourceDataRepository.cs",
+          "line": 1013,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:45:49.549Z"
+        },
+        {
+          "issueId": "--webwinfinaltimevectorincrementalsync.md",
+          "title": "调查文档写入生产源码目录且含开发者本地绝对路径",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/web-win-finaltime-vector-incremental-sync.md",
+          "line": 1,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:52:04.652Z"
+        },
+        {
+          "issueId": "--webwinfinaltimevectorincrementalsync.md",
+          "title": "调查文档写入生产源码目录且含开发者本地绝对路径",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/web-win-finaltime-vector-incremental-sync.md",
+          "line": 1,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:52:04.652Z"
+        },
+        {
+          "issueId": "-getvectortask-data-null-getve-ShikkouVectorManage",
+          "title": "无任务时 GetVectorTask 返回 Data=null，与 GetVectorStatus 契约不一致",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorManager.cs",
+          "line": 119,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:52:39.066Z"
+        },
+        {
+          "issueId": "-getvectortask-data-null-getve-ShikkouVectorManage",
+          "title": "无任务时 GetVectorTask 返回 Data=null，与 GetVectorStatus 契约不一致",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorManager.cs",
+          "line": 119,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:52:39.066Z"
+        }
+      ],
+      "errorAndRetryEventTypes": [],
+      "foldLogCount": 0
+    },
+    {
+      "meta": {
+        "label": "pi-ai-pr7183-r1",
+        "impl": "pi-ai",
+        "round": 1,
+        "pr": 7183,
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "killSignals": [],
+        "start": "2026-10-16T08:18:30.415Z",
+        "end": "2026-10-16T08:27:26.726Z",
+        "wallMs": 536311,
+        "codeArgusCommit": "2dd07963fcb9fe68c703a65a6dbce6d9830db365",
+        "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+        "model": "deepseek-v4.1-flash",
+        "reasoningEffort": "high",
+        "validatorReasoningEffort": "medium",
+        "transcriptBudgetTokens": 160000,
+        "capMs": 2400000,
+        "diffSha256": "01e8ac008bf9b96f08f1210f319fdb15034396c708e3ad69291915c7dfbaa3cd",
+        "diffBytes": 41479,
+        "files": 10,
+        "sourceTreeSha256": "5a56c3e234f704b53e98677d58e3014491a690052864033e3abbb177347e3c16",
+        "args": [
+          "--import",
+          "/tmp/argus-ab-2dd0796-20261016/observe-current.mjs",
+          "/tmp/argus-ab-2dd0796-20261016/runtime/dist/index.js",
+          "review",
+          "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source4",
+          "--diff-file=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample4/pr.diff",
+          "--review-mode=fast",
+          "--language=zh",
+          "--json-logs",
+          "--pr-context=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample4/pr-context.json"
+        ],
+        "node": "v20.20.0"
+      },
+      "completion": {
+        "accepted": true,
+        "incompleteReasons": [],
+        "complete": {
+          "totalIssues": 1,
+          "elapsedMs": 535457,
+          "timestamp": "2026-10-16T08:27:26.704Z"
+        },
+        "reportMetadata": {
+          "review_time_ms": 535456,
+          "input_tokens_used": 3394090,
+          "cached_input_tokens_used": 3115776,
+          "output_tokens_used": 173349,
+          "tokens_used": 3567439,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        }
+      },
+      "comparisonAccepted": true,
+      "validationErrors": [],
+      "counts": {
+        "requests": 84,
+        "responses": 84,
+        "usage": 84,
+        "cache": 84,
+        "fetchErrors": 0,
+        "httpErrors": 0,
+        "nonCompleted": 0,
+        "responsesWithoutUsage": 0,
+        "maxOutputTokensPresent": 0,
+        "previousResponseId": 0,
+        "promptCacheKey": 0,
+        "requestsWithElisions": 0,
+        "placeholderAppearances": 0
+      },
+      "usage": {
+        "input": 3394090,
+        "cached": 3115776,
+        "uncached": 278314,
+        "output": 173349,
+        "reasoning": 151066,
+        "total": 3567439,
+        "cacheRate": 0.9180004065891004,
+        "complete": true
+      },
+      "latency": {
+        "requestDurationSumMs": 1070925,
+        "p50Ms": 7160,
+        "p95Ms": 58689,
+        "maxInput": 111289,
+        "firstRequestCacheRate": 0.9870779491454773,
+        "remainingRequestsCacheRate": 0.9177062078956214,
+        "zeroCacheRequests": 1,
+        "observerDrainMs": 0
+      },
+      "reportUsageDelta": {
+        "input": 0,
+        "cached": 0,
+        "output": 0,
+        "total": 0
+      },
+      "endpoints": ["https://api.aicr.gccode.cn/v1/responses"],
+      "groups": {
+        "high": {
+          "requests": 71,
+          "input": 3178291,
+          "cached": 2917248,
+          "output": 162496,
+          "reasoning": 144005,
+          "total": 3340787,
+          "cacheRate": 0.917866866186891,
+          "durationMs": 997761
+        },
+        "medium": {
+          "requests": 13,
+          "input": 215799,
+          "cached": 198528,
+          "output": 10853,
+          "reasoning": 7061,
+          "total": 226652,
+          "cacheRate": 0.9199671916922691,
+          "durationMs": 73164
+        }
+      },
+      "eventCounts": {
+        "unparsed": 15,
+        "phase:start": 4,
+        "log": 15,
+        "phase:complete": 4,
+        "agent:start": 4,
+        "validation:issue": 8,
+        "agent:complete": 4,
+        "validation:progress": 2,
+        "validation:complete": 1,
+        "review:complete": 1,
+        "report": 1
+      },
+      "agents": [
+        {
+          "agent": "security-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 467040,
+          "timestamp": "2026-10-16T08:26:18.322Z"
+        },
+        {
+          "agent": "logic-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 467039,
+          "timestamp": "2026-10-16T08:26:18.323Z"
+        },
+        {
+          "agent": "performance-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 467040,
+          "timestamp": "2026-10-16T08:26:18.323Z"
+        },
+        {
+          "agent": "style-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 467040,
+          "timestamp": "2026-10-16T08:26:18.323Z"
+        }
+      ],
+      "agentTurns": [
+        {
+          "agent": "performance-reviewer",
+          "turns": 15,
+          "totalTokens": 329318
+        },
+        {
+          "agent": "style-reviewer",
+          "turns": 24,
+          "totalTokens": 532662
+        },
+        {
+          "agent": "logic-reviewer",
+          "turns": 42,
+          "totalTokens": 1579559
+        },
+        {
+          "agent": "security-reviewer",
+          "turns": 31,
+          "totalTokens": 896840
+        }
+      ],
+      "metrics": {
+        "total_scanned": 4,
+        "confirmed": 1,
+        "rejected": 3,
+        "uncertain": 0,
+        "by_severity": {
+          "critical": 0,
+          "error": 0,
+          "warning": 1,
+          "suggestion": 0
+        },
+        "by_category": {
+          "security": 1,
+          "logic": 0,
+          "performance": 0,
+          "style": 0,
+          "maintainability": 0
+        },
+        "files_reviewed": 10
+      },
+      "report": {
+        "risk_level": "low",
+        "metadata": {
+          "review_time_ms": 535456,
+          "input_tokens_used": 3394090,
+          "cached_input_tokens_used": 3115776,
+          "output_tokens_used": 173349,
+          "tokens_used": 3567439,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        },
+        "metrics": {
+          "total_scanned": 4,
+          "confirmed": 1,
+          "rejected": 3,
+          "uncertain": 0,
+          "by_severity": {
+            "critical": 0,
+            "error": 0,
+            "warning": 1,
+            "suggestion": 0
+          },
+          "by_category": {
+            "security": 1,
+            "logic": 0,
+            "performance": 0,
+            "style": 0,
+            "maintainability": 0
+          },
+          "files_reviewed": 10
+        },
+        "issues": [
+          {
+            "id": "security-reviewer-1792139159601-1dp0k",
+            "severity": "warning",
+            "category": "security",
+            "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/UkagaisyoDetail/UkagaisyoDetailController.cs",
+            "line_start": 148,
+            "line_end": 154,
+            "title": "权限确认接口的检查范围由调用方指定，可被削弱/绕过",
+            "validation_status": "confirmed"
+          }
+        ]
+      },
+      "validationEvents": [
+        {
+          "issueId": "-sql-db--UkagaisyoDetailManager.cs",
+          "title": "权限判定失败路径上重复执行多次权限 SQL 与选项查询，DB 往返被放大",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Domain/Shikkou/UkagaisyoDetail/UkagaisyoDetailManager.cs",
+          "line": 3442,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:19:36.492Z"
+        },
+        {
+          "issueId": "-sql-db--UkagaisyoDetailManager.cs",
+          "title": "权限判定失败路径上重复执行多次权限 SQL 与选项查询，DB 往返被放大",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Domain/Shikkou/UkagaisyoDetail/UkagaisyoDetailManager.cs",
+          "line": 3442,
+          "severity": "warning",
+          "status": "auto_rejected",
+          "reason": "置信度过低 (0.45 < 0.5)",
+          "timestamp": "2026-10-16T08:19:36.492Z"
+        },
+        {
+          "issueId": "-unknown-ng-js-truthy--Enum.cs",
+          "title": "枚举注释误导：除 Unknown 外的 NG 值在 JS 中均为 truthy，按布尔判断会被当成「可参照」",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Common/Enums/Enum.cs",
+          "line": 130,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:20:31.060Z"
+        },
+        {
+          "issueId": "-unknown-ng-js-truthy--Enum.cs",
+          "title": "枚举注释误导：除 Unknown 外的 NG 值在 JS 中均为 truthy，按布尔判断会被当成「可参照」",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Common/Enums/Enum.cs",
+          "line": 130,
+          "severity": "warning",
+          "status": "auto_rejected",
+          "reason": "置信度过低 (0.5 < 0.75)",
+          "timestamp": "2026-10-16T08:20:31.060Z"
+        },
+        {
+          "issueId": "warnings-null--ShikkouAIController.cs",
+          "title": "warnings 在错误分支为 null，却被响应映射闭包解引用",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouAIController.cs",
+          "line": 122,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:25:06.326Z"
+        },
+        {
+          "issueId": "warnings-null--ShikkouAIController.cs",
+          "title": "warnings 在错误分支为 null，却被响应映射闭包解引用",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouAIController.cs",
+          "line": 122,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:25:06.326Z"
+        },
+        {
+          "issueId": "--UkagaisyoDetailController.cs",
+          "title": "权限确认接口的检查范围由调用方指定，可被削弱/绕过",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/UkagaisyoDetail/UkagaisyoDetailController.cs",
+          "line": 148,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:25:59.601Z"
+        },
+        {
+          "issueId": "--UkagaisyoDetailController.cs",
+          "title": "权限确认接口的检查范围由调用方指定，可被削弱/绕过",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/UkagaisyoDetail/UkagaisyoDetailController.cs",
+          "line": 148,
+          "severity": "warning",
+          "status": "confirmed",
+          "timestamp": "2026-10-16T08:27:26.702Z"
+        }
+      ],
+      "errorAndRetryEventTypes": [],
+      "foldLogCount": 0
+    },
+    {
+      "meta": {
+        "label": "pi-ai-pr7186-r1",
+        "impl": "pi-ai",
+        "round": 1,
+        "pr": 7186,
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "killSignals": [],
+        "start": "2026-10-16T08:10:39.782Z",
+        "end": "2026-10-16T08:18:30.370Z",
+        "wallMs": 470588,
+        "codeArgusCommit": "2dd07963fcb9fe68c703a65a6dbce6d9830db365",
+        "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+        "model": "deepseek-v4.1-flash",
+        "reasoningEffort": "high",
+        "validatorReasoningEffort": "medium",
+        "transcriptBudgetTokens": 160000,
+        "capMs": 2400000,
+        "diffSha256": "c1b1511801da21fadffdb9655ea77f01d490f38f7e29a7125e3414ec87e14cd0",
+        "diffBytes": 18474,
+        "files": 11,
+        "sourceTreeSha256": "507d69e98dd951ab3c2794597f15a230d37f0aeb7d86d69e164715e2fda5131d",
+        "args": [
+          "--import",
+          "/tmp/argus-ab-2dd0796-20261016/observe-current.mjs",
+          "/tmp/argus-ab-2dd0796-20261016/runtime/dist/index.js",
+          "review",
+          "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source3",
+          "--diff-file=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample3/pr.diff",
+          "--review-mode=fast",
+          "--language=zh",
+          "--json-logs",
+          "--pr-context=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample3/pr-context.json"
+        ],
+        "node": "v20.20.0"
+      },
+      "completion": {
+        "accepted": true,
+        "incompleteReasons": [],
+        "complete": {
+          "totalIssues": 0,
+          "elapsedMs": 469756,
+          "timestamp": "2026-10-16T08:18:30.350Z"
+        },
+        "reportMetadata": {
+          "review_time_ms": 469754,
+          "input_tokens_used": 1809840,
+          "cached_input_tokens_used": 1653632,
+          "output_tokens_used": 103906,
+          "tokens_used": 1913746,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        }
+      },
+      "comparisonAccepted": true,
+      "validationErrors": [],
+      "counts": {
+        "requests": 49,
+        "responses": 49,
+        "usage": 49,
+        "cache": 49,
+        "fetchErrors": 0,
+        "httpErrors": 0,
+        "nonCompleted": 0,
+        "responsesWithoutUsage": 0,
+        "maxOutputTokensPresent": 0,
+        "previousResponseId": 0,
+        "promptCacheKey": 0,
+        "requestsWithElisions": 0,
+        "placeholderAppearances": 0
+      },
+      "usage": {
+        "input": 1809840,
+        "cached": 1653632,
+        "uncached": 156208,
+        "output": 103906,
+        "reasoning": 91429,
+        "total": 1913746,
+        "cacheRate": 0.9136896079211422,
+        "complete": true
+      },
+      "latency": {
+        "requestDurationSumMs": 614307,
+        "p50Ms": 6861,
+        "p95Ms": 40658,
+        "maxInput": 112784,
+        "firstRequestCacheRate": 0.9801160923798938,
+        "remainingRequestsCacheRate": 0.9133910885181737,
+        "zeroCacheRequests": 0,
+        "observerDrainMs": 0
+      },
+      "reportUsageDelta": {
+        "input": 0,
+        "cached": 0,
+        "output": 0,
+        "total": 0
+      },
+      "endpoints": ["https://api.aicr.gccode.cn/v1/responses"],
+      "groups": {
+        "high": {
+          "requests": 49,
+          "input": 1809840,
+          "cached": 1653632,
+          "output": 103906,
+          "reasoning": 91429,
+          "total": 1913746,
+          "cacheRate": 0.9136896079211422,
+          "durationMs": 614307
+        }
+      },
+      "eventCounts": {
+        "unparsed": 8,
+        "phase:start": 4,
+        "log": 13,
+        "phase:complete": 4,
+        "agent:start": 4,
+        "validation:issue": 6,
+        "agent:complete": 4,
+        "validation:complete": 1,
+        "review:complete": 1,
+        "report": 1
+      },
+      "agents": [
+        {
+          "agent": "security-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 469705,
+          "timestamp": "2026-10-16T08:18:30.348Z"
+        },
+        {
+          "agent": "logic-reviewer",
+          "status": "completed",
+          "issuesFound": 2,
+          "elapsedMs": 469706,
+          "timestamp": "2026-10-16T08:18:30.348Z"
+        },
+        {
+          "agent": "performance-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 469706,
+          "timestamp": "2026-10-16T08:18:30.348Z"
+        },
+        {
+          "agent": "style-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 469706,
+          "timestamp": "2026-10-16T08:18:30.348Z"
+        }
+      ],
+      "agentTurns": [
+        {
+          "agent": "security-reviewer",
+          "turns": 10,
+          "totalTokens": 107925
+        },
+        {
+          "agent": "style-reviewer",
+          "turns": 9,
+          "totalTokens": 107268
+        },
+        {
+          "agent": "performance-reviewer",
+          "turns": 14,
+          "totalTokens": 171741
+        },
+        {
+          "agent": "logic-reviewer",
+          "turns": 52,
+          "totalTokens": 1526812
+        }
+      ],
+      "metrics": {
+        "total_scanned": 3,
+        "confirmed": 0,
+        "rejected": 3,
+        "uncertain": 0,
+        "by_severity": {
+          "critical": 0,
+          "error": 0,
+          "warning": 0,
+          "suggestion": 0
+        },
+        "by_category": {
+          "security": 0,
+          "logic": 0,
+          "performance": 0,
+          "style": 0,
+          "maintainability": 0
+        },
+        "files_reviewed": 11
+      },
+      "report": {
+        "risk_level": "low",
+        "metadata": {
+          "review_time_ms": 469754,
+          "input_tokens_used": 1809840,
+          "cached_input_tokens_used": 1653632,
+          "output_tokens_used": 103906,
+          "tokens_used": 1913746,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        },
+        "metrics": {
+          "total_scanned": 3,
+          "confirmed": 0,
+          "rejected": 3,
+          "uncertain": 0,
+          "by_severity": {
+            "critical": 0,
+            "error": 0,
+            "warning": 0,
+            "suggestion": 0
+          },
+          "by_category": {
+            "security": 0,
+            "logic": 0,
+            "performance": 0,
+            "style": 0,
+            "maintainability": 0
+          },
+          "files_reviewed": 11
+        },
+        "issues": []
+      },
+      "validationEvents": [
+        {
+          "issueId": "--SchoolNetDiskController.cs",
+          "title": "按年度重复过滤，逻辑冗余易误导",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/LeySer.Startups.WorkSite.API/Controllers/Common/NetDisk/SchoolNetDiskController.cs",
+          "line": 564,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:11:37.648Z"
+        },
+        {
+          "issueId": "--SchoolNetDiskController.cs",
+          "title": "按年度重复过滤，逻辑冗余易误导",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/LeySer.Startups.WorkSite.API/Controllers/Common/NetDisk/SchoolNetDiskController.cs",
+          "line": 564,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:11:37.648Z"
+        },
+        {
+          "issueId": "distinctby-year-fileid--DeclarationManager.cs",
+          "title": "DistinctBy 以 (Year, FileId) 去重，同一物理文件跨年度会被重复统计/无法彻底删除",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/Business/Payroll/LeySer.Work.Domain.Payroll/Declaration/DeclarationManager.cs",
+          "line": 35,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:18:07.433Z"
+        },
+        {
+          "issueId": "distinctby-year-fileid--DeclarationManager.cs",
+          "title": "DistinctBy 以 (Year, FileId) 去重，同一物理文件跨年度会被重复统计/无法彻底删除",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/Business/Payroll/LeySer.Work.Domain.Payroll/Declaration/DeclarationManager.cs",
+          "line": 35,
+          "severity": "warning",
+          "status": "auto_rejected",
+          "reason": "置信度过低 (0.35 < 0.5)",
+          "timestamp": "2026-10-16T08:18:07.434Z"
+        },
+        {
+          "issueId": "bulkdeletedeclarationfileasync-NetDiskManager.cs",
+          "title": "BulkDeleteDeclarationFileAsync 不再校验文件是否存在，件数/大小完全信任调用方",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/Business/Common/LeySer.Work.Domain.Common/NetDisk/NetDiskManager.cs",
+          "line": 522,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:18:07.434Z"
+        },
+        {
+          "issueId": "bulkdeletedeclarationfileasync-NetDiskManager.cs",
+          "title": "BulkDeleteDeclarationFileAsync 不再校验文件是否存在，件数/大小完全信任调用方",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/Business/Common/LeySer.Work.Domain.Common/NetDisk/NetDiskManager.cs",
+          "line": 522,
+          "severity": "warning",
+          "status": "auto_rejected",
+          "reason": "置信度过低 (0.45 < 0.75)",
+          "timestamp": "2026-10-16T08:18:07.434Z"
+        }
+      ],
+      "errorAndRetryEventTypes": [],
+      "foldLogCount": 0
+    },
+    {
+      "meta": {
+        "label": "pi-ai-pr7191-r1",
+        "impl": "pi-ai",
+        "round": 1,
+        "pr": 7191,
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "killSignals": [],
+        "start": "2026-10-16T07:51:01.002Z",
+        "end": "2026-10-16T07:54:33.673Z",
+        "wallMs": 212671,
+        "codeArgusCommit": "2dd07963fcb9fe68c703a65a6dbce6d9830db365",
+        "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+        "model": "deepseek-v4.1-flash",
+        "reasoningEffort": "high",
+        "validatorReasoningEffort": "medium",
+        "transcriptBudgetTokens": 160000,
+        "capMs": 2400000,
+        "diffSha256": "22945dbe7ac65b78fd083d93ce191f342c2a6a4fe9640693ec10dc156f23e6d5",
+        "diffBytes": 10200,
+        "files": 6,
+        "sourceTreeSha256": "172b314cbebc066170d72df99511f59b4c7100df13c675a577c8c530d055283f",
+        "args": [
+          "--import",
+          "/tmp/argus-ab-2dd0796-20261016/observe-current.mjs",
+          "/tmp/argus-ab-2dd0796-20261016/runtime/dist/index.js",
+          "review",
+          "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source2",
+          "--diff-file=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample2/pr.diff",
+          "--review-mode=fast",
+          "--language=zh",
+          "--json-logs",
+          "--pr-context=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample2/pr-context.json"
+        ],
+        "node": "v20.20.0"
+      },
+      "completion": {
+        "accepted": true,
+        "incompleteReasons": [],
+        "complete": {
+          "totalIssues": 1,
+          "elapsedMs": 211823,
+          "timestamp": "2026-10-16T07:54:33.650Z"
+        },
+        "reportMetadata": {
+          "review_time_ms": 211820,
+          "input_tokens_used": 844596,
+          "cached_input_tokens_used": 731648,
+          "output_tokens_used": 52693,
+          "tokens_used": 897289,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        }
+      },
+      "comparisonAccepted": true,
+      "validationErrors": [],
+      "counts": {
+        "requests": 42,
+        "responses": 42,
+        "usage": 42,
+        "cache": 42,
+        "fetchErrors": 0,
+        "httpErrors": 0,
+        "nonCompleted": 0,
+        "responsesWithoutUsage": 0,
+        "maxOutputTokensPresent": 0,
+        "previousResponseId": 0,
+        "promptCacheKey": 0,
+        "requestsWithElisions": 0,
+        "placeholderAppearances": 0
+      },
+      "usage": {
+        "input": 844596,
+        "cached": 731648,
+        "uncached": 112948,
+        "output": 52693,
+        "reasoning": 38331,
+        "total": 897289,
+        "cacheRate": 0.8662697905270685,
+        "complete": true
+      },
+      "latency": {
+        "requestDurationSumMs": 327860,
+        "p50Ms": 5863,
+        "p95Ms": 22176,
+        "maxInput": 42853,
+        "firstRequestCacheRate": 0.9579860520496684,
+        "remainingRequestsCacheRate": 0.8656269039497232,
+        "zeroCacheRequests": 0,
+        "observerDrainMs": 0
+      },
+      "reportUsageDelta": {
+        "input": 0,
+        "cached": 0,
+        "output": 0,
+        "total": 0
+      },
+      "endpoints": ["https://api.aicr.gccode.cn/v1/responses"],
+      "groups": {
+        "high": {
+          "requests": 26,
+          "input": 444620,
+          "cached": 362496,
+          "output": 38271,
+          "reasoning": 30424,
+          "total": 482891,
+          "cacheRate": 0.8152939588862399,
+          "durationMs": 234667
+        },
+        "medium": {
+          "requests": 16,
+          "input": 399976,
+          "cached": 369152,
+          "output": 14422,
+          "reasoning": 7907,
+          "total": 414398,
+          "cacheRate": 0.9229353761225674,
+          "durationMs": 93193
+        }
+      },
+      "eventCounts": {
+        "unparsed": 11,
+        "phase:start": 4,
+        "log": 13,
+        "phase:complete": 4,
+        "agent:start": 4,
+        "validation:issue": 6,
+        "agent:complete": 4,
+        "validation:progress": 2,
+        "validation:complete": 1,
+        "review:complete": 1,
+        "report": 1
+      },
+      "agents": [
+        {
+          "agent": "security-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 90620,
+          "timestamp": "2026-10-16T07:52:32.492Z"
+        },
+        {
+          "agent": "logic-reviewer",
+          "status": "completed",
+          "issuesFound": 2,
+          "elapsedMs": 90621,
+          "timestamp": "2026-10-16T07:52:32.492Z"
+        },
+        {
+          "agent": "performance-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 90621,
+          "timestamp": "2026-10-16T07:52:32.492Z"
+        },
+        {
+          "agent": "style-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 90621,
+          "timestamp": "2026-10-16T07:52:32.492Z"
+        }
+      ],
+      "agentTurns": [
+        {
+          "agent": "security-reviewer",
+          "turns": 5,
+          "totalTokens": 52001
+        },
+        {
+          "agent": "performance-reviewer",
+          "turns": 9,
+          "totalTokens": 117840
+        },
+        {
+          "agent": "style-reviewer",
+          "turns": 8,
+          "totalTokens": 106087
+        },
+        {
+          "agent": "logic-reviewer",
+          "turns": 17,
+          "totalTokens": 206963
+        }
+      ],
+      "metrics": {
+        "total_scanned": 3,
+        "confirmed": 1,
+        "rejected": 2,
+        "uncertain": 0,
+        "by_severity": {
+          "critical": 0,
+          "error": 0,
+          "warning": 1,
+          "suggestion": 0
+        },
+        "by_category": {
+          "security": 0,
+          "logic": 1,
+          "performance": 0,
+          "style": 0,
+          "maintainability": 0
+        },
+        "files_reviewed": 6
+      },
+      "report": {
+        "risk_level": "low",
+        "metadata": {
+          "review_time_ms": 211820,
+          "input_tokens_used": 844596,
+          "cached_input_tokens_used": 731648,
+          "output_tokens_used": 52693,
+          "tokens_used": 897289,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        },
+        "metrics": {
+          "total_scanned": 3,
+          "confirmed": 1,
+          "rejected": 2,
+          "uncertain": 0,
+          "by_severity": {
+            "critical": 0,
+            "error": 0,
+            "warning": 1,
+            "suggestion": 0
+          },
+          "by_category": {
+            "security": 0,
+            "logic": 1,
+            "performance": 0,
+            "style": 0,
+            "maintainability": 0
+          },
+          "files_reviewed": 6
+        },
+        "issues": [
+          {
+            "id": "logic-reviewer-1792137148678-15j0f",
+            "severity": "warning",
+            "category": "logic",
+            "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Base/Microservices/Business/LeySer.Base.EFCore.Kaikei/Repositories/AttachFileRepositories/AIOcrFileManager.cs",
+            "line_start": 109,
+            "line_end": 112,
+            "title": "OCR 原值字段未做空值保护，可能用 null/空串覆盖已有原值",
+            "validation_status": "confirmed"
+          }
+        ]
+      },
+      "validationEvents": [
+        {
+          "issueId": "-ai-ocr-aiocr-vs-aiocr--KaikeiAttachFile.cs",
+          "title": "新增成员 AI-OCR 缩写大小写不一致（Aiocr vs AIOcr）",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Base/Microservices/Business/LeySer.Base.Core/AttachFile/Entities/KaikeiAttachFile.cs",
+          "line": 147,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T07:52:01.732Z"
+        },
+        {
+          "issueId": "-ai-ocr-aiocr-vs-aiocr--KaikeiAttachFile.cs",
+          "title": "新增成员 AI-OCR 缩写大小写不一致（Aiocr vs AIOcr）",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Base/Microservices/Business/LeySer.Base.Core/AttachFile/Entities/KaikeiAttachFile.cs",
+          "line": 147,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T07:52:01.733Z"
+        },
+        {
+          "issueId": "ocr-null--AIOcrFileManager.cs",
+          "title": "OCR 原值字段未做空值保护，可能用 null/空串覆盖已有原值",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Base/Microservices/Business/LeySer.Base.EFCore.Kaikei/Repositories/AttachFileRepositories/AIOcrFileManager.cs",
+          "line": 109,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T07:52:28.678Z"
+        },
+        {
+          "issueId": "onlyupdate-fileids--AIOcrController.cs",
+          "title": "onlyUpdate 模式未校验 fileIds，空集合会触发对全部待处理文件的批量原值更新",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Base/Microservices/LeySer.Startups.KKAttachmentSite.API/Controllers/AttachFile/AIOcrController.cs",
+          "line": 64,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T07:52:28.684Z"
+        },
+        {
+          "issueId": "onlyupdate-fileids--AIOcrController.cs",
+          "title": "onlyUpdate 模式未校验 fileIds，空集合会触发对全部待处理文件的批量原值更新",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Base/Microservices/LeySer.Startups.KKAttachmentSite.API/Controllers/AttachFile/AIOcrController.cs",
+          "line": 64,
+          "severity": "warning",
+          "status": "auto_rejected",
+          "reason": "置信度过低 (0.4 < 0.5)",
+          "timestamp": "2026-10-16T07:52:28.684Z"
+        },
+        {
+          "issueId": "ocr-null--AIOcrFileManager.cs",
+          "title": "OCR 原值字段未做空值保护，可能用 null/空串覆盖已有原值",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Base/Microservices/Business/LeySer.Base.EFCore.Kaikei/Repositories/AttachFileRepositories/AIOcrFileManager.cs",
+          "line": 109,
+          "severity": "warning",
+          "status": "confirmed",
+          "timestamp": "2026-10-16T07:54:33.648Z"
+        }
+      ],
+      "errorAndRetryEventTypes": [],
+      "foldLogCount": 0
+    },
+    {
+      "meta": {
+        "label": "sdk-pr7182-r1",
+        "impl": "sdk",
+        "round": 1,
+        "pr": 7182,
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "killSignals": [],
+        "start": "2026-10-16T08:35:27.688Z",
+        "end": "2026-10-16T08:45:11.415Z",
+        "wallMs": 583727,
+        "codeArgusCommit": "2dd07963fcb9fe68c703a65a6dbce6d9830db365",
+        "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+        "model": "deepseek-v4.1-flash",
+        "reasoningEffort": "high",
+        "validatorReasoningEffort": "medium",
+        "transcriptBudgetTokens": 160000,
+        "capMs": 2400000,
+        "diffSha256": "43184ee77bbdc0166ddc1a34c553aee08e9d5a2e940bdb9f4bd85a9967a79f3a",
+        "diffBytes": 67910,
+        "files": 9,
+        "sourceTreeSha256": "b9da7c3b196785152343f0613474d1069b7466dfd6d97da5cbb966f3ea521367",
+        "args": [
+          "--import",
+          "/tmp/argus-ab-2dd0796-20261016/observe-current.mjs",
+          "/tmp/argus-ab-2dd0796-20261016/runtime/dist/index.js",
+          "review",
+          "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source",
+          "--diff-file=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample/pr.diff",
+          "--review-mode=fast",
+          "--language=zh",
+          "--json-logs",
+          "--pr-context=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample/pr-context.json"
+        ],
+        "node": "v20.20.0"
+      },
+      "completion": {
+        "accepted": true,
+        "incompleteReasons": [],
+        "complete": {
+          "totalIssues": 1,
+          "elapsedMs": 582900,
+          "timestamp": "2026-10-16T08:45:11.395Z"
+        },
+        "reportMetadata": {
+          "review_time_ms": 582898,
+          "input_tokens_used": 3734329,
+          "cached_input_tokens_used": 3472640,
+          "output_tokens_used": 149526,
+          "tokens_used": 3883855,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        }
+      },
+      "comparisonAccepted": true,
+      "validationErrors": [],
+      "counts": {
+        "requests": 86,
+        "responses": 86,
+        "usage": 80,
+        "cache": 80,
+        "fetchErrors": 0,
+        "httpErrors": 6,
+        "nonCompleted": 6,
+        "responsesWithoutUsage": 6,
+        "maxOutputTokensPresent": 1,
+        "previousResponseId": 6,
+        "promptCacheKey": 0,
+        "requestsWithElisions": 0,
+        "placeholderAppearances": 0
+      },
+      "usage": {
+        "input": 3734329,
+        "cached": 3472640,
+        "uncached": 261689,
+        "output": 149526,
+        "reasoning": 124580,
+        "total": 3883855,
+        "cacheRate": 0.9299234213161186,
+        "complete": false
+      },
+      "latency": {
+        "requestDurationSumMs": 889881,
+        "p50Ms": 6320,
+        "p95Ms": 36963,
+        "maxInput": 148761,
+        "firstRequestCacheRate": 0.9899546626366789,
+        "remainingRequestsCacheRate": 0.9295595623830935,
+        "zeroCacheRequests": 1,
+        "observerDrainMs": 0
+      },
+      "reportUsageDelta": {
+        "input": 0,
+        "cached": 0,
+        "output": 0,
+        "total": 0
+      },
+      "endpoints": ["https://api.aicr.gccode.cn/responses"],
+      "groups": {
+        "high": {
+          "requests": 55,
+          "input": 3039296,
+          "cached": 2836096,
+          "output": 122295,
+          "reasoning": 108475,
+          "total": 3161591,
+          "cacheRate": 0.9331424119269726,
+          "durationMs": 718476
+        },
+        "medium": {
+          "requests": 31,
+          "input": 695033,
+          "cached": 636544,
+          "output": 27231,
+          "reasoning": 16105,
+          "total": 722264,
+          "cacheRate": 0.915847161213928,
+          "durationMs": 170505
+        }
+      },
+      "eventCounts": {
+        "unparsed": 16,
+        "phase:start": 4,
+        "log": 14,
+        "phase:complete": 4,
+        "agent:start": 4,
+        "validation:issue": 10,
+        "validation:progress": 4,
+        "agent:complete": 4,
+        "validation:complete": 1,
+        "review:complete": 1,
+        "report": 1
+      },
+      "agents": [
+        {
+          "agent": "security-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 501357,
+          "timestamp": "2026-10-16T08:43:49.891Z"
+        },
+        {
+          "agent": "logic-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 501357,
+          "timestamp": "2026-10-16T08:43:49.891Z"
+        },
+        {
+          "agent": "performance-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 501356,
+          "timestamp": "2026-10-16T08:43:49.891Z"
+        },
+        {
+          "agent": "style-reviewer",
+          "status": "completed",
+          "issuesFound": 3,
+          "elapsedMs": 501357,
+          "timestamp": "2026-10-16T08:43:49.892Z"
+        }
+      ],
+      "agentTurns": [
+        {
+          "agent": "security-reviewer",
+          "turns": 6,
+          "totalTokens": 112744
+        },
+        {
+          "agent": "style-reviewer",
+          "turns": 13,
+          "totalTokens": 243722
+        },
+        {
+          "agent": "performance-reviewer",
+          "turns": 20,
+          "totalTokens": 670707
+        },
+        {
+          "agent": "logic-reviewer",
+          "turns": 43,
+          "totalTokens": 2133537
+        }
+      ],
+      "metrics": {
+        "total_scanned": 5,
+        "confirmed": 1,
+        "rejected": 4,
+        "uncertain": 0,
+        "by_severity": {
+          "critical": 0,
+          "error": 0,
+          "warning": 1,
+          "suggestion": 0
+        },
+        "by_category": {
+          "security": 0,
+          "logic": 0,
+          "performance": 1,
+          "style": 0,
+          "maintainability": 0
+        },
+        "files_reviewed": 9
+      },
+      "report": {
+        "risk_level": "low",
+        "metadata": {
+          "review_time_ms": 582898,
+          "input_tokens_used": 3734329,
+          "cached_input_tokens_used": 3472640,
+          "output_tokens_used": 149526,
+          "tokens_used": 3883855,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        },
+        "metrics": {
+          "total_scanned": 5,
+          "confirmed": 1,
+          "rejected": 4,
+          "uncertain": 0,
+          "by_severity": {
+            "critical": 0,
+            "error": 0,
+            "warning": 1,
+            "suggestion": 0
+          },
+          "by_category": {
+            "security": 0,
+            "logic": 0,
+            "performance": 1,
+            "style": 0,
+            "maintainability": 0
+          },
+          "files_reviewed": 9
+        },
+        "issues": [
+          {
+            "id": "performance-reviewer-1792139864384-bu49v",
+            "severity": "warning",
+            "category": "performance",
+            "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/UkagaisyoDetail/UkagaisyoDetailController.cs",
+            "line_start": 164,
+            "line_end": 167,
+            "title": "付箋保存接口新增同步向量更新，延迟随件数线性增长",
+            "validation_status": "confirmed"
+          }
+        ]
+      },
+      "validationEvents": [
+        {
+          "issueId": "-getchangedformidsasync--ShikkouVectorBackgroundJo",
+          "title": "方法名 GetChangedFormIdsAsync 与实际副作用不符",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorBackgroundJobManager.cs",
+          "line": 145,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:36:14.159Z"
+        },
+        {
+          "issueId": "-getchangedformidsasync--ShikkouVectorBackgroundJo",
+          "title": "方法名 GetChangedFormIdsAsync 与实际副作用不符",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorBackgroundJobManager.cs",
+          "line": 145,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:36:14.160Z"
+        },
+        {
+          "issueId": "vectorbatchsize--ShikkouVectorManager.cs",
+          "title": "VectorBatchSize 常量在两个类中重复定义",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorManager.cs",
+          "line": 27,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:36:14.160Z"
+        },
+        {
+          "issueId": "vectorbatchsize--ShikkouVectorManager.cs",
+          "title": "VectorBatchSize 常量在两个类中重复定义",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorManager.cs",
+          "line": 27,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:36:14.160Z"
+        },
+        {
+          "issueId": "-21-22-72-ShikkouVectorSourceDataRepository.cs",
+          "title": "删除具名常量改用裸魔法数字 21/22/.../72",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorSourceDataRepository.cs",
+          "line": 1016,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:36:14.160Z"
+        },
+        {
+          "issueId": "-21-22-72-ShikkouVectorSourceDataRepository.cs",
+          "title": "删除具名常量改用裸魔法数字 21/22/.../72",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorSourceDataRepository.cs",
+          "line": 1016,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:36:14.160Z"
+        },
+        {
+          "issueId": "--UkagaisyoDetailController.cs",
+          "title": "付箋保存接口新增同步向量更新，延迟随件数线性增长",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/UkagaisyoDetail/UkagaisyoDetailController.cs",
+          "line": 164,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:37:44.385Z"
+        },
+        {
+          "issueId": "--UkagaisyoDetailController.cs",
+          "title": "付箋保存接口新增同步向量更新，延迟随件数线性增长",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/UkagaisyoDetail/UkagaisyoDetailController.cs",
+          "line": 164,
+          "severity": "warning",
+          "status": "confirmed",
+          "timestamp": "2026-10-16T08:38:56.890Z"
+        },
+        {
+          "issueId": "-status-null--ShikkouVectorSourceDataRepository.cs",
+          "title": "附件过滤把 Status 为 NULL 的行也纳入，与画面口径不一致",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorSourceDataRepository.cs",
+          "line": 1456,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:43:10.850Z"
+        },
+        {
+          "issueId": "-status-null--ShikkouVectorSourceDataRepository.cs",
+          "title": "附件过滤把 Status 为 NULL 的行也纳入，与画面口径不一致",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouVectorSourceDataRepository.cs",
+          "line": 1456,
+          "severity": "suggestion",
+          "status": "rejected",
+          "reason": "画面/其它读取路径均为 EF Core LINQ，其默认空语义补偿会保留 Status 为 NULL 的行，与向量 SQL 的 IS NULL OR 完全一致；且 NULL 在本业务中即代表未删除（未变更附件保存时被置 null 并重插），建议改为排除 NULL 反而会丢失大量附件。",
+          "timestamp": "2026-10-16T08:45:11.393Z"
+        }
+      ],
+      "errorAndRetryEventTypes": [],
+      "foldLogCount": 0
+    },
+    {
+      "meta": {
+        "label": "sdk-pr7183-r1",
+        "impl": "sdk",
+        "round": 1,
+        "pr": 7183,
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "killSignals": [],
+        "start": "2026-10-16T08:27:26.772Z",
+        "end": "2026-10-16T08:35:27.641Z",
+        "wallMs": 480869,
+        "codeArgusCommit": "2dd07963fcb9fe68c703a65a6dbce6d9830db365",
+        "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+        "model": "deepseek-v4.1-flash",
+        "reasoningEffort": "high",
+        "validatorReasoningEffort": "medium",
+        "transcriptBudgetTokens": 160000,
+        "capMs": 2400000,
+        "diffSha256": "01e8ac008bf9b96f08f1210f319fdb15034396c708e3ad69291915c7dfbaa3cd",
+        "diffBytes": 41479,
+        "files": 10,
+        "sourceTreeSha256": "5a56c3e234f704b53e98677d58e3014491a690052864033e3abbb177347e3c16",
+        "args": [
+          "--import",
+          "/tmp/argus-ab-2dd0796-20261016/observe-current.mjs",
+          "/tmp/argus-ab-2dd0796-20261016/runtime/dist/index.js",
+          "review",
+          "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source4",
+          "--diff-file=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample4/pr.diff",
+          "--review-mode=fast",
+          "--language=zh",
+          "--json-logs",
+          "--pr-context=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample4/pr-context.json"
+        ],
+        "node": "v20.20.0"
+      },
+      "completion": {
+        "accepted": true,
+        "incompleteReasons": [],
+        "complete": {
+          "totalIssues": 2,
+          "elapsedMs": 479984,
+          "timestamp": "2026-10-16T08:35:27.621Z"
+        },
+        "reportMetadata": {
+          "review_time_ms": 479982,
+          "input_tokens_used": 3471748,
+          "cached_input_tokens_used": 3206912,
+          "output_tokens_used": 144600,
+          "tokens_used": 3616348,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        }
+      },
+      "comparisonAccepted": true,
+      "validationErrors": [],
+      "counts": {
+        "requests": 105,
+        "responses": 105,
+        "usage": 98,
+        "cache": 98,
+        "fetchErrors": 0,
+        "httpErrors": 7,
+        "nonCompleted": 7,
+        "responsesWithoutUsage": 7,
+        "maxOutputTokensPresent": 1,
+        "previousResponseId": 7,
+        "promptCacheKey": 0,
+        "requestsWithElisions": 0,
+        "placeholderAppearances": 0
+      },
+      "usage": {
+        "input": 3471748,
+        "cached": 3206912,
+        "uncached": 264836,
+        "output": 144600,
+        "reasoning": 116635,
+        "total": 3616348,
+        "cacheRate": 0.9237168135475271,
+        "complete": false
+      },
+      "latency": {
+        "requestDurationSumMs": 868482,
+        "p50Ms": 4905,
+        "p95Ms": 26178,
+        "maxInput": 122908,
+        "firstRequestCacheRate": 0.9885201419327907,
+        "remainingRequestsCacheRate": 0.9234474131385806,
+        "zeroCacheRequests": 1,
+        "observerDrainMs": 0
+      },
+      "reportUsageDelta": {
+        "input": 0,
+        "cached": 0,
+        "output": 0,
+        "total": 0
+      },
+      "endpoints": ["https://api.aicr.gccode.cn/responses"],
+      "groups": {
+        "high": {
+          "requests": 70,
+          "input": 2860689,
+          "cached": 2656000,
+          "output": 119198,
+          "reasoning": 102322,
+          "total": 2979887,
+          "cacheRate": 0.9284476571902783,
+          "durationMs": 707272
+        },
+        "medium": {
+          "requests": 35,
+          "input": 611059,
+          "cached": 550912,
+          "output": 25402,
+          "reasoning": 14313,
+          "total": 636461,
+          "cacheRate": 0.9015692429045313,
+          "durationMs": 160358
+        }
+      },
+      "eventCounts": {
+        "unparsed": 19,
+        "phase:start": 4,
+        "log": 14,
+        "phase:complete": 4,
+        "agent:start": 4,
+        "validation:issue": 12,
+        "validation:progress": 6,
+        "agent:complete": 4,
+        "validation:complete": 1,
+        "review:complete": 1,
+        "report": 1
+      },
+      "agents": [
+        {
+          "agent": "security-reviewer",
+          "status": "completed",
+          "issuesFound": 2,
+          "elapsedMs": 479935,
+          "timestamp": "2026-10-16T08:35:27.618Z"
+        },
+        {
+          "agent": "logic-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 479935,
+          "timestamp": "2026-10-16T08:35:27.618Z"
+        },
+        {
+          "agent": "performance-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 479935,
+          "timestamp": "2026-10-16T08:35:27.618Z"
+        },
+        {
+          "agent": "style-reviewer",
+          "status": "completed",
+          "issuesFound": 2,
+          "elapsedMs": 479935,
+          "timestamp": "2026-10-16T08:35:27.618Z"
+        }
+      ],
+      "agentTurns": [
+        {
+          "agent": "performance-reviewer",
+          "turns": 14,
+          "totalTokens": 243096
+        },
+        {
+          "agent": "style-reviewer",
+          "turns": 21,
+          "totalTokens": 433741
+        },
+        {
+          "agent": "security-reviewer",
+          "turns": 20,
+          "totalTokens": 438315
+        },
+        {
+          "agent": "logic-reviewer",
+          "turns": 45,
+          "totalTokens": 1863195
+        }
+      ],
+      "metrics": {
+        "total_scanned": 6,
+        "confirmed": 2,
+        "rejected": 4,
+        "uncertain": 0,
+        "by_severity": {
+          "critical": 0,
+          "error": 0,
+          "warning": 2,
+          "suggestion": 0
+        },
+        "by_category": {
+          "security": 2,
+          "logic": 0,
+          "performance": 0,
+          "style": 0,
+          "maintainability": 0
+        },
+        "files_reviewed": 10
+      },
+      "report": {
+        "risk_level": "low",
+        "metadata": {
+          "review_time_ms": 479982,
+          "input_tokens_used": 3471748,
+          "cached_input_tokens_used": 3206912,
+          "output_tokens_used": 144600,
+          "tokens_used": 3616348,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        },
+        "metrics": {
+          "total_scanned": 6,
+          "confirmed": 2,
+          "rejected": 4,
+          "uncertain": 0,
+          "by_severity": {
+            "critical": 0,
+            "error": 0,
+            "warning": 2,
+            "suggestion": 0
+          },
+          "by_category": {
+            "security": 2,
+            "logic": 0,
+            "performance": 0,
+            "style": 0,
+            "maintainability": 0
+          },
+          "files_reviewed": 10
+        },
+        "issues": [
+          {
+            "id": "security-reviewer-1792139364740-10dqt",
+            "severity": "warning",
+            "category": "security",
+            "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/UkagaisyoDetail/UkagaisyoDetailController.cs",
+            "line_start": 148,
+            "line_end": 154,
+            "title": "新增 CheckReferencePermission 接口的判定项由客户端传入，授权判定可被篡改绕过",
+            "validation_status": "confirmed"
+          },
+          {
+            "id": "security-reviewer-1792139364746-1h89o",
+            "severity": "warning",
+            "category": "security",
+            "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouAIController.cs",
+            "line_start": 132,
+            "line_end": 137,
+            "title": "重複警告新增相手伺書 FormId，重複チェック範囲为「すべての伺書」时泄露範囲外伺書信息",
+            "validation_status": "confirmed"
+          }
+        ]
+      },
+      "validationEvents": [
+        {
+          "issueId": "-ng-db--UkagaisyoDetailManager.cs",
+          "title": "権限判定 NG 时的回退循环按项目重复发起 DB 查询",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Domain/Shikkou/UkagaisyoDetail/UkagaisyoDetailManager.cs",
+          "line": 3442,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:28:26.644Z"
+        },
+        {
+          "issueId": "-ng-db--UkagaisyoDetailManager.cs",
+          "title": "権限判定 NG 时的回退循环按项目重复发起 DB 查询",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Domain/Shikkou/UkagaisyoDetail/UkagaisyoDetailManager.cs",
+          "line": 3442,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:28:26.645Z"
+        },
+        {
+          "issueId": "--ShikkouReferenceScopeHelper.cs",
+          "title": "参数注释与实际含义不符（疑似复制粘贴残留）",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Common/Utility/ShikkouReferenceScopeHelper.cs",
+          "line": 79,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:28:51.824Z"
+        },
+        {
+          "issueId": "--ShikkouReferenceScopeHelper.cs",
+          "title": "参数注释与实际含义不符（疑似复制粘贴残留）",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Common/Utility/ShikkouReferenceScopeHelper.cs",
+          "line": 79,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:28:51.824Z"
+        },
+        {
+          "issueId": "formtype--ShikkouAiDuplicateCheckModels.cs",
+          "title": "FormType 语义为「仅候補设置」但类型不可空，易被误读",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Domain/Shikkou/Ai/ShikkouAiDuplicateCheckModels.cs",
+          "line": 74,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:28:51.825Z"
+        },
+        {
+          "issueId": "formtype--ShikkouAiDuplicateCheckModels.cs",
+          "title": "FormType 语义为「仅候補设置」但类型不可空，易被误读",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Domain/Shikkou/Ai/ShikkouAiDuplicateCheckModels.cs",
+          "line": 74,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:28:51.825Z"
+        },
+        {
+          "issueId": "-checkreferencepermission--UkagaisyoDetailControll",
+          "title": "新增 CheckReferencePermission 接口的判定项由客户端传入，授权判定可被篡改绕过",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/UkagaisyoDetail/UkagaisyoDetailController.cs",
+          "line": 148,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:29:24.740Z"
+        },
+        {
+          "issueId": "-formid--ShikkouAIController.cs",
+          "title": "重複警告新增相手伺書 FormId，重複チェック範囲为「すべての伺書」时泄露範囲外伺書信息",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouAIController.cs",
+          "line": 132,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:29:24.747Z"
+        },
+        {
+          "issueId": "-checkreferencepermission--UkagaisyoDetailControll",
+          "title": "新增 CheckReferencePermission 接口的判定项由客户端传入，授权判定可被篡改绕过",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/UkagaisyoDetail/UkagaisyoDetailController.cs",
+          "line": 148,
+          "severity": "warning",
+          "status": "confirmed",
+          "timestamp": "2026-10-16T08:30:09.814Z"
+        },
+        {
+          "issueId": "-formid--ShikkouAIController.cs",
+          "title": "重複警告新增相手伺書 FormId，重複チェック範囲为「すべての伺書」时泄露範囲外伺書信息",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/LeySer.Yosan.Kaikei.API/Controllers/Shikkou/Ai/ShikkouAIController.cs",
+          "line": 132,
+          "severity": "warning",
+          "status": "confirmed",
+          "timestamp": "2026-10-16T08:31:11.484Z"
+        },
+        {
+          "issueId": "--Enum.cs",
+          "title": "参照権限判定结果枚举的真值语义易被误判为「可参照」",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Common/Enums/Enum.cs",
+          "line": 128,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:34:26.132Z"
+        },
+        {
+          "issueId": "--Enum.cs",
+          "title": "参照権限判定结果枚举的真值语义易被误判为「可参照」",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Yosan/Business/LeySer.Yosan.Kaikei.Core/Common/Enums/Enum.cs",
+          "line": 128,
+          "severity": "suggestion",
+          "status": "rejected",
+          "reason": "风险依赖本代码库中并不存在的『布尔语义判断』调用方；仓内所有调用方均与 Ok 严格比较，无实际缺陷，返回枚举亦为项目惯例，属可读性建议而非逻辑缺陷。",
+          "timestamp": "2026-10-16T08:35:07.279Z"
+        }
+      ],
+      "errorAndRetryEventTypes": [],
+      "foldLogCount": 0
+    },
+    {
+      "meta": {
+        "label": "sdk-pr7186-r1",
+        "impl": "sdk",
+        "round": 1,
+        "pr": 7186,
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "killSignals": [],
+        "start": "2026-10-16T07:58:09.043Z",
+        "end": "2026-10-16T08:10:39.737Z",
+        "wallMs": 750694,
+        "codeArgusCommit": "2dd07963fcb9fe68c703a65a6dbce6d9830db365",
+        "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+        "model": "deepseek-v4.1-flash",
+        "reasoningEffort": "high",
+        "validatorReasoningEffort": "medium",
+        "transcriptBudgetTokens": 160000,
+        "capMs": 2400000,
+        "diffSha256": "c1b1511801da21fadffdb9655ea77f01d490f38f7e29a7125e3414ec87e14cd0",
+        "diffBytes": 18474,
+        "files": 11,
+        "sourceTreeSha256": "507d69e98dd951ab3c2794597f15a230d37f0aeb7d86d69e164715e2fda5131d",
+        "args": [
+          "--import",
+          "/tmp/argus-ab-2dd0796-20261016/observe-current.mjs",
+          "/tmp/argus-ab-2dd0796-20261016/runtime/dist/index.js",
+          "review",
+          "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source3",
+          "--diff-file=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample3/pr.diff",
+          "--review-mode=fast",
+          "--language=zh",
+          "--json-logs",
+          "--pr-context=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample3/pr-context.json"
+        ],
+        "node": "v20.20.0"
+      },
+      "completion": {
+        "accepted": true,
+        "incompleteReasons": [],
+        "complete": {
+          "totalIssues": 0,
+          "elapsedMs": 749850,
+          "timestamp": "2026-10-16T08:10:39.721Z"
+        },
+        "reportMetadata": {
+          "review_time_ms": 749849,
+          "input_tokens_used": 2075593,
+          "cached_input_tokens_used": 1875840,
+          "output_tokens_used": 156926,
+          "tokens_used": 2232519,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        }
+      },
+      "comparisonAccepted": true,
+      "validationErrors": [],
+      "counts": {
+        "requests": 49,
+        "responses": 49,
+        "usage": 45,
+        "cache": 45,
+        "fetchErrors": 0,
+        "httpErrors": 4,
+        "nonCompleted": 4,
+        "responsesWithoutUsage": 4,
+        "maxOutputTokensPresent": 0,
+        "previousResponseId": 4,
+        "promptCacheKey": 0,
+        "requestsWithElisions": 0,
+        "placeholderAppearances": 0
+      },
+      "usage": {
+        "input": 2075593,
+        "cached": 1875840,
+        "uncached": 199753,
+        "output": 156926,
+        "reasoning": 145843,
+        "total": 2232519,
+        "cacheRate": 0.9037609974595212,
+        "complete": false
+      },
+      "latency": {
+        "requestDurationSumMs": 922914,
+        "p50Ms": 10134,
+        "p95Ms": 84387,
+        "maxInput": 153039,
+        "firstRequestCacheRate": 0.9826646854878652,
+        "remainingRequestsCacheRate": 0.9034527890218074,
+        "zeroCacheRequests": 0,
+        "observerDrainMs": 0
+      },
+      "reportUsageDelta": {
+        "input": 0,
+        "cached": 0,
+        "output": 0,
+        "total": 0
+      },
+      "endpoints": ["https://api.aicr.gccode.cn/responses"],
+      "groups": {
+        "high": {
+          "requests": 49,
+          "input": 2075593,
+          "cached": 1875840,
+          "output": 156926,
+          "reasoning": 145843,
+          "total": 2232519,
+          "cacheRate": 0.9037609974595212,
+          "durationMs": 922019
+        }
+      },
+      "eventCounts": {
+        "unparsed": 8,
+        "phase:start": 4,
+        "log": 13,
+        "phase:complete": 4,
+        "agent:start": 4,
+        "validation:issue": 4,
+        "agent:complete": 4,
+        "validation:complete": 1,
+        "review:complete": 1,
+        "report": 1
+      },
+      "agents": [
+        {
+          "agent": "security-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 749812,
+          "timestamp": "2026-10-16T08:10:39.719Z"
+        },
+        {
+          "agent": "logic-reviewer",
+          "status": "completed",
+          "issuesFound": 2,
+          "elapsedMs": 749812,
+          "timestamp": "2026-10-16T08:10:39.719Z"
+        },
+        {
+          "agent": "performance-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 749812,
+          "timestamp": "2026-10-16T08:10:39.719Z"
+        },
+        {
+          "agent": "style-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 749812,
+          "timestamp": "2026-10-16T08:10:39.719Z"
+        }
+      ],
+      "agentTurns": [
+        {
+          "agent": "security-reviewer",
+          "turns": 8,
+          "totalTokens": 69105
+        },
+        {
+          "agent": "style-reviewer",
+          "turns": 7,
+          "totalTokens": 92954
+        },
+        {
+          "agent": "performance-reviewer",
+          "turns": 12,
+          "totalTokens": 207901
+        },
+        {
+          "agent": "logic-reviewer",
+          "turns": 44,
+          "totalTokens": 1862559
+        }
+      ],
+      "metrics": {
+        "total_scanned": 2,
+        "confirmed": 0,
+        "rejected": 2,
+        "uncertain": 0,
+        "by_severity": {
+          "critical": 0,
+          "error": 0,
+          "warning": 0,
+          "suggestion": 0
+        },
+        "by_category": {
+          "security": 0,
+          "logic": 0,
+          "performance": 0,
+          "style": 0,
+          "maintainability": 0
+        },
+        "files_reviewed": 11
+      },
+      "report": {
+        "risk_level": "low",
+        "metadata": {
+          "review_time_ms": 749849,
+          "input_tokens_used": 2075593,
+          "cached_input_tokens_used": 1875840,
+          "output_tokens_used": 156926,
+          "tokens_used": 2232519,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        },
+        "metrics": {
+          "total_scanned": 2,
+          "confirmed": 0,
+          "rejected": 2,
+          "uncertain": 0,
+          "by_severity": {
+            "critical": 0,
+            "error": 0,
+            "warning": 0,
+            "suggestion": 0
+          },
+          "by_category": {
+            "security": 0,
+            "logic": 0,
+            "performance": 0,
+            "style": 0,
+            "maintainability": 0
+          },
+          "files_reviewed": 11
+        },
+        "issues": []
+      },
+      "validationEvents": [
+        {
+          "issueId": "--SchoolNetDiskController.cs",
+          "title": "分批删除改为基于网盘实际文件后，业务表中“无网盘文件/已隐藏”的申告书记录不会被清理",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/LeySer.Startups.WorkSite.API/Controllers/Common/NetDisk/SchoolNetDiskController.cs",
+          "line": 564,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:10:14.662Z"
+        },
+        {
+          "issueId": "--SchoolNetDiskController.cs",
+          "title": "分批删除改为基于网盘实际文件后，业务表中“无网盘文件/已隐藏”的申告书记录不会被清理",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/LeySer.Startups.WorkSite.API/Controllers/Common/NetDisk/SchoolNetDiskController.cs",
+          "line": 564,
+          "severity": "warning",
+          "status": "auto_rejected",
+          "reason": "置信度过低 (0.45 < 0.5)",
+          "timestamp": "2026-10-16T08:10:14.663Z"
+        },
+        {
+          "issueId": "bulkdeletedeclarationfileasync-NetDiskManager.cs",
+          "title": "BulkDeleteDeclarationFileAsync 删除件数/大小改由调用方提供，且移除了“无文件即返回”的兜底校验",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/Business/Common/LeySer.Work.Domain.Common/NetDisk/NetDiskManager.cs",
+          "line": 522,
+          "severity": "suggestion",
+          "status": "discovered",
+          "timestamp": "2026-10-16T08:10:14.663Z"
+        },
+        {
+          "issueId": "bulkdeletedeclarationfileasync-NetDiskManager.cs",
+          "title": "BulkDeleteDeclarationFileAsync 删除件数/大小改由调用方提供，且移除了“无文件即返回”的兜底校验",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Work/Business/Common/LeySer.Work.Domain.Common/NetDisk/NetDiskManager.cs",
+          "line": 522,
+          "severity": "suggestion",
+          "status": "auto_rejected",
+          "reason": "低信号软建议：默认不进入验证或最终报告",
+          "timestamp": "2026-10-16T08:10:14.663Z"
+        }
+      ],
+      "errorAndRetryEventTypes": [],
+      "foldLogCount": 0
+    },
+    {
+      "meta": {
+        "label": "sdk-pr7191-r1",
+        "impl": "sdk",
+        "round": 1,
+        "pr": 7191,
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "killSignals": [],
+        "start": "2026-10-16T07:54:33.725Z",
+        "end": "2026-10-16T07:58:08.998Z",
+        "wallMs": 215273,
+        "codeArgusCommit": "2dd07963fcb9fe68c703a65a6dbce6d9830db365",
+        "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+        "model": "deepseek-v4.1-flash",
+        "reasoningEffort": "high",
+        "validatorReasoningEffort": "medium",
+        "transcriptBudgetTokens": 160000,
+        "capMs": 2400000,
+        "diffSha256": "22945dbe7ac65b78fd083d93ce191f342c2a6a4fe9640693ec10dc156f23e6d5",
+        "diffBytes": 10200,
+        "files": 6,
+        "sourceTreeSha256": "172b314cbebc066170d72df99511f59b4c7100df13c675a577c8c530d055283f",
+        "args": [
+          "--import",
+          "/tmp/argus-ab-2dd0796-20261016/observe-current.mjs",
+          "/tmp/argus-ab-2dd0796-20261016/runtime/dist/index.js",
+          "review",
+          "/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/source2",
+          "--diff-file=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample2/pr.diff",
+          "--review-mode=fast",
+          "--language=zh",
+          "--json-logs",
+          "--pr-context=/tmp/argus-ab-c8cbf1e-20261014-gIH7A9/sample2/pr-context.json"
+        ],
+        "node": "v20.20.0"
+      },
+      "completion": {
+        "accepted": true,
+        "incompleteReasons": [],
+        "complete": {
+          "totalIssues": 0,
+          "elapsedMs": 214395,
+          "timestamp": "2026-10-16T07:58:08.982Z"
+        },
+        "reportMetadata": {
+          "review_time_ms": 214393,
+          "input_tokens_used": 542633,
+          "cached_input_tokens_used": 452480,
+          "output_tokens_used": 52169,
+          "tokens_used": 594802,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        }
+      },
+      "comparisonAccepted": true,
+      "validationErrors": [],
+      "counts": {
+        "requests": 33,
+        "responses": 33,
+        "usage": 29,
+        "cache": 29,
+        "fetchErrors": 0,
+        "httpErrors": 4,
+        "nonCompleted": 4,
+        "responsesWithoutUsage": 4,
+        "maxOutputTokensPresent": 0,
+        "previousResponseId": 4,
+        "promptCacheKey": 0,
+        "requestsWithElisions": 0,
+        "placeholderAppearances": 0
+      },
+      "usage": {
+        "input": 542633,
+        "cached": 452480,
+        "uncached": 90153,
+        "output": 52169,
+        "reasoning": 44357,
+        "total": 594802,
+        "cacheRate": 0.833860085914421,
+        "complete": false
+      },
+      "latency": {
+        "requestDurationSumMs": 319472,
+        "p50Ms": 5976,
+        "p95Ms": 32013,
+        "maxInput": 52335,
+        "firstRequestCacheRate": 0.9614202799590303,
+        "remainingRequestsCacheRate": 0.8324679800661358,
+        "zeroCacheRequests": 0,
+        "observerDrainMs": 0
+      },
+      "reportUsageDelta": {
+        "input": 0,
+        "cached": 0,
+        "output": 0,
+        "total": 0
+      },
+      "endpoints": ["https://api.aicr.gccode.cn/responses"],
+      "groups": {
+        "high": {
+          "requests": 33,
+          "input": 542633,
+          "cached": 452480,
+          "output": 52169,
+          "reasoning": 44357,
+          "total": 594802,
+          "cacheRate": 0.833860085914421,
+          "durationMs": 318472
+        }
+      },
+      "eventCounts": {
+        "unparsed": 8,
+        "phase:start": 4,
+        "log": 13,
+        "phase:complete": 4,
+        "agent:start": 4,
+        "validation:issue": 2,
+        "agent:complete": 4,
+        "validation:complete": 1,
+        "review:complete": 1,
+        "report": 1
+      },
+      "agents": [
+        {
+          "agent": "security-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 214357,
+          "timestamp": "2026-10-16T07:58:08.980Z"
+        },
+        {
+          "agent": "logic-reviewer",
+          "status": "completed",
+          "issuesFound": 1,
+          "elapsedMs": 214357,
+          "timestamp": "2026-10-16T07:58:08.980Z"
+        },
+        {
+          "agent": "performance-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 214357,
+          "timestamp": "2026-10-16T07:58:08.980Z"
+        },
+        {
+          "agent": "style-reviewer",
+          "status": "completed",
+          "issuesFound": 0,
+          "elapsedMs": 214357,
+          "timestamp": "2026-10-16T07:58:08.981Z"
+        }
+      ],
+      "agentTurns": [
+        {
+          "agent": "performance-reviewer",
+          "turns": 5,
+          "totalTokens": 41417
+        },
+        {
+          "agent": "security-reviewer",
+          "turns": 12,
+          "totalTokens": 98100
+        },
+        {
+          "agent": "style-reviewer",
+          "turns": 8,
+          "totalTokens": 90934
+        },
+        {
+          "agent": "logic-reviewer",
+          "turns": 23,
+          "totalTokens": 364351
+        }
+      ],
+      "metrics": {
+        "total_scanned": 1,
+        "confirmed": 0,
+        "rejected": 1,
+        "uncertain": 0,
+        "by_severity": {
+          "critical": 0,
+          "error": 0,
+          "warning": 0,
+          "suggestion": 0
+        },
+        "by_category": {
+          "security": 0,
+          "logic": 0,
+          "performance": 0,
+          "style": 0,
+          "maintainability": 0
+        },
+        "files_reviewed": 6
+      },
+      "report": {
+        "risk_level": "low",
+        "metadata": {
+          "review_time_ms": 214393,
+          "input_tokens_used": 542633,
+          "cached_input_tokens_used": 452480,
+          "output_tokens_used": 52169,
+          "tokens_used": 594802,
+          "agents_used": [
+            "security-reviewer",
+            "logic-reviewer",
+            "performance-reviewer",
+            "style-reviewer"
+          ]
+        },
+        "metrics": {
+          "total_scanned": 1,
+          "confirmed": 0,
+          "rejected": 1,
+          "uncertain": 0,
+          "by_severity": {
+            "critical": 0,
+            "error": 0,
+            "warning": 0,
+            "suggestion": 0
+          },
+          "by_category": {
+            "security": 0,
+            "logic": 0,
+            "performance": 0,
+            "style": 0,
+            "maintainability": 0
+          },
+          "files_reviewed": 6
+        },
+        "issues": []
+      },
+      "validationEvents": [
+        {
+          "issueId": "ai-ocr--AIOcrFileManager.cs",
+          "title": "AI OCR 原值字段被无条件覆盖，可能用空值清空已保存原值",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Base/Microservices/Business/LeySer.Base.EFCore.Kaikei/Repositories/AttachFileRepositories/AIOcrFileManager.cs",
+          "line": 109,
+          "severity": "warning",
+          "status": "discovered",
+          "timestamp": "2026-10-16T07:58:04.397Z"
+        },
+        {
+          "issueId": "ai-ocr--AIOcrFileManager.cs",
+          "title": "AI OCR 原值字段被无条件覆盖，可能用空值清空已保存原值",
+          "file": "BackEnd/SourceCode/LeySer.Fuji.Service.Base/Microservices/Business/LeySer.Base.EFCore.Kaikei/Repositories/AttachFileRepositories/AIOcrFileManager.cs",
+          "line": 109,
+          "severity": "warning",
+          "status": "auto_rejected",
+          "reason": "置信度过低 (0.45 < 0.5)",
+          "timestamp": "2026-10-16T07:58:04.397Z"
+        }
+      ],
+      "errorAndRetryEventTypes": [],
+      "foldLogCount": 0
+    }
+  ],
+  "totals": {
+    "pi-ai": {
+      "runs": 4,
+      "accepted": 4,
+      "wallMs": 1704124,
+      "requests": 223,
+      "input": 9005177,
+      "cached": 8249088,
+      "uncached": 756089,
+      "output": 458984,
+      "total": 9464161,
+      "cacheRate": 0.9160384076848239,
+      "reasoning": 397280,
+      "scanned": 14,
+      "confirmed": 2,
+      "rejected": 12
+    },
+    "sdk": {
+      "runs": 4,
+      "accepted": 4,
+      "wallMs": 2030563,
+      "requests": 273,
+      "input": 9824303,
+      "cached": 9007872,
+      "uncached": 816431,
+      "output": 503221,
+      "total": 10327524,
+      "cacheRate": 0.9168968017374871,
+      "reasoning": 431415,
+      "scanned": 14,
+      "confirmed": 3,
+      "rejected": 11
+    }
+  },
+  "verification": {
+    "midBatch": {
+      "at": "2026-10-16T08:06:17.424Z",
+      "samples": [
+        {
+          "pr": 7182,
+          "sourceTreeSha256": "b9da7c3b196785152343f0613474d1069b7466dfd6d97da5cbb966f3ea521367",
+          "sourceMatches": true,
+          "diffSha256": "43184ee77bbdc0166ddc1a34c553aee08e9d5a2e940bdb9f4bd85a9967a79f3a",
+          "diffMatches": true,
+          "prContextSha256": "bcd2925ec2bdaaffda3dc7b01efdfb44053e24c7c58cc253f8d4292cc87da1b1",
+          "prContextMatches": true
+        },
+        {
+          "pr": 7191,
+          "sourceTreeSha256": "172b314cbebc066170d72df99511f59b4c7100df13c675a577c8c530d055283f",
+          "sourceMatches": true,
+          "diffSha256": "22945dbe7ac65b78fd083d93ce191f342c2a6a4fe9640693ec10dc156f23e6d5",
+          "diffMatches": true,
+          "prContextSha256": "f38db3a194ea78e390380fe49929109cc3820bdba1940bbcaf4677d325f4b948",
+          "prContextMatches": true
+        },
+        {
+          "pr": 7186,
+          "sourceTreeSha256": "507d69e98dd951ab3c2794597f15a230d37f0aeb7d86d69e164715e2fda5131d",
+          "sourceMatches": true,
+          "diffSha256": "c1b1511801da21fadffdb9655ea77f01d490f38f7e29a7125e3414ec87e14cd0",
+          "diffMatches": true,
+          "prContextSha256": "6b39f1de8600d725186892f3ab3e285e89566af64272ddcee47e539596008250",
+          "prContextMatches": true
+        },
+        {
+          "pr": 7183,
+          "sourceTreeSha256": "5a56c3e234f704b53e98677d58e3014491a690052864033e3abbb177347e3c16",
+          "sourceMatches": true,
+          "diffSha256": "01e8ac008bf9b96f08f1210f319fdb15034396c708e3ad69291915c7dfbaa3cd",
+          "diffMatches": true,
+          "prContextSha256": "5fb26c3371dd076b78362b46c2a11dd4fd4deac804f3595651a6842f9be26320",
+          "prContextMatches": true
+        }
+      ],
+      "runtimeDist": {
+        "sha256": "41c092b59cdf588c392644cda9ccaf104a9729e377b19606d9bed31d0bdc2c09",
+        "files": 289,
+        "bytes": 1337344
+      },
+      "runtimeDistMatches": true,
+      "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+      "buildMatches": true,
+      "environment": {
+        "sha256": "e93714ca57bd8646ac9cbc79aacfc21f533e6efd0025d6721aef96aad43d7646",
+        "bytes": 4756,
+        "mtime": "2026-10-13T08:38:49.272Z",
+        "argusKeyNames": [
+          "ARGUS_ANTHROPIC_API_KEY",
+          "ARGUS_ANTHROPIC_BASE_URL",
+          "ARGUS_CLI_PATH",
+          "ARGUS_CONFIG_DIR",
+          "ARGUS_MODEL",
+          "ARGUS_OPENAI_BASE_URL",
+          "ARGUS_OPENAI_RESPONSE_IMPL",
+          "ARGUS_REASONING_EFFORT",
+          "ARGUS_RUNTIME"
+        ],
+        "proxyKeyNames": []
+      }
+    },
+    "final": {
+      "at": "2026-10-16T08:54:27.494Z",
+      "samples": [
+        {
+          "pr": 7182,
+          "sourceTreeSha256": "b9da7c3b196785152343f0613474d1069b7466dfd6d97da5cbb966f3ea521367",
+          "sourceMatches": true,
+          "diffSha256": "43184ee77bbdc0166ddc1a34c553aee08e9d5a2e940bdb9f4bd85a9967a79f3a",
+          "diffMatches": true,
+          "prContextSha256": "bcd2925ec2bdaaffda3dc7b01efdfb44053e24c7c58cc253f8d4292cc87da1b1",
+          "prContextMatches": true
+        },
+        {
+          "pr": 7191,
+          "sourceTreeSha256": "172b314cbebc066170d72df99511f59b4c7100df13c675a577c8c530d055283f",
+          "sourceMatches": true,
+          "diffSha256": "22945dbe7ac65b78fd083d93ce191f342c2a6a4fe9640693ec10dc156f23e6d5",
+          "diffMatches": true,
+          "prContextSha256": "f38db3a194ea78e390380fe49929109cc3820bdba1940bbcaf4677d325f4b948",
+          "prContextMatches": true
+        },
+        {
+          "pr": 7186,
+          "sourceTreeSha256": "507d69e98dd951ab3c2794597f15a230d37f0aeb7d86d69e164715e2fda5131d",
+          "sourceMatches": true,
+          "diffSha256": "c1b1511801da21fadffdb9655ea77f01d490f38f7e29a7125e3414ec87e14cd0",
+          "diffMatches": true,
+          "prContextSha256": "6b39f1de8600d725186892f3ab3e285e89566af64272ddcee47e539596008250",
+          "prContextMatches": true
+        },
+        {
+          "pr": 7183,
+          "sourceTreeSha256": "5a56c3e234f704b53e98677d58e3014491a690052864033e3abbb177347e3c16",
+          "sourceMatches": true,
+          "diffSha256": "01e8ac008bf9b96f08f1210f319fdb15034396c708e3ad69291915c7dfbaa3cd",
+          "diffMatches": true,
+          "prContextSha256": "5fb26c3371dd076b78362b46c2a11dd4fd4deac804f3595651a6842f9be26320",
+          "prContextMatches": true
+        }
+      ],
+      "runtimeDist": {
+        "sha256": "41c092b59cdf588c392644cda9ccaf104a9729e377b19606d9bed31d0bdc2c09",
+        "files": 289,
+        "bytes": 1337344
+      },
+      "runtimeDistMatches": true,
+      "buildSha256": "d54974544ce501a2a1a71efe021ab5e5dbf729c84e110081621e90a61dfdda5b",
+      "buildMatches": true,
+      "environment": {
+        "sha256": "e93714ca57bd8646ac9cbc79aacfc21f533e6efd0025d6721aef96aad43d7646",
+        "bytes": 4756,
+        "mtime": "2026-10-13T08:38:49.272Z",
+        "argusKeyNames": [
+          "ARGUS_ANTHROPIC_API_KEY",
+          "ARGUS_ANTHROPIC_BASE_URL",
+          "ARGUS_CLI_PATH",
+          "ARGUS_CONFIG_DIR",
+          "ARGUS_MODEL",
+          "ARGUS_OPENAI_BASE_URL",
+          "ARGUS_OPENAI_RESPONSE_IMPL",
+          "ARGUS_REASONING_EFFORT",
+          "ARGUS_RUNTIME"
+        ],
+        "proxyKeyNames": []
+      }
+    },
+    "credentialScan": {
+      "at": "2026-10-16T08:54:52.575Z",
+      "filesScanned": 52,
+      "credentialValuesChecked": 11,
+      "ok": true,
+      "matches": []
+    }
+  },
+  "reportSourceEvidenceIncluded": false
+}

@@ -34,6 +34,11 @@ export interface RuntimeExecuteOptions {
   abortController?: AbortController;
   tools?: RuntimeToolDefinition<any>[];
   toolNamespace?: string;
+  /**
+   * 本次执行的推理强度覆盖值（例如验证阶段缺省降到 medium）。
+   * 未设置时沿用 runtime config 的全局值。
+   */
+  reasoningEffort?: string;
   /** Reviewer-only closing phase; validators and other runtime users opt out. */
   completionBudget?: { reserveTurns: number; toolNames: string[] };
 }
@@ -64,6 +69,7 @@ export interface RuntimeResultEvent {
   type: 'result';
   status: string;
   text?: string;
+  /** All reported requests for this prompt, including tool turns; excludes earlier prompts. */
   usage?: RuntimeUsage;
   error?: string;
   /**

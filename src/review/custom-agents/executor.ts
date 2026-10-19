@@ -8,7 +8,14 @@ import { z } from 'zod';
 
 import { createRuntimeFromEnv } from '../../runtime/factory.js';
 import type { RuntimeExecution, RuntimeToolDefinition } from '../../runtime/types.js';
-import type { IssueCategory, RawIssue, Severity } from '../types.js';
+import {
+  ISSUE_CATEGORIES,
+  isRecognizedIssueCategory,
+  normalizeIssueCategory,
+  type IssueCategory,
+  type RawIssue,
+  type Severity,
+} from '../types.js';
 import type { CustomAgentIssue, CustomAgentResult, LoadedCustomAgent } from './types.js';
 import { CUSTOM_AGENT_DEFAULTS } from './types.js';
 
@@ -150,7 +157,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           .optional()
           .describe(`Issue severity level (default: ${defaultSeverity || 'warning'})`),
         category: z
-          .enum(['security', 'logic', 'performance', 'style', 'maintainability'])
+          .enum([...ISSUE_CATEGORIES])
           .optional()
           .describe(`Issue category (default: ${defaultCategory})`),
         title: z.string().describe(`Short title in ${langLabel}`),
@@ -166,13 +173,35 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
         const issueId = `${agent.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
+        // 模型回传的 category 不带校验会一路流进按枚举索引的消费者
+        // （by_category 计数变 NaN、groupByCategory 直接抛错）；越界取值直接拒绝。
+        if (args.category !== undefined && !isRecognizedIssueCategory(args.category)) {
+          if (verbose) {
+            console.log(
+              `[CustomAgent:${agent.name}] rejected issue "${args.title}" - unknown category: ${String(args.category)}`
+            );
+          }
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text:
+                  `Issue rejected (ID: ${issueId})\n` +
+                  `Reason: unknown category "${String(args.category)}". ` +
+                  `Valid categories: ${ISSUE_CATEGORIES.join(', ')}. ` +
+                  'Re-call report_issue for the same finding with a valid category.',
+              },
+            ],
+          };
+        }
+
         const rawIssue: RawIssue = {
           id: issueId,
           file: args.file,
           line_start: args.line_start,
           line_end: args.line_end,
           severity: (args.severity || defaultSeverity || 'warning') as Severity,
-          category: (args.category || defaultCategory) as IssueCategory,
+          category: normalizeIssueCategory(args.category || defaultCategory),
           title: args.title,
           description: args.description,
           suggestion: args.suggestion,
@@ -292,6 +321,9 @@ export async function executeCustomAgent(
         tokensUsed = inputTokensUsed + outputTokensUsed;
       }
 
+      if (event.status === 'error') {
+        throw new Error(event.error || 'Custom agent runtime returned error');
+      }
       if (event.status !== 'success' && options.verbose) {
         console.error(`[CustomAgentExecutor] Agent ${agent.name} error:`, event.status);
       }
