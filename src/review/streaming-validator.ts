@@ -85,6 +85,11 @@ function isValidationContextLimitText(text: string): boolean {
     normalized.includes('request too large') ||
     normalized.includes('request entity too large') ||
     normalized.includes('payload too large') ||
+    // sdk 运行时把 provider 错误转成 result 事件后不再携带 error.status；openai-node 对
+    // 「有状态码、无响应体」的响应给出固定文案 "413 status code (no body)"。413 在
+    // Responses API 上就是请求体超限，显式识别它，保证结果事件路径与抛错路径（按
+    // error.status 判定）分类一致。
+    normalized.includes('413 status code (no body)') ||
     (normalized.includes('413') &&
       (normalized.includes('openresty') ||
         normalized.includes('too large') ||
@@ -804,6 +809,10 @@ export class StreamingValidator {
           cwd: this.options.repoPath,
           maxTurns,
           model: runtime.config.models.validator,
+          // 验证阶段默认降档推理（主流程高于 medium 时；可被 env 覆盖）。
+          ...(runtime.config.validatorReasoningEffort
+            ? { reasoningEffort: runtime.config.validatorReasoningEffort }
+            : {}),
           settingSources: ['project'],
           tools: repoContextTools,
         });
@@ -838,9 +847,11 @@ export class StreamingValidator {
               }
 
               const inputTokens = event.usage?.inputTokens ?? 0;
+              const cachedInputTokens = event.usage?.cachedInputTokens ?? 0;
               const outputTokens = event.usage?.outputTokens ?? 0;
               const turnTokens = inputTokens + outputTokens;
               session.inputTokensUsed += inputTokens;
+              session.cachedInputTokensUsed += cachedInputTokens;
               session.outputTokensUsed += outputTokens;
               session.tokensUsed += turnTokens;
 
@@ -1074,6 +1085,9 @@ export class StreamingValidator {
           cwd: this.options.repoPath,
           maxTurns,
           model: runtime.config.models.validator,
+          ...(runtime.config.validatorReasoningEffort
+            ? { reasoningEffort: runtime.config.validatorReasoningEffort }
+            : {}),
           settingSources: ['project'],
           ...(repoContextTools.length > 0 ? { tools: repoContextTools } : {}),
         });

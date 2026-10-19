@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildValidationSystemPrompt,
   getValidationPromptConfig,
@@ -166,6 +166,45 @@ describe('Validation Prompts', () => {
       expect(
         config.rejectionCriteria.some((criterion) => criterion.includes('bottleneck evidence'))
       ).toBe(true);
+    });
+  });
+
+  describe('Unknown categories', () => {
+    it('should fall back to the base template instead of crashing', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const prompt = buildValidationSystemPrompt('documentation' as IssueCategory, {
+        language: 'zh',
+      });
+
+      expect(prompt).toContain('You are an expert code reviewer');
+      expect(prompt).toContain('Chinese (中文)');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('documentation'));
+
+      warn.mockRestore();
+    });
+
+    it('should resolve unknown categories to a safe prompt config', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const config = getValidationPromptConfig('documentation' as IssueCategory);
+
+      expect(config).toBeDefined();
+      expect(config.additionalSystemPrompt).toBe('');
+      expect(config.validationFocus).toEqual([]);
+
+      warn.mockRestore();
+    });
+
+    it('should not treat prototype properties as category configs', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const config = getValidationPromptConfig('toString' as IssueCategory);
+
+      expect(config.additionalSystemPrompt).toBe('');
+      expect(config.validationFocus).toEqual([]);
+
+      warn.mockRestore();
     });
   });
 });

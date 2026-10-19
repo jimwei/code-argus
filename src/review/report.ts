@@ -4,20 +4,21 @@
  * Generates review reports in various formats (JSON, Markdown).
  */
 
-import type {
-  ReviewReport,
-  ReviewMetrics,
-  ValidatedIssue,
-  ChecklistItem,
-  Severity,
-  IssueCategory,
-  RiskLevel,
-  ReviewContext,
-  RawIssue,
-  AgentType,
-  FixVerificationSummary,
-  FixVerificationResult,
-  ReviewMetadata,
+import {
+  normalizeIssueCategory,
+  type ReviewReport,
+  type ReviewMetrics,
+  type ValidatedIssue,
+  type ChecklistItem,
+  type Severity,
+  type IssueCategory,
+  type RiskLevel,
+  type ReviewContext,
+  type RawIssue,
+  type AgentType,
+  type FixVerificationSummary,
+  type FixVerificationResult,
+  type ReviewMetadata,
 } from './types.js';
 import { groupBySeverity, normalizeSeverity } from './aggregator.js';
 
@@ -230,7 +231,7 @@ export function calculateMetrics(
 
   for (const issue of validatedIssues) {
     bySeverity[normalizeSeverity(issue.severity)]++;
-    byCategory[issue.category]++;
+    byCategory[normalizeIssueCategory(issue.category)]++;
   }
 
   return {

@@ -22,6 +22,18 @@ export type OpenAIResponsesImpl = 'pi-ai' | 'sdk';
 
 export const DEFAULT_OPENAI_RESPONSE_IMPL: OpenAIResponsesImpl = 'sdk';
 
+/**
+ * pi-ai 路径的会话 transcript 预算（估算 token）。超过预算时最旧的工具输出
+ * 会被折叠成占位文本，避免长会话把每次请求越滚越大；`0` 表示禁用。
+ */
+export const DEFAULT_TRANSCRIPT_BUDGET_TOKENS = 160_000;
+
+/** pi-ai 词汇表里的推理档位；用于给验证阶段做降档。 */
+const REASONING_EFFORT_RANKS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** 两套实现都认识的推理档位（外加显式关闭推理的 `none`）。 */
+const REASONING_EFFORT_VALUES = new Set<string>(['none', ...REASONING_EFFORT_RANKS]);
+
 export interface ClaudeAuthConfig {
   apiKey: string;
   baseUrl?: string;
@@ -33,14 +45,9 @@ export interface OpenAIAuthConfig {
   baseUrl?: string;
   source: 'argus' | 'openai-api';
   /**
-   * 部署侧声明网关是否接受 `max_output_tokens`；不接受时由 pi-ai 省略该参数。
-   * 读自 ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS，未设置时按 true 处理。
-   */
-  supportsMaxOutputTokens?: boolean;
-  /**
-   * 部署侧声明网关是否接受 `developer` 角色消息。开启推理时 pi-ai 会把首条指令
-   * 以 developer 角色发出（未开启推理时为 system）。读自
-   * ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE，未设置时按 true 处理。
+   * 仅决定 pi-ai 构造首条指令时使用的角色（developer / system）；运行时随后会把
+   * 该指令搬到顶层 `instructions` 字段，因此该开关不再改变出站请求，标记为废弃。
+   * 读自 ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE，未设置时按 true 处理。
    */
   supportsDeveloperRole?: boolean;
   /**
@@ -48,6 +55,11 @@ export interface OpenAIAuthConfig {
    * 缺省 `sdk`。仅对 `openai-responses` 运行时生效。
    */
   responseImpl?: OpenAIResponsesImpl;
+  /**
+   * pi-ai 路径的 transcript 预算，读自 ARGUS_TRANSCRIPT_BUDGET_TOKENS，
+   * 缺省 160000；`0` 表示禁用（字段缺省）。
+   */
+  transcriptBudgetTokens?: number;
 }
 
 /**
@@ -91,6 +103,62 @@ function resolveOpenAIResponsesImpl(raw: string | undefined): OpenAIResponsesImp
   return DEFAULT_OPENAI_RESPONSE_IMPL;
 }
 
+/**
+ * 解析 `ARGUS_TRANSCRIPT_BUDGET_TOKENS`：正整数为预算，`0`/负数表示禁用，
+ * 非法值回退默认并告警。
+ */
+function resolveTranscriptBudgetTokens(raw: string | undefined): number | undefined {
+  const value = raw?.trim();
+  if (!value) {
+    return DEFAULT_TRANSCRIPT_BUDGET_TOKENS;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || `${parsed}` !== value) {
+    console.warn(
+      `[ArgusRuntimeConfig] Unsupported ARGUS_TRANSCRIPT_BUDGET_TOKENS "${value}", falling back to ${DEFAULT_TRANSCRIPT_BUDGET_TOKENS}`
+    );
+    return DEFAULT_TRANSCRIPT_BUDGET_TOKENS;
+  }
+
+  return parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * 验证阶段的推理强度：主流程档位高于 medium 时默认降到 medium，
+ * 其余情况沿用主流程档位；`ARGUS_VALIDATOR_REASONING_EFFORT` 可显式覆盖。
+ */
+function resolveValidatorReasoningEffort(mainEffort: string | undefined): string | undefined {
+  const rawOverride = process.env.ARGUS_VALIDATOR_REASONING_EFFORT?.trim();
+  if (rawOverride) {
+    const override = rawOverride.toLowerCase();
+    if (REASONING_EFFORT_VALUES.has(override)) {
+      return override;
+    }
+
+    // 拼写错误或不在词表里的取值会一路透传给上游并让每个验证请求失败，
+    // 这里回退到默认降档策略（与 ARGUS_REASONING_EFFORT 的容错方向一致）。
+    console.warn(
+      `[ArgusRuntimeConfig] Unsupported ARGUS_VALIDATOR_REASONING_EFFORT "${rawOverride}", ` +
+        'falling back to the default validator policy'
+    );
+  }
+
+  if (!mainEffort) {
+    return undefined;
+  }
+
+  const rank = REASONING_EFFORT_RANKS.indexOf(
+    mainEffort as (typeof REASONING_EFFORT_RANKS)[number]
+  );
+  if (rank === -1) {
+    // 未知档位原样透传（与主流程一致，由 runtime 决定行为）。
+    return mainEffort;
+  }
+
+  return rank > REASONING_EFFORT_RANKS.indexOf('medium') ? 'medium' : mainEffort;
+}
+
 export interface ArgusRuntimeConfig {
   runtime: ArgusRuntimeType;
   models: {
@@ -103,6 +171,11 @@ export interface ArgusRuntimeConfig {
    * Read from ARGUS_REASONING_EFFORT; unset means "let the provider decide".
    */
   reasoningEffort?: string;
+  /**
+   * 验证阶段的推理强度（主流程高于 medium 时缺省降档到 medium）。
+   * 读自 ARGUS_VALIDATOR_REASONING_EFFORT；主流程未配置时缺省不设置。
+   */
+  validatorReasoningEffort?: string;
   claude?: ClaudeAuthConfig;
   openai?: OpenAIAuthConfig;
 }
@@ -171,15 +244,13 @@ function getClaudeAuthConfig(): ClaudeAuthConfig {
 
 function getOpenAIAuthConfig(): OpenAIAuthConfig {
   const responseImpl = resolveOpenAIResponsesImpl(process.env.ARGUS_OPENAI_RESPONSE_IMPL);
-  const supportsMaxOutputTokens = resolveBooleanEnv(
-    process.env.ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS,
-    true,
-    'ARGUS_OPENAI_SUPPORTS_MAX_OUTPUT_TOKENS'
-  );
   const supportsDeveloperRole = resolveBooleanEnv(
     process.env.ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE,
     true,
     'ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE'
+  );
+  const transcriptBudgetTokens = resolveTranscriptBudgetTokens(
+    process.env.ARGUS_TRANSCRIPT_BUDGET_TOKENS
   );
   const argusApiKey = process.env.ARGUS_OPENAI_API_KEY;
   if (argusApiKey) {
@@ -187,9 +258,9 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       apiKey: argusApiKey,
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'argus',
-      supportsMaxOutputTokens,
       supportsDeveloperRole,
       responseImpl,
+      ...(transcriptBudgetTokens !== undefined ? { transcriptBudgetTokens } : {}),
     };
   }
 
@@ -199,9 +270,9 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       apiKey: openaiApiKey,
       baseUrl: process.env.ARGUS_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL,
       source: 'openai-api',
-      supportsMaxOutputTokens,
       supportsDeveloperRole,
       responseImpl,
+      ...(transcriptBudgetTokens !== undefined ? { transcriptBudgetTokens } : {}),
     };
   }
 
@@ -245,6 +316,7 @@ export function loadArgusRuntimeConfig(): ArgusRuntimeConfig {
   const lightModel = process.env.ARGUS_LIGHT_MODEL || mainModel || DEFAULT_LIGHT_MODEL;
   const validatorModel = process.env.ARGUS_VALIDATOR_MODEL || mainModel;
   const reasoningEffort = getReasoningEffort();
+  const validatorReasoningEffort = resolveValidatorReasoningEffort(reasoningEffort);
 
   if (runtime === 'claude-agent') {
     return {
@@ -255,6 +327,7 @@ export function loadArgusRuntimeConfig(): ArgusRuntimeConfig {
         validator: validatorModel,
       },
       ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(validatorReasoningEffort ? { validatorReasoningEffort } : {}),
       claude: getClaudeAuthConfig(),
     };
   }
@@ -267,6 +340,7 @@ export function loadArgusRuntimeConfig(): ArgusRuntimeConfig {
       validator: validatorModel,
     },
     ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(validatorReasoningEffort ? { validatorReasoningEffort } : {}),
     openai: getOpenAIAuthConfig(),
   };
 }

@@ -44,7 +44,7 @@ describe('custom agent incomplete runtime results', () => {
     createRuntimeFromEnvMock.mockReturnValue({ execute: executeMock });
   });
 
-  it.each(['incomplete', 'error_max_turns', 'error'])(
+  it.each(['incomplete', 'error_max_turns'])(
     'propagates %s with partial findings and usage',
     async (status) => {
       mockExecution([
@@ -78,6 +78,36 @@ describe('custom agent incomplete runtime results', () => {
       expect(closeMock).toHaveBeenCalledTimes(1);
     }
   );
+
+  it('propagates a fatal error status through the error callback without losing partial usage', async () => {
+    mockExecution([
+      {
+        type: 'result',
+        status: 'error',
+        error: 'Provider stopped early',
+        rawStopReason: 'incomplete.max_output_tokens',
+        usage,
+      },
+    ]);
+    const onAgentComplete = vi.fn();
+    const onAgentError = vi.fn();
+    const result = await executeCustomAgent(
+      agent,
+      { repoPath: '/repo', diffContent: '+changed' },
+      { onAgentComplete, onAgentError }
+    );
+    expect(result.error).toBe('Provider stopped early: incomplete.max_output_tokens');
+    expect(result.issues).toHaveLength(1);
+    expect(result).toMatchObject({
+      input_tokens_used: 11,
+      cached_input_tokens_used: 5,
+      output_tokens_used: 7,
+      tokens_used: 18,
+    });
+    expect(onAgentError).toHaveBeenCalledTimes(1);
+    expect(onAgentComplete).not.toHaveBeenCalled();
+    expect(closeMock).toHaveBeenCalledTimes(1);
+  });
 
   it('marks a stream without a terminal result as incomplete and preserves findings', async () => {
     mockExecution([{ type: 'assistant.text', text: 'Working...' }]);

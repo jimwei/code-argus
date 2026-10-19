@@ -7,17 +7,19 @@
 
 import { z } from 'zod';
 import { getArgusRuntimeType } from '../config/env.js';
-import type {
-  ReviewContext,
-  ReviewReport,
-  OrchestratorOptions,
-  OrchestratorInput,
-  ReviewInput,
-  AgentType,
-  ReviewerId,
-  ChecklistItem,
-  RawIssue,
-  ValidatedIssue,
+import {
+  ISSUE_CATEGORIES,
+  isIssueCategory,
+  type ReviewContext,
+  type ReviewReport,
+  type OrchestratorOptions,
+  type OrchestratorInput,
+  type ReviewInput,
+  type AgentType,
+  type ReviewerId,
+  type ChecklistItem,
+  type RawIssue,
+  type ValidatedIssue,
 } from './types.js';
 import { createStandards } from './standards/index.js';
 import { aggregate } from './aggregator.js';
@@ -2477,9 +2479,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           severity: z
             .enum(['critical', 'error', 'warning', 'suggestion'])
             .describe('Issue severity level'),
-          category: z
-            .enum(['security', 'logic', 'performance', 'style', 'maintainability'])
-            .describe('Issue category'),
+          category: z.enum([...ISSUE_CATEGORIES]).describe('Issue category'),
           title: z.string().describe(`Short title in ${langLabel}`),
           description: z.string().describe(`Detailed description in ${langLabel}`),
           suggestion: z.string().optional().describe(`Fix suggestion in ${langLabel}`),
@@ -2492,6 +2492,28 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           }
 
           const issueId = `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+          // 模型回传的 category 不做校验会一路流进验证器（历史上有越界取值
+          // 让流转中的会话直接崩溃）；越界调用不计入 issue 数，避免掩盖零产出。
+          if (!isIssueCategory(args.category)) {
+            if (verbose) {
+              console.log(
+                `[StreamingOrchestrator] Rejected issue "${args.title}" - unknown category: ${String(args.category)}`
+              );
+            }
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text:
+                    `Issue rejected (ID: ${issueId})\n` +
+                    `Reason: unknown category "${String(args.category)}". ` +
+                    `Valid categories: ${ISSUE_CATEGORIES.join(', ')}. ` +
+                    'Re-call report_issue for the same finding with a valid category.',
+                },
+              ],
+            };
+          }
 
           // Count the report_issue invocation itself, not the deduplicated or
           // filtered outcome: an agent that only produced duplicates still did
