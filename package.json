@@ -1,6 +1,6 @@
 {
   "name": "code-argus",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "AI-powered automated code review CLI with multi-agent orchestration and Claude/OpenAI runtime support",
   "type": "module",
   "main": "./dist/index.js",
@@ -44,7 +44,7 @@
     "dev": "tsx src/index.ts",
     "exec": "tsx",
     "build": "tsc && npm run copy-templates",
-    "copy-templates": "cp -r src/review/prompts/templates dist/review/prompts/",
+    "copy-templates": "node -e \"require('node:fs').cpSync('src/review/prompts/templates', 'dist/review/prompts/templates', { recursive: true })\"",
     "start": "node dist/index.js",
     "type-check": "tsc --noEmit",
     "lint": "eslint . --ext .ts,.tsx",

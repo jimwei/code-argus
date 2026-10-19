@@ -275,14 +275,24 @@ export function determineRiskLevel(issues: ValidatedIssue[]): RiskLevel {
 export function generateSummary(
   issues: ValidatedIssue[],
   _context?: ReviewContext,
-  language: 'en' | 'zh' = 'zh'
+  language: 'en' | 'zh' = 'zh',
+  metadata?: ReviewMetadata
 ): string {
   const bySeverity = groupBySeverity(issues);
   const parts: string[] = [];
+  if (metadata?.review_complete === false) {
+    parts.push(formatIncompleteNotice(metadata, language));
+  }
 
   // Issue count summary
   if (issues.length === 0) {
-    parts.push(translate('No significant issues found in this review.', language));
+    parts.push(
+      metadata?.review_complete === false
+        ? language === 'zh'
+          ? '部分审核中尚未确认问题；无法据此判断完整变更没有问题。'
+          : 'No issues confirmed in the partial review; full review coverage is not established.'
+        : translate('No significant issues found in this review.', language)
+    );
   } else {
     const counts: string[] = [];
     if (bySeverity.critical.length > 0) {
@@ -311,6 +321,12 @@ export function generateSummary(
   return parts.join('\n\n');
 }
 
+function formatIncompleteNotice(metadata: ReviewMetadata, language: 'en' | 'zh'): string {
+  const label = language === 'zh' ? '审核不完整' : 'Review incomplete';
+  const reasons = metadata.incomplete_reasons?.filter((reason) => reason.trim());
+  return [`⚠️ **${label}**`, ...(reasons || []).map((reason) => `- ${reason}`)].join('\n');
+}
+
 /**
  * Generate the complete review report
  */
@@ -334,7 +350,7 @@ export function generateReport(
   }));
 
   const report: ReviewReport = {
-    summary: generateSummary(normalizedIssues, context, language),
+    summary: generateSummary(normalizedIssues, context, language, metadata),
     risk_level: determineRiskLevel(normalizedIssues),
     issues: normalizedIssues,
     checklist,
@@ -455,7 +471,13 @@ export function formatAsMarkdown(report: ReviewReport, options?: ReportOptions):
   } else {
     lines.push(`## ${translate('Issues', lang)}`);
     lines.push('');
-    lines.push(translate('No issues found.', lang));
+    lines.push(
+      report.metadata?.review_complete === false
+        ? lang === 'zh'
+          ? '部分审核中尚未确认问题。'
+          : 'No issues confirmed in the partial review.'
+        : translate('No issues found.', lang)
+    );
     lines.push('');
   }
 
@@ -724,6 +746,10 @@ function formatVerificationResultMarkdown(
  */
 export function formatAsSummary(report: ReviewReport): string {
   const lines: string[] = [];
+  if (report.metadata?.review_complete === false) {
+    lines.push(formatIncompleteNotice(report.metadata, 'en'));
+    lines.push('');
+  }
 
   // Risk level banner
   const riskEmoji =

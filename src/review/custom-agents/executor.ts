@@ -278,6 +278,8 @@ export async function executeCustomAgent(
   let cachedInputTokensUsed = 0;
   let outputTokensUsed = 0;
   let tokensUsed = 0;
+  let receivedResult = false;
+  let runtimeError: string | undefined;
   let execution: RuntimeExecution | null = null;
   let sigtermHandler: (() => void) | null = null;
   let sigintHandler: (() => void) | null = null;
@@ -313,6 +315,7 @@ export async function executeCustomAgent(
       if (event.type !== 'result') {
         continue;
       }
+      receivedResult = true;
 
       if (event.usage) {
         inputTokensUsed = event.usage.inputTokens;
@@ -322,10 +325,18 @@ export async function executeCustomAgent(
       }
 
       if (event.status === 'error') {
-        throw new Error(event.error || 'Custom agent runtime returned error');
+        throw new Error(
+          [event.error, event.rawStopReason].filter(Boolean).join(': ') || 'Runtime error'
+        );
       }
-      if (event.status !== 'success' && options.verbose) {
-        console.error(`[CustomAgentExecutor] Agent ${agent.name} error:`, event.status);
+
+      if (event.status !== 'success') {
+        runtimeError = [`Runtime ${event.status}`, event.error, event.rawStopReason]
+          .filter(Boolean)
+          .join(': ');
+        if (options.verbose) {
+          console.error(`[CustomAgentExecutor] Agent ${agent.name} error:`, runtimeError);
+        }
       }
     }
 
@@ -338,6 +349,11 @@ export async function executeCustomAgent(
       output_tokens_used: outputTokensUsed,
       tokens_used: tokensUsed,
       execution_time_ms: Date.now() - startTime,
+      ...(!receivedResult
+        ? { error: 'Runtime stream ended without a terminal result' }
+        : runtimeError
+          ? { error: runtimeError }
+          : {}),
     };
 
     if (options.verbose) {

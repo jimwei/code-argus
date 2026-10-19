@@ -6,7 +6,7 @@
  */
 
 import { readFile, readdir, access } from 'node:fs/promises';
-import { join, resolve, basename, extname } from 'node:path';
+import { join, resolve, basename, extname, dirname } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type {
   CustomAgentDefinition,
@@ -168,7 +168,11 @@ function validateOutput(output: unknown, agentName: string): CustomAgentOutput |
 /**
  * Parse and validate a custom agent definition from raw YAML content
  */
-function parseAgentDefinition(content: string, filePath: string): CustomAgentDefinition {
+function parseAgentDefinition(
+  content: string,
+  filePath: string,
+  primary = false
+): CustomAgentDefinition {
   const raw = parseYaml(content);
 
   if (!raw || typeof raw !== 'object') {
@@ -182,8 +186,24 @@ function parseAgentDefinition(content: string, filePath: string): CustomAgentDef
   const name = (data.name as string) || fileBasename;
 
   // Validate required fields
-  if (!data.prompt || typeof data.prompt !== 'string') {
+  const hasPrompt = typeof data.prompt === 'string' && data.prompt.trim().length > 0;
+  const hasPromptFile = typeof data.prompt_file === 'string' && data.prompt_file.trim().length > 0;
+  if (data.prompt_file !== undefined && !hasPromptFile) {
+    throw new Error(`Agent "${name}": 'prompt_file' must be a nonempty string`);
+  }
+  if (hasPrompt && hasPromptFile) {
+    throw new Error(`Agent "${name}": use either 'prompt' or 'prompt_file', not both`);
+  }
+  if (!hasPrompt && !hasPromptFile) {
     throw new Error(`Agent "${name}": 'prompt' is required and must be a string`);
+  }
+  if (
+    data.max_turns !== undefined &&
+    (!Number.isInteger(data.max_turns) ||
+      (data.max_turns as number) < 24 ||
+      (data.max_turns as number) > 500)
+  ) {
+    throw new Error(`Agent "${name}": max_turns must be an integer between 24 and 500`);
   }
 
   if (!data.description || typeof data.description !== 'string') {
@@ -202,8 +222,10 @@ function parseAgentDefinition(content: string, filePath: string): CustomAgentDef
   }
 
   // Validate trigger_prompt for llm/hybrid modes
-  const triggerMode = (data.trigger_mode as TriggerMode) || CUSTOM_AGENT_DEFAULTS.trigger_mode;
+  const triggerMode =
+    (data.trigger_mode as TriggerMode) || (primary ? 'rule' : CUSTOM_AGENT_DEFAULTS.trigger_mode);
   if (
+    !primary &&
     (triggerMode === 'llm' || triggerMode === 'hybrid') &&
     !data.trigger_prompt &&
     !data.triggers
@@ -217,8 +239,10 @@ function parseAgentDefinition(content: string, filePath: string): CustomAgentDef
   const definition: CustomAgentDefinition = {
     name,
     description: data.description as string,
-    prompt: data.prompt as string,
+    prompt: hasPrompt ? (data.prompt as string) : '',
     trigger_mode: triggerMode,
+    ...(hasPromptFile ? { prompt_file: data.prompt_file as string } : {}),
+    ...(data.max_turns !== undefined ? { max_turns: data.max_turns as number } : {}),
   };
 
   // Add optional fields
@@ -249,7 +273,10 @@ function parseAgentDefinition(content: string, filePath: string): CustomAgentDef
   }
 
   if (data.enabled !== undefined) {
-    definition.enabled = Boolean(data.enabled);
+    if (typeof data.enabled !== 'boolean') {
+      throw new Error(`Agent "${name}": enabled must be a boolean`);
+    }
+    definition.enabled = data.enabled;
   }
 
   if (Array.isArray(data.tags)) {
@@ -257,6 +284,27 @@ function parseAgentDefinition(content: string, filePath: string): CustomAgentDef
   }
 
   return definition;
+}
+
+/** Load one explicitly selected definition, failing on missing or invalid content. */
+export async function loadCustomAgentFile(
+  filePath: string,
+  primary = false
+): Promise<LoadedCustomAgent> {
+  const sourceFile = resolve(filePath);
+  if (!CUSTOM_AGENT_EXTENSIONS.includes(extname(sourceFile) as '.yaml' | '.yml')) {
+    throw new Error(`Custom reviewer definition must be a YAML file: ${sourceFile}`);
+  }
+  const definition = parseAgentDefinition(await readFile(sourceFile, 'utf-8'), sourceFile, primary);
+  if (definition.prompt_file) {
+    definition.prompt = await readFile(
+      resolve(dirname(sourceFile), definition.prompt_file),
+      'utf-8'
+    );
+    if (!definition.prompt.trim())
+      throw new Error(`Agent "${definition.name}": prompt file is empty`);
+  }
+  return { ...definition, source_file: sourceFile, id: `custom:${definition.name}` };
 }
 
 /**
@@ -294,8 +342,10 @@ async function loadAgentsFromDirectory(
   }
 
   // Filter YAML files
-  const yamlFiles = files.filter((file) =>
-    CUSTOM_AGENT_EXTENSIONS.some((ext) => file.endsWith(ext))
+  const yamlFiles = files.filter(
+    (file) =>
+      CUSTOM_AGENT_EXTENSIONS.some((ext) => file.endsWith(ext)) &&
+      !options.excludeFiles?.some((excluded) => resolve(excluded) === resolve(resolvedPath, file))
   );
 
   if (options.verbose) {
@@ -309,8 +359,7 @@ async function loadAgentsFromDirectory(
     const filePath = join(resolvedPath, file);
 
     try {
-      const content = await readFile(filePath, 'utf-8');
-      const definition = parseAgentDefinition(content, filePath);
+      const definition = await loadCustomAgentFile(filePath);
 
       // Skip disabled agents if enabledOnly is true
       if (options.enabledOnly !== false && definition.enabled === false) {
@@ -333,11 +382,7 @@ async function loadAgentsFromDirectory(
       }
 
       // Create loaded agent
-      const loadedAgent: LoadedCustomAgent = {
-        ...definition,
-        source_file: filePath,
-        id: `custom:${definition.name}`,
-      };
+      const loadedAgent: LoadedCustomAgent = definition;
 
       result.agents.push(loadedAgent);
 
