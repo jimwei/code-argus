@@ -1069,6 +1069,438 @@ describe('streaming validator runtime bridge', () => {
     expect(executeMock).not.toHaveBeenCalled();
   });
 
+  it('rejects issues without a usable file path and marks validation incomplete', async () => {
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: true,
+      maxChallengeRounds: 5,
+      language: 'en',
+    });
+
+    const rejected = validator.enqueue({
+      id: 'issue-missing-file',
+      file: undefined as unknown as string,
+      line_start: 310,
+      line_end: 310,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing file path',
+      description: 'The finding cannot be grounded without a source file.',
+      confidence: 0.9,
+      source_agent: 'logic-reviewer',
+    });
+
+    expect(rejected).toMatchObject({
+      id: 'issue-missing-file',
+      validation_status: 'uncertain',
+      grounding_evidence: {
+        reasoning: expect.stringMatching(/missing file path/i),
+      },
+    });
+
+    const result = await validator.flush();
+
+    expect(result.issues).toHaveLength(0);
+    expect(result.incompleteReasons.join(' ')).toMatch(/missing file path/i);
+    expect(createRuntimeFromEnvMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(validator.getStats()).toEqual({
+      completed: 1,
+      total: 1,
+      activeSessions: 0,
+    });
+  });
+
+  it('records incomplete after a validator session exhausts crash retries', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementation(() => {
+        throw new Error('validator crashed');
+      }),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: false,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+
+    validator.enqueue({
+      id: 'issue-crash',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush(500);
+
+    expect(executeMock).toHaveBeenCalledTimes(3);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({
+      id: 'issue-crash',
+      validation_status: 'uncertain',
+      grounding_evidence: {
+        reasoning: expect.stringMatching(/maximum retries/i),
+      },
+    });
+    expect(result.incompleteReasons.join(' ')).toMatch(/session crashed after maximum retries/i);
+  });
+
+  it('records incomplete when a crash interrupts a challenge after a response', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          const responseText = JSON.stringify({
+            validation_status: 'confirmed',
+            final_confidence: 0.9,
+            grounding_evidence: {
+              checked_files: ['src/api/service.ts'],
+              checked_symbols: [],
+              related_context: 'First challenge round completed.',
+              reasoning: 'The initial response was confirmed.',
+            },
+          });
+          yield { type: 'assistant.text', text: responseText };
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            text: responseText,
+          };
+          throw new Error('crashed before challenge round');
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: true,
+      maxChallengeRounds: 2,
+      language: 'en',
+    });
+
+    validator.enqueue({
+      id: 'issue-interrupted-challenge',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The challenge round is interrupted by a runtime crash.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush(500);
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({
+      id: 'issue-interrupted-challenge',
+      validation_status: 'confirmed',
+    });
+    expect(result.incompleteReasons.join(' ')).toMatch(/crashed before completing/i);
+  });
+
+  it('starts a fresh session for a late issue after the previous session closed', async () => {
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          const responseText = JSON.stringify({
+            validation_status: 'confirmed',
+            final_confidence: 0.9,
+            grounding_evidence: {
+              checked_files: ['src/api/service.ts'],
+              checked_symbols: [],
+              related_context: 'Late issue validated in a fresh session.',
+              reasoning: 'The new session accepted the issue.',
+            },
+          });
+          yield { type: 'assistant.text', text: responseText };
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            text: responseText,
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: false,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+
+    const priorResult = {
+      id: 'prior-issue',
+      file: 'src/api/service.ts',
+      line_start: 10,
+      line_end: 10,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Prior issue',
+      description: 'A result that was already collected.',
+      confidence: 0.8,
+      source_agent: 'logic-reviewer',
+      validation_status: 'uncertain',
+      grounding_evidence: {
+        checked_files: [],
+        checked_symbols: [],
+        related_context: 'prior',
+        reasoning: 'prior',
+      },
+      final_confidence: 0.4,
+    };
+
+    const sessions = (
+      validator as unknown as {
+        sessions: Map<
+          string,
+          {
+            file: string;
+            queue: unknown[];
+            isProcessing: boolean;
+            isClosed: boolean;
+            tokensUsed: number;
+            inputTokensUsed: number;
+            cachedInputTokensUsed: number;
+            outputTokensUsed: number;
+            results: unknown[];
+          }
+        >;
+      }
+    ).sessions;
+
+    sessions.set('src/api/service.ts', {
+      file: 'src/api/service.ts',
+      queue: [],
+      isProcessing: false,
+      isClosed: true,
+      tokensUsed: 9,
+      inputTokensUsed: 8,
+      cachedInputTokensUsed: 0,
+      outputTokensUsed: 1,
+      results: [priorResult],
+    });
+
+    validator.enqueue({
+      id: 'late-issue',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Late issue',
+      description: 'This issue arrived after the previous session closed.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush(500);
+
+    expect(result.issues.map((issue) => issue.id)).toEqual(['prior-issue', 'late-issue']);
+    expect(result.issues[1]).toMatchObject({
+      id: 'late-issue',
+      validation_status: 'confirmed',
+    });
+    expect(result.inputTokensUsed).toBe(9);
+    expect(result.outputTokensUsed).toBe(2);
+  });
+
+  it('starts a fresh session for an issue arriving while a failed session is closing', async () => {
+    let signalCloseStarted: (() => void) | undefined;
+    let releaseClose: (() => void) | undefined;
+    const closeStarted = new Promise<void>((resolve) => {
+      signalCloseStarted = resolve;
+    });
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    let executionCount = 0;
+
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementation(() => {
+        executionCount++;
+        const currentExecution = executionCount;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (currentExecution === 1) {
+              throw new Error('terminal validator crash');
+            }
+
+            const responseText = JSON.stringify({
+              validation_status: 'confirmed',
+              final_confidence: 0.9,
+              grounding_evidence: {
+                checked_files: ['src/api/service.ts'],
+                checked_symbols: [],
+                related_context: 'Issue validated after replacing the failed session.',
+                reasoning: 'The fresh session accepted the issue.',
+              },
+            });
+            yield { type: 'assistant.text', text: responseText };
+            yield {
+              type: 'result',
+              status: 'success',
+              usage: { inputTokens: 1, outputTokens: 1 },
+              text: responseText,
+            };
+          },
+          close: async () => {
+            if (currentExecution === 1) {
+              signalCloseStarted?.();
+              await closeGate;
+            }
+          },
+        };
+      }),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      challengeMode: false,
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+
+    const sessions = (
+      validator as unknown as {
+        sessions: Map<
+          string,
+          {
+            file: string;
+            queue: unknown[];
+            isProcessing: boolean;
+            isClosed: boolean;
+            tokensUsed: number;
+            inputTokensUsed: number;
+            cachedInputTokensUsed: number;
+            outputTokensUsed: number;
+            results: unknown[];
+            crashRetryCount?: number;
+          }
+        >;
+      }
+    ).sessions;
+
+    sessions.set('src/api/service.ts', {
+      file: 'src/api/service.ts',
+      queue: [],
+      isProcessing: false,
+      isClosed: false,
+      tokensUsed: 0,
+      inputTokensUsed: 0,
+      cachedInputTokensUsed: 0,
+      outputTokensUsed: 0,
+      results: [],
+      crashRetryCount: 2,
+    });
+
+    validator.enqueue({
+      id: 'terminal-crash',
+      file: 'src/api/service.ts',
+      line_start: 10,
+      line_end: 10,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Terminal crash',
+      description: 'The session exhausts its recovery budget.',
+      confidence: 0.8,
+      source_agent: 'logic-reviewer',
+    });
+
+    await closeStarted;
+
+    validator.enqueue({
+      id: 'arrived-during-close',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Arrived during cleanup',
+      description: 'This issue arrives while the previous execution is closing.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
+    });
+
+    releaseClose?.();
+    const result = await validator.flush(500);
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.issues.map((issue) => issue.id)).toEqual([
+      'terminal-crash',
+      'arrived-during-close',
+    ]);
+    expect(result.issues[1]).toMatchObject({
+      id: 'arrived-during-close',
+      validation_status: 'confirmed',
+    });
+  });
+
   it('uses a stricter validation threshold for style warnings than for logic warnings', async () => {
     createRuntimeFromEnvMock.mockReturnValue({
       kind: 'openai-responses',

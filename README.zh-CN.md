@@ -45,7 +45,7 @@ export ARGUS_PRIMARY_REVIEWER=/config/team-primary.yaml
 argus review /path/to/repo feature-branch main
 ```
 
-详见 [综合规则示例与预算、完整性说明](./README.md#审核策略与可配置主-reviewer)。审核未完成时保留部分 findings，并在 `metadata.review_complete=false` 和可读报告中说明原因；零 findings 不能证明审核完成。
+详见 [综合规则示例与预算、完整性说明](./README.md#审核策略与可配置主-reviewer)。审核未完成时保留部分 findings，并在 `metadata.review_complete=false` 和可读报告中说明原因；validator 崩溃重试耗尽或问题缺少有效 `file` 也会标记为不完整。零 findings 不能证明审核完成。
 
 ## 安装
 

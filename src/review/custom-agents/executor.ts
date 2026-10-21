@@ -49,6 +49,8 @@ export interface CustomAgentExecutorOptions {
 export interface CustomAgentExecutorCallbacks {
   /** Called when an issue is discovered */
   onIssueDiscovered?: (issue: RawIssue) => void;
+  /** Called when a report_issue tool call is rejected before issue creation */
+  onIssueRejected?: (agent: LoadedCustomAgent, title: string, reason: string) => void;
   /** Called when agent starts */
   onAgentStart?: (agent: LoadedCustomAgent) => void;
   /** Called when agent completes */
@@ -117,7 +119,7 @@ function buildCustomAgentUserPrompt(
 }
 
 interface ReportIssueArgs {
-  file: string;
+  file?: string;
   line_start: number;
   line_end: number;
   severity?: Severity;
@@ -136,6 +138,7 @@ interface ReportIssueArgs {
 function createCustomAgentRuntimeTools(
   agent: LoadedCustomAgent,
   onIssue: (issue: RawIssue) => void,
+  onIssueRejected?: (agent: LoadedCustomAgent, title: string, reason: string) => void,
   language: 'en' | 'zh' = 'zh',
   verbose?: boolean
 ): RuntimeToolDefinition<ReportIssueArgs>[] {
@@ -149,7 +152,10 @@ function createCustomAgentRuntimeTools(
       description: `Report a discovered code issue. Call this for EACH issue found during review.
 Write all text (title, description, suggestion) in ${langLabel}.`,
       inputSchema: {
-        file: z.string().describe('File path where the issue is located'),
+        file: z
+          .string()
+          .optional()
+          .describe('Required repository-relative file path where the issue is located'),
         line_start: z.number().describe('Starting line number'),
         line_end: z.number().describe('Ending line number'),
         severity: z
@@ -172,10 +178,28 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         }
 
         const issueId = `${agent.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const file = typeof args.file === 'string' ? args.file.trim() : '';
+        if (!file) {
+          const reason = 'file path is required';
+          onIssueRejected?.(agent, args.title, reason);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text:
+                  `Issue rejected (ID: ${issueId})\n` +
+                  `Reason: ${reason}. ` +
+                  'Re-call report_issue for the same finding with a repository-relative file path.',
+              },
+            ],
+          };
+        }
 
         // 模型回传的 category 不带校验会一路流进按枚举索引的消费者
         // （by_category 计数变 NaN、groupByCategory 直接抛错）；越界取值直接拒绝。
         if (args.category !== undefined && !isRecognizedIssueCategory(args.category)) {
+          const reason = `unknown category "${String(args.category)}"`;
+          onIssueRejected?.(agent, args.title, reason);
           if (verbose) {
             console.log(
               `[CustomAgent:${agent.name}] rejected issue "${args.title}" - unknown category: ${String(args.category)}`
@@ -187,7 +211,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
                 type: 'text' as const,
                 text:
                   `Issue rejected (ID: ${issueId})\n` +
-                  `Reason: unknown category "${String(args.category)}". ` +
+                  `Reason: ${reason}. ` +
                   `Valid categories: ${ISSUE_CATEGORIES.join(', ')}. ` +
                   'Re-call report_issue for the same finding with a valid category.',
               },
@@ -197,7 +221,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
         const rawIssue: RawIssue = {
           id: issueId,
-          file: args.file,
+          file,
           line_start: args.line_start,
           line_end: args.line_end,
           severity: (args.severity || defaultSeverity || 'warning') as Severity,
@@ -263,6 +287,7 @@ export async function executeCustomAgent(
   const runtimeTools = createCustomAgentRuntimeTools(
     agent,
     onIssue,
+    callbacks?.onIssueRejected,
     options.language,
     options.verbose
   );

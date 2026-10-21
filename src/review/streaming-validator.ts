@@ -253,6 +253,8 @@ interface FileSession {
   notifyNewIssue?: () => void;
   /** Number of crash retries for this session */
   crashRetryCount?: number;
+  /** Issues that arrived after this session failed and must wait for cleanup/recovery */
+  deferredIssues?: RawIssue[];
 }
 
 interface RuntimePromptMessage {
@@ -316,18 +318,41 @@ export class StreamingValidator {
    * 3. Processed when the session is ready
    */
   enqueue(issue: RawIssue): ValidatedIssue | null {
-    // Notify issue discovered
-    this.options.callbacks?.onIssueDiscovered?.(issue);
+    const file = typeof issue.file === 'string' ? issue.file.trim() : '';
+    const normalizedIssue = file === issue.file ? issue : { ...issue, file };
 
-    const validationPolicy = getHighSignalValidationPolicy(issue, this.options.maxChallengeRounds);
+    // Notify issue discovered
+    this.options.callbacks?.onIssueDiscovered?.(normalizedIssue);
+
+    if (!file) {
+      const reason = `Issue "${issue.title}" has a missing file path and could not be validated`;
+      const uncertainIssue = this.createUncertainIssue(normalizedIssue, reason);
+      this.totalEnqueued++;
+      this.completedCount++;
+      this.recordIncomplete(reason);
+      this.options.callbacks?.onIssueValidated?.(uncertainIssue);
+      this.options.onProgress?.(
+        this.completedCount,
+        this.totalEnqueued,
+        uncertainIssue.id,
+        'uncertain'
+      );
+      return uncertainIssue;
+    }
+
+    const validationPolicy = getHighSignalValidationPolicy(
+      normalizedIssue,
+      this.options.maxChallengeRounds
+    );
     const shouldRejectByConfidence =
-      issue.severity !== 'critical' && issue.confidence < validationPolicy.minConfidence;
+      normalizedIssue.severity !== 'critical' &&
+      normalizedIssue.confidence < validationPolicy.minConfidence;
 
     if (!validationPolicy.shouldValidate || shouldRejectByConfidence) {
       const rejectionReason =
         validationPolicy.rejectionReason ||
-        `置信度过低 (${issue.confidence} < ${validationPolicy.minConfidence})`;
-      const rejected = this.createAutoRejectedIssue(issue, rejectionReason);
+        `置信度过低 (${normalizedIssue.confidence} < ${validationPolicy.minConfidence})`;
+      const rejected = this.createAutoRejectedIssue(normalizedIssue, rejectionReason);
       rejected.grounding_evidence.related_context = rejectionReason;
       rejected.grounding_evidence.reasoning = rejectionReason;
       rejected.rejection_reason = rejectionReason;
@@ -335,14 +360,19 @@ export class StreamingValidator {
       this.totalEnqueued++;
 
       // Notify via callbacks
-      this.options.callbacks?.onAutoRejected?.(issue, rejectionReason);
+      this.options.callbacks?.onAutoRejected?.(normalizedIssue, rejectionReason);
 
       if (this.options.onProgress) {
-        this.options.onProgress(this.completedCount, this.totalEnqueued, issue.id, 'rejected');
+        this.options.onProgress(
+          this.completedCount,
+          this.totalEnqueued,
+          normalizedIssue.id,
+          'rejected'
+        );
       }
 
       if (this.options.verbose) {
-        console.log(`[StreamingValidator] Auto-rejected ${issue.id}: ${rejectionReason}`);
+        console.log(`[StreamingValidator] Auto-rejected ${normalizedIssue.id}: ${rejectionReason}`);
       }
 
       return rejected;
@@ -350,11 +380,23 @@ export class StreamingValidator {
 
     this.totalEnqueued++;
 
+    const currentSession = this.sessions.get(file);
+    if (currentSession?.isClosed && currentSession.isProcessing) {
+      currentSession.deferredIssues ??= [];
+      currentSession.deferredIssues.push(normalizedIssue);
+      if (this.options.verbose) {
+        console.log(
+          `[StreamingValidator] Deferred ${normalizedIssue.id} until the failed session for ${file} closes`
+        );
+      }
+      return null;
+    }
+
     // Get or create session for this file
-    const session = this.getOrCreateSession(issue.file);
+    const session = this.getOrCreateSession(file);
 
     // Add to queue
-    session.queue.push(issue);
+    session.queue.push(normalizedIssue);
 
     if (this.options.verbose) {
       console.log(
@@ -422,7 +464,7 @@ export class StreamingValidator {
     // We need to loop because recovery sessions may be started during waiting
     while (true) {
       const activeSessions = Array.from(this.sessions.values()).filter(
-        (s) => s.processingPromise && !s.isClosed
+        (s) => s.processingPromise && s.isProcessing
       );
 
       if (activeSessions.length === 0) {
@@ -507,17 +549,18 @@ export class StreamingValidator {
 
   private getOrCreateSession(file: string): FileSession {
     let session = this.sessions.get(file);
-    if (!session) {
+    if (!session || session.isClosed) {
+      const previousSession = session;
       session = {
         file,
-        queue: [],
+        queue: previousSession ? [...previousSession.queue] : [],
         isProcessing: false,
         isClosed: false,
-        tokensUsed: 0,
-        inputTokensUsed: 0,
-        cachedInputTokensUsed: 0,
-        outputTokensUsed: 0,
-        results: [],
+        tokensUsed: previousSession?.tokensUsed ?? 0,
+        inputTokensUsed: previousSession?.inputTokensUsed ?? 0,
+        cachedInputTokensUsed: previousSession?.cachedInputTokensUsed ?? 0,
+        outputTokensUsed: previousSession?.outputTokensUsed ?? 0,
+        results: previousSession ? [...previousSession.results] : [],
       };
       this.sessions.set(file, session);
     }
@@ -990,6 +1033,7 @@ export class StreamingValidator {
             }
           } catch (error) {
             if (!isValidationContextLimitError(error)) {
+              session.isClosed = true;
               throw error;
             }
 
@@ -1308,11 +1352,17 @@ export class StreamingValidator {
       }
     } catch (error) {
       console.error(`[StreamingValidator] Session ${session.file} exception:`, error);
+      // Close the failed session before awaiting execution cleanup so issues that
+      // arrive concurrently create a fresh session instead of joining this one.
+      session.isClosed = true;
 
       const issuesToRetry: RawIssue[] = [];
 
       if (currentIssue) {
         if (currentResponses.length > 0) {
+          this.recordIncomplete(
+            `Validation session crashed before completing "${currentIssue.title}" (${currentIssue.file}:${currentIssue.line_start}); retained the last available round`
+          );
           completeCurrentIssue(
             this.responseToValidatedIssue(
               currentResponses[currentResponses.length - 1]!,
@@ -1343,6 +1393,9 @@ export class StreamingValidator {
       if (issuesToRetry.length > 0) {
         console.warn(
           `[StreamingValidator] Session ${session.file} max retries exceeded, marking ${issuesToRetry.length} issues as uncertain`
+        );
+        this.recordIncomplete(
+          `Validation session crashed after maximum retries: ${issuesToRetry.length} issue(s) in ${session.file || 'unknown file'} could not be validated`
         );
         for (const issue of issuesToRetry) {
           const uncertainIssue = this.createUncertainIssue(
@@ -1382,6 +1435,7 @@ export class StreamingValidator {
 
     session.isProcessing = false;
     session.isClosed = true;
+    this.startDeferredSession(session);
 
     if (this.options.verbose) {
       console.log(
@@ -1394,6 +1448,8 @@ export class StreamingValidator {
    * Start a recovery session to retry failed issues
    */
   private startRecoverySession(file: string, issues: RawIssue[], retryCount: number): void {
+    const oldSession = this.sessions.get(file);
+
     // Create a new session for recovery
     const recoverySession: FileSession = {
       file,
@@ -1406,10 +1462,10 @@ export class StreamingValidator {
       outputTokensUsed: 0,
       results: [],
       crashRetryCount: retryCount,
+      deferredIssues: oldSession?.deferredIssues,
     };
 
     // Replace the old session
-    const oldSession = this.sessions.get(file);
     if (oldSession) {
       // Preserve results from old session
       recoverySession.results = [...oldSession.results];
@@ -1417,12 +1473,33 @@ export class StreamingValidator {
       recoverySession.inputTokensUsed = oldSession.inputTokensUsed;
       recoverySession.cachedInputTokensUsed = oldSession.cachedInputTokensUsed;
       recoverySession.outputTokensUsed = oldSession.outputTokensUsed;
+      oldSession.deferredIssues = undefined;
     }
 
     this.sessions.set(file, recoverySession);
 
     // Start processing the recovery session
     this.startSessionProcessing(recoverySession);
+  }
+
+  private startDeferredSession(failedSession: FileSession): void {
+    const deferredIssues = failedSession.deferredIssues?.splice(0) ?? [];
+    if (deferredIssues.length === 0) {
+      return;
+    }
+
+    const currentSession = this.sessions.get(failedSession.file);
+    const targetSession =
+      !currentSession || currentSession.isClosed
+        ? this.getOrCreateSession(failedSession.file)
+        : currentSession;
+
+    targetSession.queue.push(...deferredIssues);
+    if (targetSession.notifyNewIssue) {
+      targetSession.notifyNewIssue();
+    } else if (!targetSession.isProcessing && !targetSession.isClosed) {
+      this.startSessionProcessing(targetSession);
+    }
   }
 
   // ============ Helper Methods ============
