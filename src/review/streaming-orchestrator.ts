@@ -241,6 +241,14 @@ export class StreamingReviewOrchestrator {
     };
   }
 
+  private recordRejectedIssue(agentName: string, title: string, reason: string): void {
+    const message = `${agentName}: report_issue rejected for "${title}": ${reason}`;
+    if (!this.incompleteReasons.includes(message)) {
+      this.incompleteReasons.push(message);
+    }
+    this.progress.warn(message);
+  }
+
   /**
    * Create a logger adapter for worktree manager
    * Routes worktree logs through the progress system for JSON log support
@@ -2115,6 +2123,9 @@ export class StreamingReviewOrchestrator {
           this.incompleteReasons.push(`${agent.id}: ${error.message}`);
           this.progress.agent(agent.name, 'error', error.message);
         },
+        onIssueRejected: (agent, title, reason) => {
+          this.recordRejectedIssue(agent.id, title, reason);
+        },
         onIssueDiscovered: (issue) => {
           if (this.streamingValidator) {
             const rejected = this.streamingValidator.enqueue(issue);
@@ -2469,7 +2480,10 @@ export class StreamingReviewOrchestrator {
 The issue will be checked for duplicates and validated automatically.
 Write all text (title, description, suggestion) in ${langLabel}.`,
         inputSchema: {
-          file: z.string().describe('File path where the issue is located'),
+          file: z
+            .string()
+            .optional()
+            .describe('Required repository-relative file path where the issue is located'),
           line_start: z.number().describe('Starting line number'),
           line_end: z.number().describe('Ending line number'),
           severity: z
@@ -2488,10 +2502,27 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           }
 
           const issueId = `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          const file = typeof args.file === 'string' ? args.file.trim() : '';
+          if (!file) {
+            this.recordRejectedIssue(agentType, args.title, 'file path is required');
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text:
+                    `Issue rejected (ID: ${issueId})\n` +
+                    'Reason: file path is required. ' +
+                    'Re-call report_issue for the same finding with a repository-relative file path.',
+                },
+              ],
+            };
+          }
 
           // 模型回传的 category 不做校验会一路流进验证器（历史上有越界取值
           // 让流转中的会话直接崩溃）；越界调用不计入 issue 数，避免掩盖零产出。
           if (!isIssueCategory(args.category)) {
+            const reason = `unknown category "${String(args.category)}"`;
+            this.recordRejectedIssue(agentType, args.title, reason);
             if (verbose) {
               console.log(
                 `[StreamingOrchestrator] Rejected issue "${args.title}" - unknown category: ${String(args.category)}`
@@ -2522,11 +2553,11 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
             args.category === 'style' &&
             changedLinesByFile
           ) {
-            const changedLines = changedLinesByFile.get(args.file);
+            const changedLines = changedLinesByFile.get(file);
             if (!changedLines || changedLines.size === 0) {
               if (verbose) {
                 console.log(
-                  `[StreamingOrchestrator] Filtered style issue "${args.title}" - file has no changed lines: ${args.file}`
+                  `[StreamingOrchestrator] Filtered style issue "${args.title}" - file has no changed lines: ${file}`
                 );
               }
               progress.info(`Filtered: "${args.title}" (file has no changed lines)`);
@@ -2553,7 +2584,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
             if (!hasOverlap) {
               if (verbose) {
                 console.log(
-                  `[StreamingOrchestrator] Filtered style issue "${args.title}" on unchanged line ${lineStart}: ${args.file}`
+                  `[StreamingOrchestrator] Filtered style issue "${args.title}" on unchanged line ${lineStart}: ${file}`
                 );
               }
               progress.info(`Filtered: "${args.title}" (line ${lineStart} unchanged)`);
@@ -2573,11 +2604,11 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
             args.category === 'style' &&
             whitespaceOnlyLinesByFile
           ) {
-            const whitespaceLines = whitespaceOnlyLinesByFile.get(args.file);
+            const whitespaceLines = whitespaceOnlyLinesByFile.get(file);
             if (whitespaceLines && whitespaceLines.has(args.line_start)) {
               if (verbose) {
                 console.log(
-                  `[StreamingOrchestrator] Filtered style issue "${args.title}" on whitespace-only line ${args.line_start}: ${args.file}`
+                  `[StreamingOrchestrator] Filtered style issue "${args.title}" on whitespace-only line ${args.line_start}: ${file}`
                 );
               }
               progress.info(`Filtered: "${args.title}" (whitespace-only line ${args.line_start})`);
@@ -2594,7 +2625,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
           const rawIssue: RawIssue = {
             id: issueId,
-            file: args.file,
+            file,
             line_start: args.line_start,
             line_end: args.line_end,
             severity: args.severity,

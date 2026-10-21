@@ -105,7 +105,7 @@ max_turns: 80
 
 包内综合定义包含 severity 分级标准：确认的安全回归——尤其是 diff 移除或弱化既有校验、且不可信输入仍可达的情况——不低于 `error`；`suggestion` 只用于非缺陷的可选改进，缺陷不能降级到该级别。
 
-主 reviewer 或补充审核因预算耗尽、缺少证据等原因未完成时，报告的 `metadata.review_complete` 为 `false`，`incomplete_reasons` 列出原因，已报告的部分 findings 会保留。可读报告会明确“审核不完整”，不能把零 findings 当作完整 clean 结论。`metadata.review_strategy`、`primary_reviewer`、`reviewer_max_turns` 记录实际策略、主 reviewer 标识和执行预算，便于核验。
+主 reviewer 或补充审核因预算耗尽、缺少证据等原因未完成时，报告的 `metadata.review_complete` 为 `false`，`incomplete_reasons` 列出原因，已报告的部分 findings 会保留。validator 崩溃并耗尽恢复重试、问题缺少 `file` 等结构性错误同样会标记为不完整；缺少有效位置的 finding 不会进入验证，也不会把未处理队列当作成功的 clean 结果。可读报告会明确“审核不完整”，不能把零 findings 当作完整 clean 结论。`metadata.review_strategy`、`primary_reviewer`、`reviewer_max_turns` 记录实际策略、主 reviewer 标识和执行预算，便于核验。
 
 ## Runtime and Authentication
 

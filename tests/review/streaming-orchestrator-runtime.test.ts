@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const {
   createRuntimeFromEnvMock,
@@ -500,6 +501,16 @@ it('does not fail the whole review when an agent declares a review incomplete', 
 });
 
 describe('streaming orchestrator issue category validation', () => {
+  type TestOrchestrator = {
+    runAgentsWithStreaming: (
+      context: unknown,
+      repoPath: string,
+      agents: string[]
+    ) => Promise<unknown>;
+    rawIssuesForSkipMode: unknown[];
+    incompleteReasons: string[];
+  };
+
   beforeEach(() => {
     createRuntimeFromEnvMock.mockReset();
     executeMock.mockReset();
@@ -553,8 +564,9 @@ describe('streaming orchestrator issue category validation', () => {
       skipValidation: true,
       progressMode: 'silent',
     });
+    const testOrchestrator = orchestrator as unknown as TestOrchestrator;
 
-    await (orchestrator as any).runAgentsWithStreaming(
+    await testOrchestrator.runAgentsWithStreaming(
       {
         repoPath: 'C:\\repo',
         diff: {
@@ -573,6 +585,81 @@ describe('streaming orchestrator issue category validation', () => {
     expect(toolResultText).toMatch(/unknown category/i);
     expect(toolResultText).toContain('maintainability');
     expect(issueCount).toBe(0);
-    expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(0);
+    expect(testOrchestrator.rawIssuesForSkipMode).toHaveLength(0);
+    expect(testOrchestrator.incompleteReasons.join(' ')).toMatch(/unknown category/i);
+  });
+
+  it('rejects report_issue calls that omit the file path', async () => {
+    let toolResultText = '';
+    let schemaAcceptsMissingFile = false;
+
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const reportIssue = options.tools?.find(
+            (tool: { name: string }) => tool.name === 'report_issue'
+          );
+          const issueWithoutFile = {
+            line_start: 310,
+            line_end: 310,
+            severity: 'warning',
+            category: 'logic',
+            title: 'Missing file path',
+            description: 'The finding cannot be grounded without a source file.',
+            confidence: 0.9,
+          };
+          schemaAcceptsMissingFile = z
+            .object(reportIssue.inputSchema)
+            .safeParse(issueWithoutFile).success;
+          const result = await reportIssue?.execute(issueWithoutFile);
+          toolResultText = result?.content?.[0]?.text ?? '';
+
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            text: 'Done',
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const orchestrator = new StreamingReviewOrchestrator({
+      skipValidation: true,
+      progressMode: 'silent',
+    });
+    const testOrchestrator = orchestrator as unknown as TestOrchestrator;
+
+    await testOrchestrator.runAgentsWithStreaming(
+      {
+        repoPath: 'C:\\repo',
+        diff: {
+          diff: '+const ready = true',
+        },
+        fileAnalyses: [],
+        standards: {
+          source: [],
+        },
+        diffFiles: [],
+      },
+      'C:\\repo',
+      ['logic-reviewer']
+    );
+
+    expect(toolResultText).toMatch(/file path is required/i);
+    expect(toolResultText).toMatch(/re-call report_issue/i);
+    expect(schemaAcceptsMissingFile).toBe(true);
+    expect(testOrchestrator.rawIssuesForSkipMode).toHaveLength(0);
+    expect(testOrchestrator.incompleteReasons.join(' ')).toMatch(/file path is required/i);
   });
 });

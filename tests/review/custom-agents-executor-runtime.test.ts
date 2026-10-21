@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const { createRuntimeFromEnvMock, closeMock, executeMock } = vi.hoisted(() => ({
   createRuntimeFromEnvMock: vi.fn(),
@@ -204,5 +205,70 @@ describe('custom agent executor runtime bridge', () => {
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]?.title).toBe('Alias category');
     expect(result.issues[0]?.category).toBe('logic');
+  });
+
+  it('rejects custom-agent issues without a file path and reports the rejection', async () => {
+    let toolResultText = '';
+    let schemaAcceptsMissingFile = false;
+    const onIssueRejected = vi.fn();
+
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const reportIssue = options.tools?.find(
+            (tool: { name: string }) => tool.name === 'report_issue'
+          );
+          const issueWithoutFile = {
+            line_start: 310,
+            line_end: 310,
+            title: 'Missing file path',
+            description: 'The finding cannot be grounded without a source file.',
+            confidence: 0.9,
+          };
+          schemaAcceptsMissingFile = z
+            .object(reportIssue.inputSchema)
+            .safeParse(issueWithoutFile).success;
+          const rejected = await reportIssue?.execute(issueWithoutFile);
+          toolResultText = rejected?.content?.[0]?.text ?? '';
+
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 3, outputTokens: 2 },
+            text: 'Done',
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const result = await executeCustomAgent(
+      createAgent(),
+      {
+        repoPath: 'C:\\repo',
+        diffContent: '+fetch("/api/service")',
+        language: 'en',
+      },
+      { onIssueRejected }
+    );
+
+    expect(toolResultText).toMatch(/file path is required/i);
+    expect(toolResultText).toMatch(/re-call report_issue/i);
+    expect(schemaAcceptsMissingFile).toBe(true);
+    expect(result.issues).toHaveLength(0);
+    expect(onIssueRejected).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'custom:test-agent' }),
+      'Missing file path',
+      expect.stringMatching(/file path is required/i)
+    );
   });
 });
