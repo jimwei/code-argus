@@ -8,11 +8,19 @@
  * - Automatically cleans up stale worktrees older than configured days
  */
 
-import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, statSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { GitError } from './type.js';
+import { gitExec } from './git-exec.js';
 import type { GitRef } from './ref.js';
 
 // ============================================================================
@@ -159,11 +167,7 @@ export class WorktreeManager {
       // Prune to clear any "missing but registered" entries, otherwise
       // `git worktree add` will fail with "already registered worktree".
       try {
-        execSync('git worktree prune', {
-          cwd: repoPath,
-          encoding: 'utf-8',
-          stdio: 'pipe',
-        });
+        gitExec(['worktree', 'prune'], { cwd: repoPath });
       } catch {
         // Ignore prune errors
       }
@@ -172,22 +176,14 @@ export class WorktreeManager {
 
     // Check if it's a valid git worktree
     try {
-      execSync('git rev-parse --git-dir', {
-        cwd: worktreePath,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      });
+      gitExec(['rev-parse', '--git-dir'], { cwd: worktreePath });
       return true;
     } catch {
       // Directory exists but is not a valid worktree - clean it up
       try {
         rmSync(worktreePath, { recursive: true, force: true });
         // Also prune from git
-        execSync('git worktree prune', {
-          cwd: repoPath,
-          encoding: 'utf-8',
-          stdio: 'pipe',
-        });
+        gitExec(['worktree', 'prune'], { cwd: repoPath });
       } catch {
         // Ignore cleanup errors
       }
@@ -206,26 +202,14 @@ export class WorktreeManager {
       // Clean any uncommitted changes first to ensure checkout can succeed
       // This is necessary because worktrees may have leftover changes from previous reviews
       try {
-        execSync('git reset --hard HEAD', {
-          cwd: worktreePath,
-          encoding: 'utf-8',
-          stdio: 'pipe',
-        });
-        execSync('git clean -fd', {
-          cwd: worktreePath,
-          encoding: 'utf-8',
-          stdio: 'pipe',
-        });
+        gitExec(['reset', '--hard', 'HEAD'], { cwd: worktreePath });
+        gitExec(['clean', '-fd'], { cwd: worktreePath });
       } catch {
         // Ignore cleanup errors - proceed with checkout attempt
       }
 
       // Fetch latest and checkout the ref
-      execSync(`git checkout --detach ${checkoutRef}`, {
-        cwd: worktreePath,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      });
+      gitExec(['checkout', '--detach', checkoutRef], { cwd: worktreePath });
     } catch (error: unknown) {
       const err = error as { stderr?: string; message?: string };
       throw new GitError(
@@ -241,11 +225,7 @@ export class WorktreeManager {
    */
   private createWorktree(repoPath: string, worktreePath: string, checkoutRef: string): void {
     try {
-      execSync(`git worktree add --detach "${worktreePath}" ${checkoutRef}`, {
-        cwd: repoPath,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      });
+      gitExec(['worktree', 'add', '--detach', worktreePath, checkoutRef], { cwd: repoPath });
     } catch (error: unknown) {
       const err = error as { stderr?: string; message?: string };
       const detail = err.stderr || err.message || 'unknown error';
@@ -264,7 +244,12 @@ export class WorktreeManager {
     try {
       // Update mtime by touching a marker file
       const markerPath = join(worktreePath, '.argus-last-used');
-      execSync(`touch "${markerPath}"`, { stdio: 'pipe' });
+      if (existsSync(markerPath)) {
+        const now = new Date();
+        utimesSync(markerPath, now, now);
+      } else {
+        writeFileSync(markerPath, '');
+      }
     } catch {
       // Ignore touch errors
     }
@@ -398,11 +383,7 @@ export class WorktreeManager {
           try {
             // Try git worktree remove first
             if (repoPath) {
-              execSync(`git worktree remove --force "${worktreePath}"`, {
-                cwd: repoPath,
-                encoding: 'utf-8',
-                stdio: 'pipe',
-              });
+              gitExec(['worktree', 'remove', '--force', worktreePath], { cwd: repoPath });
             } else {
               // No repo path, just delete directory
               rmSync(worktreePath, { recursive: true, force: true });
@@ -424,11 +405,7 @@ export class WorktreeManager {
       // Prune git worktree references
       if (repoPath && cleanedCount > 0) {
         try {
-          execSync('git worktree prune', {
-            cwd: repoPath,
-            encoding: 'utf-8',
-            stdio: 'pipe',
-          });
+          gitExec(['worktree', 'prune'], { cwd: repoPath });
         } catch {
           // Ignore prune errors
         }
@@ -466,11 +443,7 @@ export class WorktreeManager {
           );
           try {
             if (repoPath) {
-              execSync(`git worktree remove --force "${item.path}"`, {
-                cwd: repoPath,
-                encoding: 'utf-8',
-                stdio: 'pipe',
-              });
+              gitExec(['worktree', 'remove', '--force', item.path], { cwd: repoPath });
             } else {
               rmSync(item.path, { recursive: true, force: true });
             }
@@ -487,11 +460,7 @@ export class WorktreeManager {
 
         if (repoPath && excess.length > 0) {
           try {
-            execSync('git worktree prune', {
-              cwd: repoPath,
-              encoding: 'utf-8',
-              stdio: 'pipe',
-            });
+            gitExec(['worktree', 'prune'], { cwd: repoPath });
           } catch {
             // Ignore prune errors
           }
@@ -514,11 +483,7 @@ export class WorktreeManager {
   removeWorktree(worktreePath: string, repoPath?: string): void {
     try {
       if (repoPath) {
-        execSync(`git worktree remove --force "${worktreePath}"`, {
-          cwd: repoPath,
-          encoding: 'utf-8',
-          stdio: 'pipe',
-        });
+        gitExec(['worktree', 'remove', '--force', worktreePath], { cwd: repoPath });
       } else {
         rmSync(worktreePath, { recursive: true, force: true });
       }

@@ -2,7 +2,6 @@
  * Git diff operations using native child_process
  */
 
-import { execSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,6 +14,7 @@ import type {
 } from './type.js';
 import { GitError } from './type.js';
 import { fetchWithLockSync } from './fetch-lock.js';
+import { gitExec } from './git-exec.js';
 import { detectRefType, resolveRef, determineReviewMode, type GitRef } from './ref.js';
 import {
   getOrCreateWorktree as managedGetOrCreateWorktree,
@@ -42,11 +42,7 @@ function validateGitRepository(repoPath: string): string {
   }
 
   try {
-    execSync('git rev-parse --git-dir', {
-      cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    });
+    gitExec(['rev-parse', '--git-dir'], { cwd: absolutePath });
   } catch (error: unknown) {
     const err = error as { stderr?: string; message?: string };
     throw new GitError(
@@ -143,9 +139,8 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
   // Execute three-dot diff: targetBranch...sourceBranch
   // This finds the merge base and shows only changes from sourceBranch
   try {
-    const diff = execSync(`git diff ${targetRef}...${sourceRef}`, {
+    const diff = gitExec(['diff', `${targetRef}...${sourceRef}`], {
       cwd: absolutePath,
-      encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
     });
 
@@ -202,16 +197,8 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
   if (isIncremental && !skipFetch) {
     // Try to verify commits exist locally
     try {
-      execSync(`git cat-file -t ${sourceRefStr}`, {
-        cwd: absolutePath,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      });
-      execSync(`git cat-file -t ${targetRefStr}`, {
-        cwd: absolutePath,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      });
+      gitExec(['cat-file', '-t', sourceRefStr], { cwd: absolutePath });
+      gitExec(['cat-file', '-t', targetRefStr], { cwd: absolutePath });
       // Both commits exist locally, no fetch needed
       needsFetch = false;
     } catch {
@@ -248,9 +235,8 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
     // Legacy incremental mode: simple two-dot diff between commits
     // WARNING: This includes all changes from merged branches!
     try {
-      diff = execSync(`git diff ${targetRef.resolvedSha}..${sourceRef.resolvedSha}`, {
+      diff = gitExec(['diff', `${targetRef.resolvedSha}..${sourceRef.resolvedSha}`], {
         cwd: absolutePath,
-        encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024,
       });
     } catch (error: unknown) {
@@ -277,12 +263,9 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
       targetArg =
         targetRef.type === 'commit' ? targetRef.resolvedSha! : `${remote}/${targetRef.value}`;
     }
-    const diffCommand = `git diff ${targetArg}...${sourceArg}`;
-
     try {
-      diff = execSync(diffCommand, {
+      diff = gitExec(['diff', `${targetArg}...${sourceArg}`], {
         cwd: absolutePath,
-        encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
       });
     } catch (error: unknown) {
@@ -352,11 +335,7 @@ export function createWorktreeForReview(
 
   try {
     // Create worktree with detached HEAD at the remote ref
-    execSync(`git worktree add --detach "${worktreePath}" ${remoteRef}`, {
-      cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    });
+    gitExec(['worktree', 'add', '--detach', worktreePath, remoteRef], { cwd: absolutePath });
 
     return {
       worktreePath,
@@ -417,11 +396,7 @@ export function createWorktreeForRef(
 
   try {
     // Create worktree with detached HEAD
-    execSync(`git worktree add --detach "${worktreePath}" ${checkoutRef}`, {
-      cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    });
+    gitExec(['worktree', 'add', '--detach', worktreePath, checkoutRef], { cwd: absolutePath });
 
     return {
       worktreePath,
@@ -453,21 +428,15 @@ export function createWorktreeForRef(
 export function removeWorktree(worktreeInfo: WorktreeInfo): void {
   try {
     // Remove the worktree from git's tracking
-    execSync(`git worktree remove --force "${worktreeInfo.worktreePath}"`, {
+    gitExec(['worktree', 'remove', '--force', worktreeInfo.worktreePath], {
       cwd: worktreeInfo.originalRepoPath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
     });
   } catch {
     // If git worktree remove fails, try manual cleanup
     try {
       rmSync(worktreeInfo.worktreePath, { recursive: true, force: true });
       // Prune worktree references
-      execSync('git worktree prune', {
-        cwd: worktreeInfo.originalRepoPath,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      });
+      gitExec(['worktree', 'prune'], { cwd: worktreeInfo.originalRepoPath });
     } catch {
       console.warn(`Warning: Failed to clean up worktree at ${worktreeInfo.worktreePath}`);
     }
@@ -488,11 +457,7 @@ export function getRemoteBranchSha(
 ): string {
   const absolutePath = resolve(repoPath);
   try {
-    const sha = execSync(`git rev-parse ${remote}/${branch}`, {
-      cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    }).trim();
+    const sha = gitExec(['rev-parse', `${remote}/${branch}`], { cwd: absolutePath }).trim();
     return sha;
   } catch (error: unknown) {
     const err = error as { stderr?: string; message?: string };
@@ -514,11 +479,7 @@ export function getHeadSha(repoPath: string = process.cwd()): string {
   const absolutePath = validateGitRepository(repoPath);
 
   try {
-    const sha = execSync('git rev-parse HEAD', {
-      cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    }).trim();
+    const sha = gitExec(['rev-parse', 'HEAD'], { cwd: absolutePath }).trim();
     return sha;
   } catch (error: unknown) {
     const err = error as { stderr?: string; message?: string };
@@ -540,11 +501,7 @@ export function getMergeBase(
   const ref2 = `${remote}/${branch2}`;
 
   try {
-    const mergeBase = execSync(`git merge-base ${ref1} ${ref2}`, {
-      cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    }).trim();
+    const mergeBase = gitExec(['merge-base', ref1, ref2], { cwd: absolutePath }).trim();
     return mergeBase;
   } catch (error: unknown) {
     const err = error as { stderr?: string; message?: string };
@@ -578,10 +535,8 @@ export function getCommitsWithParents(
   try {
     // Get commits in reverse chronological order with parent info
     // Format: SHA PARENT1 PARENT2 ... (space separated)
-    const output = execSync(`git log --format="%H %P" ${targetSha}..${sourceSha}`, {
+    const output = gitExec(['log', '--format=%H %P', `${targetSha}..${sourceSha}`], {
       cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
     }).trim();
 
     if (!output) return [];
@@ -617,21 +572,17 @@ function getCommitDiff(repoPath: string, sha: string): string {
   const absolutePath = resolve(repoPath);
 
   try {
-    return execSync(`git diff ${sha}^..${sha}`, {
+    return gitExec(['diff', `${sha}^..${sha}`], {
       cwd: absolutePath,
-      encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
-      stdio: 'pipe',
     });
   } catch {
     // If commit has no parent (initial commit), use git show to get the diff
     // git show displays the commit's changes in patch format
     try {
-      return execSync(`git show ${sha} --format="" --patch`, {
+      return gitExec(['show', sha, '--format=', '--patch'], {
         cwd: absolutePath,
-        encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024,
-        stdio: 'pipe',
       });
     } catch {
       return '';
@@ -656,11 +607,9 @@ function getMergeCommitOwnChanges(repoPath: string, mergeSha: string): string {
   try {
     // --cc shows combined diff for merge commits
     // Only outputs hunks where the merge result differs from ALL parents
-    const output = execSync(`git diff-tree -p --cc ${mergeSha}`, {
+    const output = gitExec(['diff-tree', '-p', '--cc', mergeSha], {
       cwd: absolutePath,
-      encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024,
-      stdio: 'pipe',
     }).trim();
 
     // diff-tree output includes commit info on first line, skip it
@@ -763,13 +712,9 @@ export function getActualChangedFiles(
     // --no-merges excludes merge commits
     // --name-only shows only file names
     // --format="" suppresses commit info
-    const output = execSync(
-      `git log --no-merges --name-only --format="" ${targetSha}..${sourceSha}`,
-      {
-        cwd: absolutePath,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      }
+    const output = gitExec(
+      ['log', '--no-merges', '--name-only', '--format=', `${targetSha}..${sourceSha}`],
+      { cwd: absolutePath }
     ).trim();
 
     if (!output) return [];
@@ -839,19 +784,13 @@ export function getManagedWorktreeForRef(
  */
 export function removeManagedWorktree(info: ManagedWorktreeInfo): void {
   try {
-    execSync(`git worktree remove --force "${info.worktreePath}"`, {
+    gitExec(['worktree', 'remove', '--force', info.worktreePath], {
       cwd: info.originalRepoPath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
     });
   } catch {
     try {
       rmSync(info.worktreePath, { recursive: true, force: true });
-      execSync('git worktree prune', {
-        cwd: info.originalRepoPath,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      });
+      gitExec(['worktree', 'prune'], { cwd: info.originalRepoPath });
     } catch {
       // Ignore cleanup errors
     }

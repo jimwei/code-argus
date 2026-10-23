@@ -4,9 +4,9 @@
  * Utilities for detecting and resolving Git references (branches vs commits).
  */
 
-import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { GitError } from './type.js';
+import { gitExec } from './git-exec.js';
 
 /**
  * Git reference type
@@ -56,10 +56,8 @@ export function verifyCommit(repoPath: string, sha: string): string {
   const absolutePath = resolve(repoPath);
 
   try {
-    const fullSha = execSync(`git rev-parse --verify ${sha}^{commit}`, {
+    const fullSha = gitExec(['rev-parse', '--verify', `${sha}^{commit}`], {
       cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
     }).trim();
     return fullSha;
   } catch (error: unknown) {
@@ -79,10 +77,8 @@ export function getCommitMessage(repoPath: string, sha: string): string {
   const absolutePath = resolve(repoPath);
 
   try {
-    const message = execSync(`git log -1 --format=%s ${sha}`, {
+    const message = gitExec(['log', '-1', '--format=%s', sha], {
       cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
     }).trim();
     return message;
   } catch {
@@ -106,10 +102,8 @@ export function getCommitsBetween(
   const absolutePath = resolve(repoPath);
 
   try {
-    const output = execSync(`git log --oneline ${fromRef}..${toRef}`, {
+    const output = gitExec(['log', '--oneline', `${fromRef}..${toRef}`], {
       cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
     }).trim();
 
     if (!output) {
@@ -161,10 +155,8 @@ export function resolveRef(
     if (local) {
       // Local mode: use local branch directly
       try {
-        const resolvedSha = execSync(`git rev-parse ${ref}`, {
+        const resolvedSha = gitExec(['rev-parse', ref], {
           cwd: absolutePath,
-          encoding: 'utf-8',
-          stdio: 'pipe',
         }).trim();
 
         return {
@@ -186,10 +178,8 @@ export function resolveRef(
       const remoteRef = `${remote}/${ref}`;
 
       try {
-        const resolvedSha = execSync(`git rev-parse ${remoteRef}`, {
+        const resolvedSha = gitExec(['rev-parse', remoteRef], {
           cwd: absolutePath,
-          encoding: 'utf-8',
-          stdio: 'pipe',
         }).trim();
 
         return {

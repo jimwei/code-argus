@@ -11,8 +11,8 @@
 
 import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { execSync } from 'node:child_process';
 import { setTimeout } from 'node:timers';
+import { gitExec } from './git-exec.js';
 
 // ============================================================================
 // Configuration
@@ -199,11 +199,7 @@ interface ExecuteFetchResult {
 
 function executeFetch(repoPath: string, remote: string, cachePath: string): ExecuteFetchResult {
   try {
-    execSync(`git fetch ${remote}`, {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    });
+    gitExec(['fetch', remote], { cwd: repoPath });
     updateFetchCache(cachePath);
     return { success: true, executed: true };
   } catch (error: unknown) {
