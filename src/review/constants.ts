@@ -205,6 +205,35 @@ export const FAST_MODE_CHALLENGE_ROUNDS = 2;
 export const MAX_ISSUES_PER_GROUP = 5;
 
 /**
+ * 每个 issue 的验证工具调用预算（openai-responses 运行时）
+ *
+ * 工具输出会在后续每一轮被重新发送，因此调用次数是验证成本的平方级因子：
+ * 16836 的单个 issue 用了 37 次 Read/Grep，输入 token 达到 570k，而工具输出
+ * 累计只有约 130k 字符。预算内模型仍可读文件、检索项目约定；触顶后工具停止
+ * 返回内容，提示模型立即基于已收集的证据给出结论。
+ *
+ * 环境变量 ARGUS_VALIDATOR_TOOL_BUDGET 可覆盖；设置为 0 表示不限制。
+ */
+export const DEFAULT_VALIDATOR_TOOL_CALL_BUDGET = 24;
+
+/** 到达预算前多少调用开始催促收束 */
+export const VALIDATOR_TOOL_CALL_WARN_REMAINING = 5;
+
+export function getValidatorToolCallBudget(): number {
+  const raw = process.env.ARGUS_VALIDATOR_TOOL_BUDGET;
+  if (raw === undefined) {
+    return DEFAULT_VALIDATOR_TOOL_CALL_BUDGET;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_VALIDATOR_TOOL_CALL_BUDGET;
+  }
+
+  return parsed;
+}
+
+/**
  * Agent 执行失败时的最大重试次数
  * 用于处理瞬态错误（如网络超时、API 限流）
  */

@@ -13,7 +13,7 @@
  */
 
 import { createRuntimeFromEnv } from '../runtime/factory.js';
-import type { RuntimeExecution } from '../runtime/types.js';
+import type { RuntimeExecution, RuntimeToolDefinition } from '../runtime/types.js';
 import type { RawIssue, ValidatedIssue, SymbolLookup, ValidationStatus } from './types.js';
 import {
   DEFAULT_VALIDATOR_MAX_TURNS,
@@ -21,7 +21,9 @@ import {
   MAX_CHALLENGE_ROUNDS,
   FAST_MODE_CHALLENGE_ROUNDS,
   MIN_CONFIDENCE_FOR_VALIDATION,
+  VALIDATOR_TOOL_CALL_WARN_REMAINING,
   getValidatorMaxTurns,
+  getValidatorToolCallBudget,
 } from './constants.js';
 import { extractJSON } from './utils/json-parser.js';
 import { buildValidationSystemPrompt } from './prompts/validation.js';
@@ -40,6 +42,129 @@ const MAX_VALIDATION_SUGGESTION_CHARS = 3000;
 const MAX_VALIDATION_CODE_SNIPPET_CHARS = 6000;
 const MAX_CHALLENGE_ROUNDS_FOR_LARGE_CONTEXT = 2;
 const LARGE_ISSUE_CONTEXT_CHARS = 12000;
+/**
+ * Validator context is replayed on every tool turn, so the number of tool calls
+ * and the size of their payloads decide the token cost of a single issue. The
+ * counters below are always tracked and reported in `[Validator-Detail]`;
+ * `ARGUS_VALIDATOR_TRACE=1` additionally logs every tool call.
+ */
+const VALIDATOR_TRACE_ENABLED = /^(1|true|yes)$/i.test(process.env.ARGUS_VALIDATOR_TRACE ?? '');
+
+interface ValidatorToolTrace {
+  calls: number;
+  chars: number;
+}
+
+interface ValidatorToolGuardOptions {
+  trace: ValidatorToolTrace;
+  /** 0 disables the budget. */
+  budget: number;
+  language: 'en' | 'zh';
+  getIssueLabel: () => string;
+}
+
+function buildToolBudgetNote(used: number, budget: number, language: 'en' | 'zh'): string {
+  const remaining = Math.max(budget - used, 0);
+  if (language === 'en') {
+    return remaining > VALIDATOR_TOOL_CALL_WARN_REMAINING
+      ? `\n\n[Validator budget] ${used}/${budget} tool calls used. Continue only when the missing evidence could change the verdict.`
+      : `\n\n[Validator budget] ${used}/${budget} tool calls used, ${remaining} left. Stop exploring now and return the final JSON verdict from the evidence above.`;
+  }
+
+  return remaining > VALIDATOR_TOOL_CALL_WARN_REMAINING
+    ? `\n\n[验证预算] 已使用 ${used}/${budget} 次工具调用。仅当缺失的证据可能改变结论时才继续调查。`
+    : `\n\n[验证预算] 已使用 ${used}/${budget} 次工具调用，剩余 ${remaining} 次。请立即停止调查，基于以上证据输出最终 JSON 结论。`;
+}
+
+function buildToolBudgetExhausted(used: number, budget: number, language: 'en' | 'zh'): string {
+  return language === 'en'
+    ? `[Validator budget] The ${budget}-call tool budget for this issue is exhausted (${used} calls used). No further tool output is available. Return the final JSON verdict now from the evidence already gathered.`
+    : `[验证预算] 本 issue 的 ${budget} 次工具调用预算已用尽（已调用 ${used} 次）。不再提供新的工具输出。请立即基于已收集的证据输出最终 JSON 结论。`;
+}
+
+/**
+ * Wraps the repo tools with the per-issue call budget and diagnostics.
+ *
+ * Tool output is replayed on every later turn, so exploration is the dominant
+ * validator cost driver; the budget cap bounds that replay. The model is told
+ * how many calls remain after every call, so reaching the cap forces a verdict
+ * instead of silently truncating one.
+ */
+function guardValidatorTools(
+  tools: RuntimeToolDefinition[],
+  options: ValidatorToolGuardOptions
+): RuntimeToolDefinition[] {
+  const { trace, budget, language, getIssueLabel } = options;
+
+  return tools.map((tool) => ({
+    ...tool,
+    execute: async (args: unknown) => {
+      if (budget > 0 && trace.calls >= budget) {
+        if (VALIDATOR_TRACE_ENABLED) {
+          console.log(
+            `[Validator-Tool] ${tool.name} ${describeToolArgs(args)} -> blocked by tool budget ` +
+              `(${budget}) issue=${getIssueLabel()}`
+          );
+        }
+        return {
+          content: [
+            { type: 'text', text: buildToolBudgetExhausted(trace.calls, budget, language) },
+          ],
+        };
+      }
+
+      const startedAt = Date.now();
+      try {
+        const result = await tool.execute(args);
+        const chars = result.content.reduce((sum, block) => sum + block.text.length, 0);
+        trace.calls += 1;
+        trace.chars += chars;
+        if (VALIDATOR_TRACE_ENABLED) {
+          console.log(
+            `[Validator-Tool] ${tool.name} ${describeToolArgs(args)} -> ${chars} chars ` +
+              `(${Date.now() - startedAt}ms) issue=${getIssueLabel()}`
+          );
+        }
+        if (budget <= 0 || trace.calls < budget - VALIDATOR_TOOL_CALL_WARN_REMAINING) {
+          return result;
+        }
+        return {
+          content: [
+            ...result.content,
+            { type: 'text' as const, text: buildToolBudgetNote(trace.calls, budget, language) },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (VALIDATOR_TRACE_ENABLED) {
+          console.log(
+            `[Validator-Tool] ${tool.name} ${describeToolArgs(args)} -> error: ${message} ` +
+              `issue=${getIssueLabel()}`
+          );
+        }
+        throw error;
+      }
+    },
+  }));
+}
+
+function describeToolArgs(args: unknown): string {
+  if (!args || typeof args !== 'object') {
+    return String(args);
+  }
+
+  const record = args as Record<string, unknown>;
+  const path = typeof record.file_path === 'string' ? record.file_path : undefined;
+  const pattern = typeof record.pattern === 'string' ? record.pattern : undefined;
+  const parts = [path, pattern].filter((part): part is string => Boolean(part));
+  if (typeof record.offset === 'number') {
+    parts.push(`offset=${record.offset}`);
+  }
+  if (typeof record.limit === 'number') {
+    parts.push(`limit=${record.limit}`);
+  }
+  return parts.length > 0 ? parts.join(' ') : JSON.stringify(record).slice(0, 200);
+}
 /**
  * Fast mode's round 1 already performs the self-challenge. Only an uncertain
  * round 1 needs the confirmation round; rerunning a conclusive verdict costs
@@ -209,6 +334,8 @@ interface ResolvedOptions {
   fastMode: boolean;
   language: 'en' | 'zh';
   dependencyContext?: FrontendDependencyContext;
+  /** Per-issue tool call budget for the OpenAI validator runtime (0 = unlimited) */
+  validatorToolCallBudget: number;
 }
 
 /**
@@ -309,6 +436,7 @@ export class StreamingValidator {
       fastMode,
       language: options.language ?? 'zh',
       dependencyContext: options.dependencyContext,
+      validatorToolCallBudget: getValidatorToolCallBudget(),
     };
   }
 
@@ -736,17 +864,26 @@ export class StreamingValidator {
 
         currentRound = 1;
         currentResponses = [];
+        const toolTrace: ValidatorToolTrace = { calls: 0, chars: 0 };
         const configuredReadLimit = this.options.readLimit;
-        const repoContextTools = createRepoContextTools(this.options.repoPath, {
-          defaultReadLimit: configuredReadLimit ?? OPENAI_VALIDATION_DEFAULT_READ_LIMIT,
-          maxReadLimit: configuredReadLimit ?? OPENAI_VALIDATION_MAX_READ_LIMIT,
-          focusedReadWindow: {
-            filePath: currentIssue.file,
-            lineStart: currentIssue.line_start,
-            lineEnd: currentIssue.line_end,
-            contextLines: OPENAI_VALIDATION_READ_CONTEXT_LINES,
-          },
-        });
+        const repoContextTools = guardValidatorTools(
+          createRepoContextTools(this.options.repoPath, {
+            defaultReadLimit: configuredReadLimit ?? OPENAI_VALIDATION_DEFAULT_READ_LIMIT,
+            maxReadLimit: configuredReadLimit ?? OPENAI_VALIDATION_MAX_READ_LIMIT,
+            focusedReadWindow: {
+              filePath: currentIssue.file,
+              lineStart: currentIssue.line_start,
+              lineEnd: currentIssue.line_end,
+              contextLines: OPENAI_VALIDATION_READ_CONTEXT_LINES,
+            },
+          }),
+          {
+            trace: toolTrace,
+            budget: this.options.validatorToolCallBudget,
+            language: this.options.language,
+            getIssueLabel: () => currentIssue?.id ?? '<none>',
+          }
+        );
 
         const toPromptMessage = (content: string): RuntimePromptMessage => ({
           type: 'user',
@@ -864,6 +1001,7 @@ export class StreamingValidator {
               console.log(
                 `[Validator-Detail] Issue="${currentIssue?.title?.slice(0, 30)}" Round=${currentRound} ` +
                   `Tokens: input=${inputTokens}, output=${outputTokens}, total=${turnTokens}, ` +
+                  `tools=${toolTrace.calls}, toolChars=${toolTrace.chars}, ` +
                   `session_total=${session.tokensUsed}`
               );
 
@@ -1490,6 +1628,9 @@ export class StreamingValidator {
       truncatePromptText(issue.description, MAX_VALIDATION_DESCRIPTION_CHARS) ?? issue.description;
     const suggestion = truncatePromptText(issue.suggestion, MAX_VALIDATION_SUGGESTION_CHARS);
     const codeSnippet = truncatePromptText(issue.code_snippet, MAX_VALIDATION_CODE_SNIPPET_CHARS);
+    const readStep = codeSnippet
+      ? `1. 先核对上方代码片段：它已覆盖报告位置的改动；片段足以判断时无需重复读取同一区间，仅在需要上下文、调用方或既有约定证据时读取 ${issue.file}:${issue.line_start}-${issue.line_end}`
+      : `1. 读取实际代码文件 ${issue.file}:${issue.line_start}-${issue.line_end}`;
 
     return `请验证以下问题：
 
@@ -1505,7 +1646,7 @@ ${codeSnippet ? `**代码片段**:\n\`\`\`\n${codeSnippet}\n\`\`\`` : ''}
 **初始置信度**: ${issue.confidence}
 
 请：
-1. 读取实际代码文件 ${issue.file}:${issue.line_start}-${issue.line_end}
+${readStep}
 2. 检查是否存在缓解因素（错误处理、测试覆盖等）
 3. 做出验证决定
 
