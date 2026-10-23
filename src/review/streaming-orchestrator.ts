@@ -36,7 +36,7 @@ import {
 } from '../git/diff.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { execSync } from 'node:child_process';
+import { gitExec } from '../git/git-exec.js';
 import {
   detectRefType,
   getCommitsBetween,
@@ -1773,11 +1773,9 @@ export class StreamingReviewOrchestrator {
       for (const sha of commits) {
         try {
           // Try to get diff against parent
-          const diff = execSync(`git diff ${sha}^..${sha}`, {
+          const diff = gitExec(['diff', `${sha}^..${sha}`], {
             cwd: absolutePath,
-            encoding: 'utf-8',
             maxBuffer: 10 * 1024 * 1024,
-            stdio: 'pipe',
           });
           if (diff.trim()) {
             diffs.push(diff);
@@ -1785,11 +1783,9 @@ export class StreamingReviewOrchestrator {
         } catch {
           // If no parent (initial commit), use git show
           try {
-            const diff = execSync(`git show ${sha} --format="" --patch`, {
+            const diff = gitExec(['show', sha, '--format=', '--patch'], {
               cwd: absolutePath,
-              encoding: 'utf-8',
               maxBuffer: 10 * 1024 * 1024,
-              stdio: 'pipe',
             });
             if (diff.trim()) {
               diffs.push(diff);
