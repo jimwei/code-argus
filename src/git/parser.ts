@@ -103,6 +103,157 @@ export function parseDiff(raw: string): DiffFile[] {
   return files;
 }
 
+interface GitPathToken {
+  raw: string;
+  quoted: boolean;
+  end: number;
+}
+
+/**
+ * Read one path token from the `diff --git` header. Git quotes a path when it
+ * contains spaces, quotes, backslashes, control characters, or (with the
+ * default core.quotePath) non-ASCII bytes. Quoted paths use C-style escapes,
+ * so a simple whitespace split drops files with non-ASCII names entirely.
+ */
+function readGitPathToken(input: string, start: number): GitPathToken | null {
+  let index = start;
+  while (index < input.length && input[index] === ' ') {
+    index++;
+  }
+  if (index >= input.length) {
+    return null;
+  }
+
+  if (input[index] === '"') {
+    const begin = index + 1;
+    index++;
+    while (index < input.length) {
+      const char = input[index]!;
+      if (char === '\\') {
+        index += 2;
+        continue;
+      }
+      if (char === '"') {
+        return {
+          raw: input.slice(begin, index),
+          quoted: true,
+          end: index + 1,
+        };
+      }
+      index++;
+    }
+    return null;
+  }
+
+  const begin = index;
+  while (index < input.length && input[index] !== ' ') {
+    index++;
+  }
+  return {
+    raw: input.slice(begin, index),
+    quoted: false,
+    end: index,
+  };
+}
+
+/**
+ * Decode a Git C-style quoted path. Octal escapes are byte sequences, so they
+ * must be collected as bytes and decoded as UTF-8 together; decoding each
+ * escape to a character first corrupts multi-byte names.
+ */
+function decodeGitQuotedPath(raw: string): string {
+  const bytes: number[] = [];
+  const simpleEscapes: Record<string, number> = {
+    n: 10,
+    t: 9,
+    r: 13,
+    b: 8,
+    f: 12,
+    v: 11,
+    a: 7,
+    '\\': 92,
+    '"': 34,
+  };
+
+  for (let index = 0; index < raw.length; index++) {
+    const char = raw[index]!;
+    if (char !== '\\') {
+      const codePoint = raw.codePointAt(index)!;
+      const literal = String.fromCodePoint(codePoint);
+      for (const byte of Buffer.from(literal, 'utf8')) {
+        bytes.push(byte);
+      }
+      index += literal.length - 1;
+      continue;
+    }
+
+    const next = raw[index + 1];
+    if (next === undefined) {
+      bytes.push(92);
+      break;
+    }
+
+    if (next >= '0' && next <= '7') {
+      let octal = '';
+      let cursor = index + 1;
+      while (cursor < raw.length && cursor < index + 4) {
+        const digit = raw[cursor]!;
+        if (digit < '0' || digit > '7') {
+          break;
+        }
+        octal += digit;
+        cursor++;
+      }
+      bytes.push(parseInt(octal, 8));
+      index = cursor - 1;
+      continue;
+    }
+
+    bytes.push(simpleEscapes[next] ?? next.charCodeAt(0));
+    index++;
+  }
+
+  return Buffer.from(bytes).toString('utf8');
+}
+
+function parseGitDiffPaths(headerLine: string): { aPath: string; bPath: string } | null {
+  const line = headerLine.replace(/\r$/, '');
+  const first = readGitPathToken(line, 0);
+  if (!first) {
+    return null;
+  }
+  const second = readGitPathToken(line, first.end);
+  if (!second) {
+    return null;
+  }
+
+  const aPath = first.quoted ? decodeGitQuotedPath(first.raw) : first.raw;
+  const bPath = second.quoted ? decodeGitQuotedPath(second.raw) : second.raw;
+  if (!aPath.startsWith('a/') || !bPath.startsWith('b/')) {
+    return null;
+  }
+  return { aPath: aPath.slice(2), bPath: bPath.slice(2) };
+}
+
+/**
+ * Fallback for unusual diffs where the `diff --git` header is unavailable.
+ * The `---`/`+++` lines use the same quoting rules.
+ */
+function parseMarkerPath(line: string | undefined, prefix: 'a/' | 'b/'): string | null {
+  if (!line) {
+    return null;
+  }
+  const token = readGitPathToken(line.slice(4), 0);
+  if (!token) {
+    return null;
+  }
+  const decoded = token.quoted ? decodeGitQuotedPath(token.raw) : token.raw;
+  if (decoded === '/dev/null' || !decoded.startsWith(prefix)) {
+    return null;
+  }
+  return decoded.slice(prefix.length);
+}
+
 /**
  * Parse a single file diff chunk
  *
@@ -110,16 +261,34 @@ export function parseDiff(raw: string): DiffFile[] {
  * @returns Parsed diff file or null if invalid
  */
 function parseFileDiff(chunk: string): DiffFile | null {
-  // Extract file path from first line: a/path/to/file b/path/to/file
-  const firstLine = chunk.split('\n')[0];
-  const pathMatch = firstLine?.match(/^a\/(.+?)\s+b\/(.+?)$/);
+  const lines = chunk.split('\n');
+  const firstLine = lines[0] ?? '';
 
-  if (!pathMatch) {
+  // Extract file path from the first line: a/path/to/file b/path/to/file,
+  // where either side may be Git-quoted (including octal-escaped UTF-8).
+  let paths = parseGitDiffPaths(firstLine);
+  if (!paths) {
+    const oldPath = parseMarkerPath(
+      lines.find((line) => line.startsWith('--- ')),
+      'a/'
+    );
+    const newPath = parseMarkerPath(
+      lines.find((line) => line.startsWith('+++ ')),
+      'b/'
+    );
+    if (oldPath || newPath) {
+      paths = {
+        aPath: oldPath ?? newPath!,
+        bPath: newPath ?? oldPath!,
+      };
+    }
+  }
+
+  if (!paths) {
     return null;
   }
 
-  const aPath = pathMatch[1]!;
-  const bPath = pathMatch[2]!;
+  const { aPath, bPath } = paths;
 
   // Determine change type and file path
   let type: 'add' | 'delete' | 'modify';
@@ -297,7 +466,6 @@ export function parseHunks(chunk: string): DiffHunk[] {
   let match: RegExpExecArray | null;
   const hunkPositions: {
     start: number;
-    header: string;
     oldStart: number;
     oldCount: number;
     newStart: number;
@@ -307,7 +475,6 @@ export function parseHunks(chunk: string): DiffHunk[] {
   while ((match = hunkHeaderRegex.exec(chunk)) !== null) {
     hunkPositions.push({
       start: match.index,
-      header: match[0],
       oldStart: parseInt(match[1] ?? '1', 10),
       oldCount: match[2] ? parseInt(match[2], 10) : 1,
       newStart: parseInt(match[3] ?? '1', 10),
@@ -321,9 +488,14 @@ export function parseHunks(chunk: string): DiffHunk[] {
     const nextPos = hunkPositions[i + 1];
     const hunkEnd = nextPos ? nextPos.start : chunk.length;
 
-    // Get hunk content (after the header line)
-    const headerEnd = pos.start + pos.header.length;
-    const hunkContent = chunk.slice(headerEnd, hunkEnd);
+    // Get hunk content (after the header line). Git may append an optional
+    // section heading after the closing @@; it is not a hunk line, so skip the
+    // whole header line instead of only the matched @@ prefix.
+    const headerLineEnd = chunk.indexOf('\n', pos.start);
+    const hunkContent = chunk.slice(
+      headerLineEnd === -1 ? chunk.length : headerLineEnd + 1,
+      hunkEnd
+    );
     const rawLines = hunkContent.split('\n');
 
     const lines: HunkLine[] = [];
