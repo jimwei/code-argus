@@ -1253,4 +1253,108 @@ describe('streaming validator runtime bridge', () => {
     expect(result.cachedInputTokensUsed).toBe(900);
     expect(result.outputTokensUsed).toBe(80);
   });
+
+  it('skips the fast-mode confirmation round when round 1 is conclusive', async () => {
+    const responseText = JSON.stringify({
+      validation_status: 'rejected',
+      final_confidence: 0.2,
+      grounding_evidence: {
+        checked_files: ['src/api/service.ts'],
+        checked_symbols: [],
+        related_context: 'The guard branch is observed in the changed code.',
+        reasoning: 'The optional payload is checked before use.',
+      },
+    });
+    let promptCount = 0;
+
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const iterator = options.prompt[Symbol.asyncIterator]();
+          const firstPrompt = await iterator.next();
+          expect(firstPrompt.done).toBe(false);
+          promptCount++;
+
+          yield {
+            type: 'assistant.text',
+            text: responseText,
+          };
+
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: {
+              inputTokens: 20,
+              outputTokens: 5,
+            },
+            text: responseText,
+          };
+
+          const nextPrompt = await iterator.next();
+          if (!nextPrompt.done) {
+            promptCount++;
+            yield {
+              type: 'assistant.text',
+              text: responseText,
+            };
+            yield {
+              type: 'result',
+              status: 'success',
+              usage: {
+                inputTokens: 30,
+                outputTokens: 5,
+              },
+              text: responseText,
+            };
+          }
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      fastMode: true,
+      challengeMode: true,
+      maxChallengeRounds: 2,
+      language: 'en',
+    });
+
+    validator.enqueue({
+      id: 'issue-fast-rejected',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      suggestion: 'Guard the null path before accessing response fields.',
+      confidence: 0.9,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush();
+
+    expect(promptCount).toBe(1);
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(result.issues[0]).toMatchObject({
+      id: 'issue-fast-rejected',
+      validation_status: 'rejected',
+      final_confidence: 0.2,
+    });
+  });
 });

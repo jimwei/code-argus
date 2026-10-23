@@ -40,6 +40,11 @@ const MAX_VALIDATION_SUGGESTION_CHARS = 3000;
 const MAX_VALIDATION_CODE_SNIPPET_CHARS = 6000;
 const MAX_CHALLENGE_ROUNDS_FOR_LARGE_CONTEXT = 2;
 const LARGE_ISSUE_CONTEXT_CHARS = 12000;
+/**
+ * Fast mode's round 1 already performs the self-challenge. Only an uncertain
+ * round 1 needs the confirmation round; rerunning a conclusive verdict costs
+ * 60-900k tokens and can downgrade a confirmed finding to uncertain.
+ */
 
 function getErrorStatus(error: unknown): number | undefined {
   if (!error || typeof error !== 'object' || !('status' in error)) {
@@ -900,8 +905,24 @@ export class StreamingValidator {
                 }
 
                 let shouldContinueChallenge = false;
+                const skipFastConfirmation =
+                  this.options.fastMode === true &&
+                  currentRound === 1 &&
+                  response.validation_status !== 'uncertain';
 
-                if (this.options.challengeMode && currentRound < maxRoundsForThisIssue) {
+                if (
+                  skipFastConfirmation &&
+                  this.options.challengeMode &&
+                  currentRound < maxRoundsForThisIssue
+                ) {
+                  if (this.options.verbose) {
+                    console.log(
+                      `[StreamingValidator] ${currentIssue!.id} round 1 is ` +
+                        `${response.validation_status} (${response.final_confidence}); ` +
+                        'skipping fast-mode confirmation round'
+                    );
+                  }
+                } else if (this.options.challengeMode && currentRound < maxRoundsForThisIssue) {
                   if (currentRound >= 2) {
                     const prevResponse = currentResponses[currentResponses.length - 2]!;
                     if (prevResponse.validation_status !== response.validation_status) {
@@ -1195,8 +1216,24 @@ export class StreamingValidator {
             }
 
             let shouldContinueChallenge = false;
+            const skipFastConfirmation =
+              this.options.fastMode === true &&
+              currentRound === 1 &&
+              response.validation_status !== 'uncertain';
 
-            if (this.options.challengeMode && currentRound < maxRoundsForThisIssue) {
+            if (
+              skipFastConfirmation &&
+              this.options.challengeMode &&
+              currentRound < maxRoundsForThisIssue
+            ) {
+              if (this.options.verbose) {
+                console.log(
+                  `[StreamingValidator] ${currentIssue!.id} round 1 is ` +
+                    `${response.validation_status} (${response.final_confidence}); ` +
+                    'skipping fast-mode confirmation round'
+                );
+              }
+            } else if (this.options.challengeMode && currentRound < maxRoundsForThisIssue) {
               if (currentRound >= 2) {
                 const prevResponse = currentResponses[currentResponses.length - 2]!;
                 if (prevResponse.validation_status !== response.validation_status) {

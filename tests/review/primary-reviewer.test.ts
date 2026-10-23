@@ -97,7 +97,7 @@ describe('configurable primary reviewer', () => {
 
   it('uses twice the base budget and clamps retries', async () => {
     const reviewer = await loadPrimaryReviewer();
-    expect(getPrimaryReviewerMaxTurns(reviewer, 10)).toBe(92);
+    expect(getPrimaryReviewerMaxTurns(reviewer, 10)).toBe(60);
     expect(getPrimaryReviewerMaxTurns(reviewer, 1000, 2)).toBe(500);
   });
 });

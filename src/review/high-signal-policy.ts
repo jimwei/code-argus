@@ -4,7 +4,9 @@ import type { RawIssue, ValidatedIssue } from './types.js';
 const LOW_SIGNAL_SUGGESTION_CATEGORIES = new Set(['style', 'maintainability', 'performance']);
 const STRICT_WARNING_CATEGORIES = new Set(['style', 'maintainability']);
 
-const STRICT_WARNING_MIN_CONFIDENCE = 0.75;
+// 验证门与最终报告门必须一致：否则会在 0.75-0.8 区间先花一次完整验证，
+// 再在 aggregate 阶段把同一个 confirmed 问题丢掉。
+const STRICT_WARNING_MIN_CONFIDENCE = 0.8;
 const STRICT_WARNING_REPORT_CONFIDENCE = 0.8;
 const SOFT_WARNING_MAX_CHALLENGE_ROUNDS = 2;
 
