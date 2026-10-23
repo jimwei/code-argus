@@ -342,7 +342,7 @@ describe('streaming orchestrator max-turn handling', () => {
     const maxTurnsPerAttempt = executeMock.mock.calls.map(
       (call) => (call[0] as { maxTurns?: number }).maxTurns
     );
-    expect(maxTurnsPerAttempt).toEqual([29, 37]);
+    expect(maxTurnsPerAttempt).toEqual([24, 30]);
     expect(
       events.find(
         (event) =>

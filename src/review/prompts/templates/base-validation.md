@@ -30,6 +30,15 @@ When validating issues, follow this priority order:
    - Search for keywords from the issue in those rules
    - If a matching rule exists, cite it in your reasoning
 
+## Evidence Sufficiency (stop rule)
+
+Stop investigating as soon as the evidence already gathered supports a verdict:
+
+- One or two concrete precedents are enough to establish a project convention; do not keep grepping to count more occurrences.
+- Do not re-read a file range you already read in this session.
+- Trace callers or sibling implementations only when the verdict depends on them.
+- Each extra tool call replays the whole transcript, so unnecessary exploration is the dominant validation cost. Once the evidence is sufficient, stop and output the JSON verdict.
+
 **CRITICAL RULES**:
 
 1. All explanations must be in {{COMMENT_LANGUAGE}}

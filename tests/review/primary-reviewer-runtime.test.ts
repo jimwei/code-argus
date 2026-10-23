@@ -87,7 +87,7 @@ describe('primary reviewer runtime', () => {
       'Glob',
       'report_incomplete',
     ]);
-    expect(options.maxTurns).toBe(48);
+    expect(options.maxTurns).toBe(30);
     expect(options.completionBudget.reserveTurns).toBe(3);
     expect(result.tokens).toBe(12);
   });
@@ -196,7 +196,7 @@ describe('primary reviewer runtime', () => {
       progressMode: 'silent',
     });
     const result = await (orchestrator as any).runAgentsWithStreaming(context, '.', []);
-    expect(executeMock.mock.calls.map(([options]) => options.maxTurns)).toEqual([48, 60]);
+    expect(executeMock.mock.calls.map(([options]) => options.maxTurns)).toEqual([30, 38]);
     expect(result.tokens).toBe(24);
     expect(result.cachedInputTokensUsed).toBe(8);
     expect((orchestrator as any).getReviewExecutionMetadata().review_complete).toBe(true);

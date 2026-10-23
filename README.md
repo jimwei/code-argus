@@ -228,6 +228,11 @@ Notes:
   higher than `medium` (the validator model itself keeps using `ARGUS_VALIDATOR_MODEL`).
   Set `ARGUS_VALIDATOR_REASONING_EFFORT` to override; when no main effort is configured
   the validator keeps the provider default
+- `ARGUS_VALIDATOR_TOOL_BUDGET` (default `24`, `0` disables) bounds the Read/Grep/Glob
+  calls made while validating one issue on the `openai-responses` runtime. Every tool
+  output is replayed on later turns, so unbounded exploration dominates validator cost;
+  after the budget the tools stop returning content and push the model to a verdict from
+  the evidence it already has. The bottom five calls are warned off in the tool output.
 - The following bullets, through the `systemPrompt` note, describe the `pi-ai` implementation
   (`ARGUS_OPENAI_RESPONSE_IMPL=pi-ai`)
 - `openai-responses` traffic goes through `@earendil-works/pi-ai`, which always sends
@@ -296,6 +301,7 @@ Notes:
 | Validator model                 | `ARGUS_VALIDATOR_MODEL`                         |
 | Reasoning effort                | `ARGUS_REASONING_EFFORT`                        |
 | Validator reasoning effort      | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
+| Validator tool-call budget      | `ARGUS_VALIDATOR_TOOL_BUDGET`                   |
 | pi-ai transcript budget         | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
 | Claude API key                  | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
 | Claude OAuth or proxy           | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |

@@ -94,25 +94,25 @@ export function shouldSkipReviewForDiffSize(diffSizeBytes: number): boolean {
  * 根据 diff 大小计算推荐的 maxTurns
  *
  * 公式：基础轮数 + (文件数 * 每文件轮数)
- * - 基础轮数：16（为 reviewer 提供更稳妥的初始分析预算）
- * - 每文件轮数：3
- * - 最小值：24
+ * - 基础轮数：10（初始分析 + 总结）
+ * - 每文件轮数：2（读取上下文 + 报告问题）
+ * - 最小值：15
  * - 最大值：500
  *
  * 示例：
- * - 1 文件: 16 + 3 = 24 轮 (最小值)
- * - 4 文件: 16 + 12 = 28 轮
- * - 5 文件: 16 + 15 = 31 轮
- * - 162+ 文件: 500 轮 (封顶)
+ * - 1 文件: 10 + 2 = 15 轮 (最小值)
+ * - 10 文件: 10 + 20 = 30 轮
+ * - 245+ 文件: 500 轮 (封顶)
  *
  * 说明：
+ * - 每一轮都会重放当时的上下文，轮数是 token 成本的乘数；这里保持保守预算
  * - 该值是 reviewer 的基础预算，orchestrator 会按 reviewer 类型继续放大
- * - logic/performance/security reviewer 会在基础上应用额外 multiplier
+ * - 单 reviewer 策略下的综合 reviewer 会拿到 2 倍预算
  */
 export function getRecommendedMaxTurns(fileCount: number): number {
-  const BASE_TURNS = 16;
-  const TURNS_PER_FILE = 3;
-  const MIN_TURNS = 24;
+  const BASE_TURNS = 10;
+  const TURNS_PER_FILE = 2;
+  const MIN_TURNS = 15;
   const MAX_TURNS = 500;
 
   // 验证输入：处理负数、NaN、Infinity 等无效值
@@ -203,6 +203,35 @@ export const FAST_MODE_CHALLENGE_ROUNDS = 2;
  * 超过的问题会拆分到多个组
  */
 export const MAX_ISSUES_PER_GROUP = 5;
+
+/**
+ * 每个 issue 的验证工具调用预算（openai-responses 运行时）
+ *
+ * 工具输出会在后续每一轮被重新发送，因此调用次数是验证成本的平方级因子：
+ * 16836 的单个 issue 用了 37 次 Read/Grep，输入 token 达到 570k，而工具输出
+ * 累计只有约 130k 字符。预算内模型仍可读文件、检索项目约定；触顶后工具停止
+ * 返回内容，提示模型立即基于已收集的证据给出结论。
+ *
+ * 环境变量 ARGUS_VALIDATOR_TOOL_BUDGET 可覆盖；设置为 0 表示不限制。
+ */
+export const DEFAULT_VALIDATOR_TOOL_CALL_BUDGET = 24;
+
+/** 到达预算前多少调用开始催促收束 */
+export const VALIDATOR_TOOL_CALL_WARN_REMAINING = 5;
+
+export function getValidatorToolCallBudget(): number {
+  const raw = process.env.ARGUS_VALIDATOR_TOOL_BUDGET;
+  if (raw === undefined) {
+    return DEFAULT_VALIDATOR_TOOL_CALL_BUDGET;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_VALIDATOR_TOOL_CALL_BUDGET;
+  }
+
+  return parsed;
+}
 
 /**
  * Agent 执行失败时的最大重试次数

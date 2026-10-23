@@ -322,10 +322,13 @@ export class StreamingReviewOrchestrator {
     zeroIssueMaxTurnsRetry: boolean
   ): number {
     const scaledTurns = Math.ceil(baseTurns * this.getReviewerTurnMultiplier(agentType));
+    // Apply the floor before the retry bump; otherwise a low base recommendation
+    // keeps both attempts pinned at 24 and the "larger retry" does not grow.
+    const effectiveTurns = Math.max(24, scaledTurns);
     const retryAdjustedTurns =
-      attempt > 1 && zeroIssueMaxTurnsRetry ? Math.ceil(scaledTurns * 1.25) : scaledTurns;
+      attempt > 1 && zeroIssueMaxTurnsRetry ? Math.ceil(effectiveTurns * 1.25) : effectiveTurns;
 
-    return Math.max(24, Math.min(500, retryAdjustedTurns));
+    return Math.min(500, retryAdjustedTurns);
   }
 
   private getInvocationIssueCount(invocationKey: string): number {

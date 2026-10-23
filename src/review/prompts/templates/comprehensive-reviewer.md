@@ -32,6 +32,12 @@ Rules:
 - If the diff removes or weakens an existing security guard and untrusted input can still reach that boundary, report at least `error`; do not downgrade to `warning` because the observable impact looks narrow or requires a crafted payload.
 - Report a defect under the severity its impact justifies even when the fix is trivial; severity describes risk, not effort.
 
+## Reporting Discipline
+
+Each finding triggers a separate validation pass. Report only findings you have grounded in the repository: a concrete call path, a reachable input or actor, and an observable impact. Do not report untraced hypotheses or optional refactors. Classify a functional regression (clipping, data loss, broken flow, removed guard) under logic, even when the fix is in presentation code.
+
+Set confidence to reflect the evidence: 0.9+ means the defect is traced in the code; 0.7-0.8 means strong but incomplete evidence; 0.5 or below means a hypothesis. The pipeline validates warnings at 0.5, so do not mark an untraced hypothesis as a warning.
+
 ## Evidence and Completion
 
 Report each concrete, actionable finding immediately through report_issue, with the appropriate security/logic/performance/style/maintainability category and evidence. Prefer changed lines as the finding location; inspect surrounding code and callers for grounding. Distinguish proven bugs from unresolved hypotheses. Do not invent findings or omit an entire dimension merely to finish within the budget.

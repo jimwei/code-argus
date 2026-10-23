@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  parseDiff,
   parseHunks,
   detectWhitespaceOnlyChanges,
   getChangedLineNumbers,
@@ -567,5 +568,78 @@ describe('getChangedLineNumbers', () => {
 
     const result = getChangedLineNumbers([hunk1, hunk2]);
     expect(result).toEqual([5, 10]);
+  });
+});
+
+// ============================================================================
+// parseDiff tests
+// ============================================================================
+
+describe('parseDiff', () => {
+  it('decodes Git-quoted non-ASCII paths and keeps changed lines', () => {
+    // Git core.quotePath escapes UTF-8 bytes as octal; \345\270\263... is 帳票作成.
+    const escapedDir = '\\345\\270\\263\\347\\245\\250\\344\\275\\234\\346\\210\\220';
+    const base =
+      'SourceCode/Leyser.Payroll.Client/Leyser.Payroll.Client.Pages/' +
+      'Leyser.Payroll.Client.Report.Template1';
+    const filePath = `${base}/帳票作成/rptSubSokatsuhyo2026.vb`;
+    const raw = [
+      `diff --git "a/${base}/${escapedDir}/rptSubSokatsuhyo2026.vb" "b/${base}/${escapedDir}/rptSubSokatsuhyo2026.vb"`,
+      'index e6b5525c4..731a24525 100644',
+      `--- "a/${base}/${escapedDir}/rptSubSokatsuhyo2026.vb"`,
+      `+++ "b/${base}/${escapedDir}/rptSubSokatsuhyo2026.vb"`,
+      '@@ -1149,6 +1149,6 @@ Public Class rptSubSokatsuhyo2026',
+      ' context 1149',
+      ' context 1150',
+      ' context 1151',
+      '-old 1152',
+      '-old 1153',
+      '+new 1152',
+      '+new 1153',
+      ' context 1154',
+      '',
+    ].join('\n');
+
+    const files = parseDiff(raw);
+
+    expect(files).toHaveLength(1);
+    expect(files[0]!.path).toBe(filePath);
+    expect(files[0]!.changedLines).toEqual([1152, 1153]);
+  });
+
+  it('still parses unquoted paths', () => {
+    const raw = [
+      'diff --git a/src/foo.ts b/src/foo.ts',
+      '--- a/src/foo.ts',
+      '+++ b/src/foo.ts',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+
+    const files = parseDiff(raw);
+
+    expect(files).toHaveLength(1);
+    expect(files[0]!.path).toBe('src/foo.ts');
+    expect(files[0]!.changedLines).toEqual([1]);
+  });
+
+  it('keeps spaces inside quoted paths', () => {
+    const raw = [
+      'diff --git "a/src/foo bar.ts" "b/src/foo bar.ts"',
+      '--- "a/src/foo bar.ts"',
+      '+++ "b/src/foo bar.ts"',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+
+    const files = parseDiff(raw);
+
+    expect(files).toHaveLength(1);
+    expect(files[0]!.path).toBe('src/foo bar.ts');
+    expect(files[0]!.changedLines).toEqual([1]);
   });
 });

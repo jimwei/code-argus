@@ -95,11 +95,37 @@ export function aggregateIssues(
   }
 
   if (opts.applyHighSignalPolicy) {
-    filtered = filtered.filter((issue) => shouldIncludeIssueInFinalReport(issue));
+    filtered = filterByHighSignalPolicy(filtered);
   }
 
   // Step 3: Sort
   return sortIssues(filtered, opts.sortBy);
+}
+
+/**
+ * Apply the final high-signal policy while leaving an audit trail for every
+ * dropped issue. Confirmed issues that disappear here have already paid for a
+ * full validation pass, so the category/severity/confidence must be visible.
+ */
+function filterByHighSignalPolicy(issues: ValidatedIssue[]): ValidatedIssue[] {
+  return issues.filter((issue) => {
+    if (shouldIncludeIssueInFinalReport(issue)) {
+      return true;
+    }
+
+    const reason =
+      issue.severity === 'suggestion'
+        ? 'low-signal suggestion'
+        : 'strict warning below report confidence';
+    console.log(
+      `[Aggregator] Dropped validated issue id=${issue.id} ` +
+        `status=${issue.validation_status} category=${issue.category} ` +
+        `severity=${issue.severity} final_confidence=${issue.final_confidence.toFixed(2)} ` +
+        `reason=${reason} file=${issue.file}:${issue.line_start} ` +
+        `title="${(issue.title ?? '').slice(0, 80)}"`
+    );
+    return false;
+  });
 }
 
 /**
@@ -133,7 +159,7 @@ export function aggregate(
   }
 
   if (opts.applyHighSignalPolicy) {
-    filtered = filtered.filter((issue) => shouldIncludeIssueInFinalReport(issue));
+    filtered = filterByHighSignalPolicy(filtered);
   }
 
   const afterFilter = filtered.length;

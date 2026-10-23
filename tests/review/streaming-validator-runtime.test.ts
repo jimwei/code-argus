@@ -1685,4 +1685,280 @@ describe('streaming validator runtime bridge', () => {
     expect(result.cachedInputTokensUsed).toBe(900);
     expect(result.outputTokensUsed).toBe(80);
   });
+
+  it('skips the fast-mode confirmation round when round 1 is conclusive', async () => {
+    const responseText = JSON.stringify({
+      validation_status: 'rejected',
+      final_confidence: 0.2,
+      grounding_evidence: {
+        checked_files: ['src/api/service.ts'],
+        checked_symbols: [],
+        related_context: 'The guard branch is observed in the changed code.',
+        reasoning: 'The optional payload is checked before use.',
+      },
+    });
+    let promptCount = 0;
+
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: {
+          main: 'gpt-5.3-codex',
+          light: 'gpt-5-mini',
+          validator: 'gpt-5.3-codex',
+        },
+        openai: {
+          apiKey: 'openai-key',
+          source: 'argus',
+        },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const iterator = options.prompt[Symbol.asyncIterator]();
+          const firstPrompt = await iterator.next();
+          expect(firstPrompt.done).toBe(false);
+          promptCount++;
+
+          yield {
+            type: 'assistant.text',
+            text: responseText,
+          };
+
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: {
+              inputTokens: 20,
+              outputTokens: 5,
+            },
+            text: responseText,
+          };
+
+          const nextPrompt = await iterator.next();
+          if (!nextPrompt.done) {
+            promptCount++;
+            yield {
+              type: 'assistant.text',
+              text: responseText,
+            };
+            yield {
+              type: 'result',
+              status: 'success',
+              usage: {
+                inputTokens: 30,
+                outputTokens: 5,
+              },
+              text: responseText,
+            };
+          }
+        },
+        close: closeMock,
+      })),
+    });
+
+    const validator = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      fastMode: true,
+      challengeMode: true,
+      maxChallengeRounds: 2,
+      language: 'en',
+    });
+
+    validator.enqueue({
+      id: 'issue-fast-rejected',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      suggestion: 'Guard the null path before accessing response fields.',
+      confidence: 0.9,
+      source_agent: 'logic-reviewer',
+    });
+
+    const result = await validator.flush();
+
+    expect(promptCount).toBe(1);
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(result.issues[0]).toMatchObject({
+      id: 'issue-fast-rejected',
+      validation_status: 'rejected',
+      final_confidence: 0.2,
+    });
+  });
+
+  it('caps per-issue validator tool calls and pushes the model to a verdict', async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), 'argus-validator-budget-'));
+    tempDirs.push(repoPath);
+    await writeFile(
+      join(repoPath, 'service.ts'),
+      Array.from({ length: 80 }, (_, index) => `line ${index + 1}`).join('\n')
+    );
+
+    const previousBudget = process.env.ARGUS_VALIDATOR_TOOL_BUDGET;
+    process.env.ARGUS_VALIDATOR_TOOL_BUDGET = '2';
+    try {
+      let firstPromptText = '';
+      let firstNote = '';
+      let secondNote = '';
+      let blockedText = '';
+
+      createRuntimeFromEnvMock.mockReturnValue({
+        kind: 'openai-responses',
+        config: {
+          runtime: 'openai-responses',
+          models: { main: 'gpt-5.3-codex', light: 'gpt-5-mini', validator: 'gpt-5.3-codex' },
+          openai: { apiKey: 'openai-key', source: 'argus' },
+        },
+        execute: executeMock.mockImplementation((options) => ({
+          async *[Symbol.asyncIterator]() {
+            const iterator = options.prompt[Symbol.asyncIterator]();
+            const firstPrompt = await iterator.next();
+            firstPromptText = firstPrompt.value.message.content;
+
+            const readTool = options.tools.find((tool: { name: string }) => tool.name === 'Read');
+            const first = await readTool.execute({ file_path: 'service.ts' });
+            firstNote = first.content[first.content.length - 1].text;
+            const second = await readTool.execute({ file_path: 'service.ts', offset: 20 });
+            secondNote = second.content[second.content.length - 1].text;
+            const third = await readTool.execute({ file_path: 'missing-file.ts' });
+            blockedText = third.content[0].text;
+
+            const responseText = JSON.stringify({
+              validation_status: 'rejected',
+              final_confidence: 0.8,
+              grounding_evidence: {
+                checked_files: ['service.ts'],
+                checked_symbols: [],
+                related_context: 'Service file read.',
+                reasoning: 'The cited defect is not present in the changed range.',
+              },
+            });
+
+            yield { type: 'assistant.text', text: responseText };
+            yield {
+              type: 'result',
+              status: 'success',
+              usage: { inputTokens: 1, outputTokens: 1 },
+              text: responseText,
+            };
+          },
+          close: closeMock,
+        })),
+      });
+
+      const validator = createStreamingValidator({
+        repoPath,
+        maxChallengeRounds: 1,
+        language: 'en',
+      });
+
+      validator.enqueue({
+        id: 'issue-tool-budget',
+        file: 'service.ts',
+        line_start: 18,
+        line_end: 21,
+        category: 'logic',
+        severity: 'warning',
+        title: 'Missing null guard',
+        description: 'The API helper dereferences a nullable response.',
+        code_snippet: 'var value = response.Value;',
+        confidence: 0.88,
+        source_agent: 'logic-reviewer',
+      });
+
+      const result = await validator.flush();
+
+      expect(firstPromptText).toContain('先核对上方代码片段');
+      expect(firstNote).toContain('[Validator budget] 1/2 tool calls used');
+      expect(secondNote).toContain('0 left');
+      expect(blockedText).toContain('budget for this issue is exhausted');
+      expect(blockedText).not.toContain('ENOENT');
+      expect(result.issues[0]).toMatchObject({
+        id: 'issue-tool-budget',
+        validation_status: 'rejected',
+      });
+      expect(result.incompleteReasons).toEqual([]);
+    } finally {
+      if (previousBudget === undefined) {
+        delete process.env.ARGUS_VALIDATOR_TOOL_BUDGET;
+      } else {
+        process.env.ARGUS_VALIDATOR_TOOL_BUDGET = previousBudget;
+      }
+    }
+  });
+
+  it('only claims the attached snippet covers the range when it was not truncated', async () => {
+    const prompts: string[] = [];
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: { main: 'gpt-5.3-codex', light: 'gpt-5-mini', validator: 'gpt-5.3-codex' },
+        openai: { apiKey: 'openai-key', source: 'argus' },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const iterator = options.prompt[Symbol.asyncIterator]();
+          const firstPrompt = await iterator.next();
+          prompts.push(firstPrompt.value.message.content);
+
+          const responseText = JSON.stringify({
+            validation_status: 'rejected',
+            final_confidence: 0.8,
+            grounding_evidence: {
+              checked_files: [],
+              checked_symbols: [],
+              related_context: 'ok',
+              reasoning: 'ok',
+            },
+          });
+          yield { type: 'assistant.text', text: responseText };
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            text: responseText,
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const baseIssue = {
+      id: 'issue-snippet',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic' as const,
+      severity: 'warning' as const,
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer' as const,
+    };
+
+    const shortSnippet = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    shortSnippet.enqueue({ ...baseIssue, code_snippet: 'var value = response.Value;' });
+    await shortSnippet.flush();
+
+    const longSnippet = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    longSnippet.enqueue({ ...baseIssue, id: 'issue-snippet-long', code_snippet: 'x'.repeat(6001) });
+    await longSnippet.flush();
+
+    expect(prompts[0]).toContain('它已覆盖报告位置的改动');
+    expect(prompts[0]).not.toContain('片段已截断');
+    expect(prompts[1]).toContain('片段已截断');
+  });
 });
