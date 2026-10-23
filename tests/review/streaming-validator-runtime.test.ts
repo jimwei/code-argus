@@ -1458,4 +1458,75 @@ describe('streaming validator runtime bridge', () => {
       }
     }
   });
+
+  it('only claims the attached snippet covers the range when it was not truncated', async () => {
+    const prompts: string[] = [];
+    createRuntimeFromEnvMock.mockReturnValue({
+      kind: 'openai-responses',
+      config: {
+        runtime: 'openai-responses',
+        models: { main: 'gpt-5.3-codex', light: 'gpt-5-mini', validator: 'gpt-5.3-codex' },
+        openai: { apiKey: 'openai-key', source: 'argus' },
+      },
+      execute: executeMock.mockImplementation((options) => ({
+        async *[Symbol.asyncIterator]() {
+          const iterator = options.prompt[Symbol.asyncIterator]();
+          const firstPrompt = await iterator.next();
+          prompts.push(firstPrompt.value.message.content);
+
+          const responseText = JSON.stringify({
+            validation_status: 'rejected',
+            final_confidence: 0.8,
+            grounding_evidence: {
+              checked_files: [],
+              checked_symbols: [],
+              related_context: 'ok',
+              reasoning: 'ok',
+            },
+          });
+          yield { type: 'assistant.text', text: responseText };
+          yield {
+            type: 'result',
+            status: 'success',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            text: responseText,
+          };
+        },
+        close: closeMock,
+      })),
+    });
+
+    const baseIssue = {
+      id: 'issue-snippet',
+      file: 'src/api/service.ts',
+      line_start: 18,
+      line_end: 21,
+      category: 'logic' as const,
+      severity: 'warning' as const,
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer' as const,
+    };
+
+    const shortSnippet = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    shortSnippet.enqueue({ ...baseIssue, code_snippet: 'var value = response.Value;' });
+    await shortSnippet.flush();
+
+    const longSnippet = createStreamingValidator({
+      repoPath: 'C:\\repo',
+      maxChallengeRounds: 1,
+      language: 'en',
+    });
+    longSnippet.enqueue({ ...baseIssue, id: 'issue-snippet-long', code_snippet: 'x'.repeat(6001) });
+    await longSnippet.flush();
+
+    expect(prompts[0]).toContain('它已覆盖报告位置的改动');
+    expect(prompts[0]).not.toContain('片段已截断');
+    expect(prompts[1]).toContain('片段已截断');
+  });
 });

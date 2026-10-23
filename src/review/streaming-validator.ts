@@ -63,17 +63,19 @@ interface ValidatorToolGuardOptions {
   getIssueLabel: () => string;
 }
 
+/**
+ * Warning appended to the last calls before the cap. Starting five calls early
+ * means the model always receives a concrete "conclude now" instruction before
+ * the tools stop returning content, so the cap forces a verdict instead of
+ * silently truncating one.
+ */
 function buildToolBudgetNote(used: number, budget: number, language: 'en' | 'zh'): string {
   const remaining = Math.max(budget - used, 0);
   if (language === 'en') {
-    return remaining > VALIDATOR_TOOL_CALL_WARN_REMAINING
-      ? `\n\n[Validator budget] ${used}/${budget} tool calls used. Continue only when the missing evidence could change the verdict.`
-      : `\n\n[Validator budget] ${used}/${budget} tool calls used, ${remaining} left. Stop exploring now and return the final JSON verdict from the evidence above.`;
+    return `\n\n[Validator budget] ${used}/${budget} tool calls used, ${remaining} left. Stop exploring now and return the final JSON verdict from the evidence above.`;
   }
 
-  return remaining > VALIDATOR_TOOL_CALL_WARN_REMAINING
-    ? `\n\n[验证预算] 已使用 ${used}/${budget} 次工具调用。仅当缺失的证据可能改变结论时才继续调查。`
-    : `\n\n[验证预算] 已使用 ${used}/${budget} 次工具调用，剩余 ${remaining} 次。请立即停止调查，基于以上证据输出最终 JSON 结论。`;
+  return `\n\n[验证预算] 已使用 ${used}/${budget} 次工具调用，剩余 ${remaining} 次。请立即停止调查，基于以上证据输出最终 JSON 结论。`;
 }
 
 function buildToolBudgetExhausted(used: number, budget: number, language: 'en' | 'zh'): string {
@@ -1628,8 +1630,11 @@ export class StreamingValidator {
       truncatePromptText(issue.description, MAX_VALIDATION_DESCRIPTION_CHARS) ?? issue.description;
     const suggestion = truncatePromptText(issue.suggestion, MAX_VALIDATION_SUGGESTION_CHARS);
     const codeSnippet = truncatePromptText(issue.code_snippet, MAX_VALIDATION_CODE_SNIPPET_CHARS);
+    const snippetTruncated = (issue.code_snippet?.length ?? 0) > MAX_VALIDATION_CODE_SNIPPET_CHARS;
     const readStep = codeSnippet
-      ? `1. 先核对上方代码片段：它已覆盖报告位置的改动；片段足以判断时无需重复读取同一区间，仅在需要上下文、调用方或既有约定证据时读取 ${issue.file}:${issue.line_start}-${issue.line_end}`
+      ? snippetTruncated
+        ? `1. 先核对上方代码片段（片段已截断，缺口部分需读取文件补齐）：读取 ${issue.file}:${issue.line_start}-${issue.line_end} 或所需区间以补全证据`
+        : `1. 先核对上方代码片段：它已覆盖报告位置的改动；片段足以判断时无需重复读取同一区间，仅在需要上下文、调用方或既有约定证据时读取 ${issue.file}:${issue.line_start}-${issue.line_end}`
       : `1. 读取实际代码文件 ${issue.file}:${issue.line_start}-${issue.line_end}`;
 
     return `请验证以下问题：
