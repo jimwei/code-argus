@@ -29,7 +29,6 @@ import { getHighSignalValidationPolicy } from './high-signal-policy.js';
 import { createRepoContextTools } from '../runtime/repo-context-tools.js';
 import type { FrontendDependencyContext } from './dependency-context/types.js';
 import { formatFrontendDependencyContext } from './dependency-context/extractor.js';
-import { calculateRetryDelayMs, getRetryAfterMs, waitForRetry } from './retry-policy.js';
 
 /** Maximum number of times to retry a crashed session */
 const MAX_SESSION_CRASH_RETRIES = 2;
@@ -42,44 +41,75 @@ const MAX_VALIDATION_CODE_SNIPPET_CHARS = 6000;
 const MAX_CHALLENGE_ROUNDS_FOR_LARGE_CONTEXT = 2;
 const LARGE_ISSUE_CONTEXT_CHARS = 12000;
 
-function isCancellationError(error: unknown, signal?: AbortSignal): boolean {
-  if (signal?.aborted) {
-    return true;
+function getErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object' || !('status' in error)) {
+    return undefined;
   }
 
-  if (error && typeof error === 'object') {
-    const name = 'name' in error ? error.name : undefined;
-    const code = 'code' in error ? error.code : undefined;
-    if (name === 'AbortError' || name === 'CanceledError' || code === 'ABORT_ERR') {
-      return true;
+  return typeof error.status === 'number' ? error.status : undefined;
+}
+
+function getErrorText(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (!error || typeof error !== 'object') {
+    return String(error);
+  }
+
+  const parts: string[] = [];
+  if ('message' in error && typeof error.message === 'string') {
+    parts.push(error.message);
+  }
+
+  if ('error' in error && error.error && typeof error.error === 'object') {
+    const upstreamError = error.error as Record<string, unknown>;
+    if (typeof upstreamError.message === 'string') {
+      parts.push(upstreamError.message);
+    }
+    if (typeof upstreamError.type === 'string') {
+      parts.push(upstreamError.type);
     }
   }
 
-  return /^(?:(?:the|this) )?(?:user|request|operation|review|validation|execution|stream) (?:was |is )?(?:aborted|cancelled|canceled)\b/i.test(
-    getFailureReason(error)
+  return parts.length > 0 ? parts.join(' ') : String(error);
+}
+
+function isValidationContextLimitText(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes('context_length_exceeded') ||
+    normalized.includes('context length') ||
+    normalized.includes('maximum context') ||
+    normalized.includes('request too large') ||
+    normalized.includes('request entity too large') ||
+    normalized.includes('payload too large') ||
+    // sdk 运行时把 provider 错误转成 result 事件后不再携带 error.status；openai-node 对
+    // 「有状态码、无响应体」的响应给出固定文案 "413 status code (no body)"。413 在
+    // Responses API 上就是请求体超限，显式识别它，保证结果事件路径与抛错路径（按
+    // error.status 判定）分类一致。
+    normalized.includes('413 status code (no body)') ||
+    (normalized.includes('413') &&
+      (normalized.includes('openresty') ||
+        normalized.includes('too large') ||
+        normalized.includes('payload')))
   );
 }
 
-function getFailureReason(error: unknown): string {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-  if (error && typeof error === 'object') {
-    const record = error as Record<string, unknown>;
-    const nested =
-      record.error && typeof record.error === 'object'
-        ? (record.error as Record<string, unknown>)
-        : undefined;
-    const details = [
-      record.message,
-      record.code,
-      record.status,
-      nested?.message,
-      nested?.type,
-    ].filter((value) => typeof value === 'string' || typeof value === 'number');
-    if (details.length > 0) return details.join(': ');
-  }
-  return String(error);
+function isValidationContextLimitError(error: unknown): boolean {
+  return getErrorStatus(error) === 413 || isValidationContextLimitText(getErrorText(error));
+}
+
+function isValidationTurnBudgetText(text: string): boolean {
+  return /max[_\s-]?turns?/i.test(text);
+}
+
+function validationContextLimitReason(error: unknown): string {
+  const message = getErrorText(error);
+  return message
+    ? `Validation context exceeded provider limits: ${message}`
+    : 'Validation context exceeded provider limits';
 }
 
 function truncatePromptText(value: string | undefined, maxChars: number): string | undefined {
@@ -152,8 +182,6 @@ export interface StreamingValidatorOptions {
   fastMode?: boolean;
   /** Output language for review comments */
   language?: 'en' | 'zh';
-  /** Abort controller shared with the enclosing review. */
-  abortController?: AbortController;
   /** Frontend dependency grounding for version-sensitive validation */
   dependencyContext?: FrontendDependencyContext;
 }
@@ -175,7 +203,6 @@ interface ResolvedOptions {
   readLimit?: number;
   fastMode: boolean;
   language: 'en' | 'zh';
-  abortController?: AbortController;
   dependencyContext?: FrontendDependencyContext;
 }
 
@@ -228,12 +255,6 @@ interface FileSession {
   crashRetryCount?: number;
   /** Issues that arrived after this session failed and must wait for cleanup/recovery */
   deferredIssues?: RawIssue[];
-  /** Abortable controller used by runtime execution and recovery waits. */
-  abortController?: AbortController;
-  /** Idempotent cleanup for the currently active execution. */
-  closeExecution?: () => Promise<void>;
-  /** Preserve pending issue accounting when cancellation interrupts a hanging stream. */
-  cancelPending?: (reason: string) => void;
 }
 
 interface RuntimePromptMessage {
@@ -259,8 +280,6 @@ export class StreamingValidator {
   private allAgentsComplete = false;
   private incompleteReasons: string[] = [];
   private warnedReadLimit = false;
-  private stopReason?: string;
-  private reportedRounds = new Map<string, Map<number, ValidationStatus>>();
 
   private recordIncomplete(reason: string): void {
     if (!this.incompleteReasons.includes(reason)) {
@@ -286,7 +305,6 @@ export class StreamingValidator {
       readLimit: options.readLimit,
       fastMode,
       language: options.language ?? 'zh',
-      abortController: options.abortController,
       dependencyContext: options.dependencyContext,
     };
   }
@@ -361,14 +379,6 @@ export class StreamingValidator {
     }
 
     this.totalEnqueued++;
-
-    const cancellationReason = this.getStopReason();
-    if (cancellationReason) {
-      const session = this.sessions.get(file) ?? this.getOrCreateSession(file);
-      this.completeIssue(session, this.createUncertainIssue(normalizedIssue, cancellationReason));
-      this.recordIncomplete(cancellationReason);
-      return null;
-    }
 
     const currentSession = this.sessions.get(file);
     if (currentSession?.isClosed && currentSession.isProcessing) {
@@ -450,37 +460,47 @@ export class StreamingValidator {
 
     const startTime = Date.now();
 
-    // Recovery cleanup and backoff remain part of the processing promise.
+    // Wait for all sessions to complete, including any recovery sessions
+    // We need to loop because recovery sessions may be started during waiting
     while (true) {
       const activeSessions = Array.from(this.sessions.values()).filter(
-        (session) => session.processingPromise && session.isProcessing
+        (s) => s.processingPromise && s.isProcessing
       );
-      if (activeSessions.length === 0) break;
 
-      const remainingTimeout = timeoutMs - (Date.now() - startTime);
-      if (remainingTimeout <= 0) {
-        const reason = 'Validation flush timed out; partial validation results were used';
-        this.recordIncomplete(reason);
-        this.stopValidation(reason);
+      if (activeSessions.length === 0) {
         break;
       }
 
-      let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
-      const outcome = await Promise.race([
-        Promise.all(activeSessions.map((session) => session.processingPromise)).then(
-          () => 'complete' as const
-        ),
-        new Promise<'timeout'>((resolve) => {
-          timer = globalThis.setTimeout(() => resolve('timeout'), remainingTimeout);
-        }),
+      // Check timeout before waiting
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= timeoutMs) {
+        console.warn(
+          `[StreamingValidator] Flush timed out after ${timeoutMs / 1000}s. Returning partial results.`
+        );
+        this.recordIncomplete('Validation flush timed out; partial validation results were used');
+        break;
+      }
+
+      // Wait for current active sessions with remaining timeout
+      const remainingTimeout = timeoutMs - elapsed;
+      const timeoutPromise = new Promise<'timeout'>((resolve) => {
+        globalThis.setTimeout(() => resolve('timeout'), remainingTimeout);
+      });
+
+      const sessionPromises = activeSessions.map((s) => s.processingPromise);
+
+      const result = await Promise.race([
+        Promise.all(sessionPromises).then(() => 'complete' as const),
+        timeoutPromise,
       ]);
-      if (timer) globalThis.clearTimeout(timer);
-      if (outcome === 'timeout') {
-        const reason = 'Validation flush timed out; partial validation results were used';
-        this.recordIncomplete(reason);
-        this.stopValidation(reason);
+
+      if (result === 'timeout') {
+        this.recordIncomplete('Validation flush timed out; partial validation results were used');
         break;
       }
+
+      // After sessions complete, check if any recovery sessions were started
+      // The loop will continue if there are new active sessions
     }
 
     // Collect all results (including partial if timed out)
@@ -527,53 +547,6 @@ export class StreamingValidator {
 
   // ============ Private Methods ============
 
-  private getStopReason(): string | undefined {
-    if (this.stopReason) return this.stopReason;
-    if (this.options.abortController?.signal.aborted) {
-      return `Validation cancelled: ${getFailureReason(this.options.abortController.signal.reason)}`;
-    }
-    return undefined;
-  }
-
-  private stopValidation(reason: string): void {
-    this.stopReason ??= reason;
-    for (const session of this.sessions.values()) {
-      session.cancelPending?.(reason);
-      session.abortController?.abort(new Error(reason));
-      session.notifyNewIssue?.();
-      void session.closeExecution?.();
-    }
-  }
-
-  private completeIssue(session: FileSession, issue: ValidatedIssue): void {
-    if (session.results.some((result) => result.id === issue.id)) return;
-    session.results.push(issue);
-    this.completedCount++;
-    this.options.callbacks?.onIssueValidated?.(issue);
-    this.options.onProgress?.(
-      this.completedCount,
-      this.totalEnqueued,
-      issue.id,
-      issue.validation_status
-    );
-  }
-
-  private reportRound(issue: RawIssue, round: number, status: ValidationStatus): void {
-    const reported = this.reportedRounds.get(issue.id) ?? new Map<number, ValidationStatus>();
-    // Recovery can replay a completed round with a different verdict. Notify that
-    // change while suppressing identical replayed progress events.
-    if (reported.get(round) === status) return;
-    reported.set(round, status);
-    this.reportedRounds.set(issue.id, reported);
-    this.options.callbacks?.onRoundComplete?.(
-      issue.id,
-      issue.title,
-      round,
-      this.getMaxRoundsForIssue(issue),
-      status
-    );
-  }
-
   private getOrCreateSession(file: string): FileSession {
     let session = this.sessions.get(file);
     if (!session || session.isClosed) {
@@ -615,27 +588,7 @@ export class StreamingValidator {
       console.log(`[StreamingValidator] Starting session for ${session.file}`);
     }
 
-    const abortController = new AbortController();
-    session.abortController = abortController;
-    const parentSignal = this.options.abortController?.signal;
-    const onAbort = () => {
-      this.stopReason ??= `Validation cancelled: ${getFailureReason(parentSignal?.reason)}`;
-      session.cancelPending?.(this.stopReason);
-      abortController.abort(parentSignal?.reason);
-      session.notifyNewIssue?.();
-      void session.closeExecution?.();
-    };
-    parentSignal?.addEventListener('abort', onAbort, { once: true });
-    if (parentSignal?.aborted) onAbort();
-
-    const throwIfStopped = () => {
-      const reason = this.getStopReason();
-      if (reason || abortController.signal.aborted) {
-        throw Object.assign(new Error(reason ?? 'Validation cancelled'), { name: 'AbortError' });
-      }
-    };
-
-    let runtime: ReturnType<typeof createRuntimeFromEnv>;
+    const runtime = createRuntimeFromEnv();
     const messageQueue: Array<RuntimePromptMessage | null> = [];
     let resolveNextMessage: ((msg: RuntimePromptMessage | null) => void) | null = null;
 
@@ -650,21 +603,18 @@ export class StreamingValidator {
           return;
         }
 
-        if (this.allAgentsComplete || this.getStopReason()) {
+        if (this.allAgentsComplete) {
           resolve(false);
           return;
         }
 
         session.notifyNewIssue = () => {
-          if (session.queue.length === 0 && !this.allAgentsComplete && !this.getStopReason()) {
-            return;
-          }
           session.notifyNewIssue = undefined;
-          if (session.idleTimeout) {
-            globalThis.clearTimeout(session.idleTimeout);
-            session.idleTimeout = undefined;
+          if (session.queue.length > 0) {
+            resolve(true);
+          } else if (this.allAgentsComplete) {
+            resolve(false);
           }
-          resolve(session.queue.length > 0 && !this.getStopReason());
         };
 
         session.idleTimeout = globalThis.setTimeout(() => {
@@ -678,13 +628,11 @@ export class StreamingValidator {
     };
 
     const getNextIssue = async (): Promise<RawIssue | null> => {
-      throwIfStopped();
       if (session.queue.length > 0) {
         return session.queue.shift()!;
       }
 
       const hasMore = await waitForNewIssue();
-      throwIfStopped();
       if (hasMore && session.queue.length > 0) {
         return session.queue.shift()!;
       }
@@ -772,22 +720,29 @@ export class StreamingValidator {
     };
 
     const completeCurrentIssue = (validatedIssue: ValidatedIssue) => {
-      this.completeIssue(session, validatedIssue);
+      session.results.push(validatedIssue);
+      this.completedCount++;
+
+      this.options.callbacks?.onIssueValidated?.(validatedIssue);
+
+      if (this.options.onProgress) {
+        this.options.onProgress(
+          this.completedCount,
+          this.totalEnqueued,
+          validatedIssue.id,
+          validatedIssue.validation_status
+        );
+      }
+
+      if (this.options.verbose) {
+        console.log(
+          `[StreamingValidator] Completed ${validatedIssue.id}: ${validatedIssue.validation_status}`
+        );
+      }
+
       currentIssue = null;
       currentRound = 0;
       currentResponses = [];
-    };
-
-    session.cancelPending = (reason: string) => {
-      const issues = currentIssue
-        ? [currentIssue, ...session.queue.splice(0)]
-        : session.queue.splice(0);
-      issues.push(...(session.deferredIssues?.splice(0) ?? []));
-      if (issues.length > 0) this.recordIncomplete(reason);
-      currentIssue = null;
-      for (const issue of issues) {
-        this.completeIssue(session, this.createUncertainIssue(issue, reason));
-      }
     };
 
     const advanceToNextIssue = async () => {
@@ -805,22 +760,6 @@ export class StreamingValidator {
     };
 
     let execution: RuntimeExecution | null = null;
-    let closingExecution: Promise<void> | undefined;
-    const closeExecution = async () => {
-      if (!execution) return;
-      const activeExecution = execution;
-      closingExecution ??= Promise.resolve()
-        .then(() => activeExecution.close())
-        .catch((cleanupError: unknown) => {
-          if (this.options.verbose) {
-            console.warn(`[StreamingValidator] Cleanup warning for ${session.file}:`, cleanupError);
-          }
-        });
-      await closingExecution;
-      execution = null;
-      closingExecution = undefined;
-    };
-    session.closeExecution = closeExecution;
     let sigtermHandler: (() => void) | null = null;
     let sigintHandler: (() => void) | null = null;
     const runOpenAIWithFreshExecutions = async () => {
@@ -909,7 +848,6 @@ export class StreamingValidator {
         let lastAssistantText = '';
         let finalizedIssue: ValidatedIssue | null = null;
 
-        throwIfStopped();
         execution = runtime.execute({
           prompt: promptGenerator(),
           cwd: this.options.repoPath,
@@ -920,7 +858,6 @@ export class StreamingValidator {
             ? { reasoningEffort: runtime.config.validatorReasoningEffort }
             : {}),
           settingSources: ['project'],
-          abortController,
           tools: repoContextTools,
         });
 
@@ -950,7 +887,6 @@ export class StreamingValidator {
               }
 
               if (event.type !== 'result') {
-                throwIfStopped();
                 continue;
               }
 
@@ -969,21 +905,36 @@ export class StreamingValidator {
                   `session_total=${session.tokensUsed}`
               );
 
-              throwIfStopped();
               if (event.status === 'success') {
                 const responseText = event.text || lastAssistantText;
                 const response = this.parseResponse(responseText);
 
                 if (!response) {
-                  throw new Error(
-                    `Validator response could not be parsed in round ${currentRound}`
-                  );
+                  finalizedIssue =
+                    currentRound === 1
+                      ? this.createUncertainIssue(
+                          currentIssue!,
+                          'Validator response could not be parsed'
+                        )
+                      : this.responseToValidatedIssue(
+                          currentResponses[currentResponses.length - 1]!,
+                          currentIssue!,
+                          'Challenge round parse failed'
+                        );
+                  endPromptStream();
+                  continue;
                 }
 
                 currentResponses.push(response);
                 const maxRoundsForThisIssue = this.getMaxRoundsForIssue(currentIssue!);
 
-                this.reportRound(currentIssue!, currentRound, response.validation_status);
+                this.options.callbacks?.onRoundComplete?.(
+                  currentIssue!.id,
+                  currentIssue!.title,
+                  currentRound,
+                  maxRoundsForThisIssue,
+                  response.validation_status
+                );
 
                 if (this.options.verbose) {
                   console.log(
@@ -1043,78 +994,121 @@ export class StreamingValidator {
 
               console.error(`[StreamingValidator] Session ${session.file} error: ${event.status}`);
 
+              const interruptedText = `${event.status} ${event.rawStopReason ?? ''} ${
+                event.error ?? ''
+              }`;
               const interruptedIssueLabel = currentIssue
                 ? `"${currentIssue.title}" (${currentIssue.file}:${currentIssue.line_start})`
                 : `session ${session.file}`;
-              const reason = [
-                event.status === 'error_max_turns'
-                  ? `Validation turn budget exhausted (${maxTurns} turns)`
-                  : `runtime returned ${event.status}`,
-                event.rawStopReason,
-                event.error,
-              ]
-                .filter(Boolean)
-                .join(': ');
-              session.isClosed = true;
-              const error = new Error(`Validation failed for ${interruptedIssueLabel}: ${reason}`);
-              if (
-                /^(?:error_)?(?:aborted|cancelled|canceled)$/i.test(event.status) ||
-                /^(?:aborted|cancelled|canceled)$/i.test(event.rawStopReason ?? '') ||
-                isCancellationError(event.error)
-              )
-                error.name = 'AbortError';
-              throw error;
-            }
-            if (!finalizedIssue) {
-              throw new Error(
-                `Validator runtime ended without a terminal result for round ${currentRound}`
-              );
+              if (isValidationTurnBudgetText(interruptedText)) {
+                this.recordIncomplete(
+                  `Validation turn budget exhausted (${maxTurns} turns): ${interruptedIssueLabel} was left unvalidated`
+                );
+              } else if (isValidationContextLimitText(interruptedText)) {
+                this.recordIncomplete(
+                  `Validation context limit reached: ${interruptedIssueLabel} was left unvalidated`
+                );
+              } else {
+                this.recordIncomplete(
+                  `Validation ended with status "${event.status}"${
+                    event.rawStopReason ? ` (${event.rawStopReason})` : ''
+                  }: ${interruptedIssueLabel} was left unvalidated`
+                );
+              }
+
+              finalizedIssue = isValidationContextLimitText(interruptedText)
+                ? this.createUncertainIssue(
+                    currentIssue!,
+                    `Validation context exceeded provider limits: ${event.error ?? event.status}`
+                  )
+                : currentResponses.length > 0
+                  ? this.responseToValidatedIssue(
+                      currentResponses[currentResponses.length - 1]!,
+                      currentIssue!,
+                      'Validation interrupted'
+                    )
+                  : this.createUncertainIssue(currentIssue!, 'Validation failed');
+              endPromptStream();
+              continue;
             }
           } catch (error) {
-            session.isClosed = true;
-            throw error;
+            if (!isValidationContextLimitError(error)) {
+              session.isClosed = true;
+              throw error;
+            }
+
+            const interruptedIssueLabel = currentIssue
+              ? `"${currentIssue.title}" (${currentIssue.file}:${currentIssue.line_start})`
+              : `session ${session.file}`;
+            this.recordIncomplete(
+              `Validation context limit reached: ${interruptedIssueLabel} was left unvalidated`
+            );
+            finalizedIssue = this.createUncertainIssue(
+              currentIssue,
+              validationContextLimitReason(error)
+            );
+            endPromptStream();
           }
         } finally {
-          endPromptStream();
-          await closeExecution();
+          if (execution) {
+            try {
+              await execution.close();
+            } catch (cleanupError) {
+              if (this.options.verbose) {
+                console.warn(
+                  `[StreamingValidator] Cleanup warning for session ${session.file}:`,
+                  cleanupError
+                );
+              }
+            } finally {
+              execution = null;
+            }
+          }
         }
 
-        throwIfStopped();
-        completeCurrentIssue(finalizedIssue!);
+        if (!finalizedIssue) {
+          finalizedIssue =
+            currentResponses.length > 0
+              ? this.responseToValidatedIssue(
+                  currentResponses[currentResponses.length - 1]!,
+                  currentIssue,
+                  'Validation interrupted'
+                )
+              : this.createUncertainIssue(currentIssue, 'Validation failed');
+        }
+
+        completeCurrentIssue(finalizedIssue);
       }
     };
 
-    let failure: { error: unknown; reason: string; cancelled: boolean } | undefined;
-    try {
-      throwIfStopped();
-      runtime = createRuntimeFromEnv();
-      if (runtime.kind !== 'openai-responses') {
-        currentIssue = await getNextIssue();
-        if (!currentIssue) {
-          session.isProcessing = false;
-          session.isClosed = true;
-          return;
-        }
+    if (runtime.kind !== 'openai-responses') {
+      currentIssue = await getNextIssue();
+      if (!currentIssue) {
+        session.isProcessing = false;
+        session.isClosed = true;
+        return;
       }
+    }
 
-      const firstPrompt = currentIssue ? buildIssuePrompt(currentIssue, true) : '';
-      currentRound = currentIssue ? 1 : 0;
+    const firstPrompt = currentIssue ? buildIssuePrompt(currentIssue, true) : '';
+    currentRound = currentIssue ? 1 : 0;
 
-      const estimatedIssueCount =
-        runtime.kind === 'openai-responses' ? 1 : Math.max(session.queue.length + 1, 5);
-      const dynamicMaxTurns = getValidatorMaxTurns(
-        estimatedIssueCount,
-        this.options.maxChallengeRounds
+    const estimatedIssueCount =
+      runtime.kind === 'openai-responses' ? 1 : Math.max(session.queue.length + 1, 5);
+    const dynamicMaxTurns = getValidatorMaxTurns(
+      estimatedIssueCount,
+      this.options.maxChallengeRounds
+    );
+    const maxTurns =
+      this.options.maxTurns ?? Math.max(dynamicMaxTurns, DEFAULT_VALIDATOR_MAX_TURNS);
+
+    if (this.options.verbose) {
+      console.log(
+        `[StreamingValidator] Session ${session.file} maxTurns: ${maxTurns} (estimated ${estimatedIssueCount} issues)`
       );
-      const maxTurns =
-        this.options.maxTurns ?? Math.max(dynamicMaxTurns, DEFAULT_VALIDATOR_MAX_TURNS);
+    }
 
-      if (this.options.verbose) {
-        console.log(
-          `[StreamingValidator] Session ${session.file} maxTurns: ${maxTurns} (estimated ${estimatedIssueCount} issues)`
-        );
-      }
-
+    try {
       let isCleaningUp = false;
       const cleanupAndExit = async (signal: string) => {
         if (isCleaningUp || !execution) return;
@@ -1123,7 +1117,7 @@ export class StreamingValidator {
           `[StreamingValidator] Received ${signal}, cleaning up session ${session.file}...`
         );
         try {
-          await closeExecution();
+          await execution.close();
         } catch {
           // Ignore shutdown cleanup errors.
         }
@@ -1146,7 +1140,6 @@ export class StreamingValidator {
       } else {
         const repoContextTools: ReturnType<typeof createRepoContextTools> = [];
 
-        throwIfStopped();
         execution = runtime.execute({
           prompt: messageGenerator(),
           cwd: this.options.repoPath,
@@ -1156,7 +1149,6 @@ export class StreamingValidator {
             ? { reasoningEffort: runtime.config.validatorReasoningEffort }
             : {}),
           settingSources: ['project'],
-          abortController,
           ...(repoContextTools.length > 0 ? { tools: repoContextTools } : {}),
         });
 
@@ -1206,19 +1198,39 @@ export class StreamingValidator {
               `session_total=${session.tokensUsed}`
           );
 
-          throwIfStopped();
           if (event.status === 'success') {
             const responseText = event.text || lastAssistantText;
             const response = this.parseResponse(responseText);
 
             if (!response) {
-              throw new Error(`Validator response could not be parsed in round ${currentRound}`);
+              if (currentRound === 1) {
+                completeCurrentIssue(
+                  this.createUncertainIssue(currentIssue!, 'Validator response could not be parsed')
+                );
+              } else {
+                const prevResponse = currentResponses[currentResponses.length - 1]!;
+                completeCurrentIssue(
+                  this.responseToValidatedIssue(
+                    prevResponse,
+                    currentIssue!,
+                    'Challenge round parse failed'
+                  )
+                );
+              }
+              await advanceToNextIssue();
+              continue;
             }
 
             currentResponses.push(response);
             const maxRoundsForThisIssue = this.getMaxRoundsForIssue(currentIssue!);
 
-            this.reportRound(currentIssue!, currentRound, response.validation_status);
+            this.options.callbacks?.onRoundComplete?.(
+              currentIssue!.id,
+              currentIssue!.title,
+              currentRound,
+              maxRoundsForThisIssue,
+              response.validation_status
+            );
 
             if (this.options.verbose) {
               console.log(
@@ -1284,127 +1296,210 @@ export class StreamingValidator {
 
           console.error(`[StreamingValidator] Session ${session.file} error: ${event.status}`);
 
+          const interruptedText = `${event.status} ${event.rawStopReason ?? ''} ${
+            event.error ?? ''
+          }`;
           const interruptedIssueLabel = currentIssue
             ? `"${currentIssue.title}" (${currentIssue.file}:${currentIssue.line_start})`
             : `session ${session.file}`;
-          session.isClosed = true;
-          const error = new Error(
-            `Validation ended with status "${event.status}"${event.rawStopReason ? ` (${event.rawStopReason})` : ''}: ${interruptedIssueLabel}: ${event.status === 'error_max_turns' ? `Validation turn budget exhausted (${maxTurns} turns)` : (event.error ?? 'incomplete provider response')}`
-          );
-          if (
-            /^(?:error_)?(?:aborted|cancelled|canceled)$/i.test(event.status) ||
-            /^(?:aborted|cancelled|canceled)$/i.test(event.rawStopReason ?? '') ||
-            isCancellationError(event.error)
-          )
-            error.name = 'AbortError';
-          throw error;
-        }
-        throwIfStopped();
-        if (currentIssue || session.queue.length > 0) {
-          throw new Error(
-            `Validator runtime ended without a terminal result for round ${currentRound}`
-          );
+          if (isValidationTurnBudgetText(interruptedText)) {
+            this.recordIncomplete(
+              `Validation turn budget exhausted (${maxTurns} turns): ${interruptedIssueLabel} was left unvalidated`
+            );
+          } else if (isValidationContextLimitText(interruptedText)) {
+            this.recordIncomplete(
+              `Validation context limit reached: ${interruptedIssueLabel} was left unvalidated`
+            );
+          } else {
+            this.recordIncomplete(
+              `Validation ended with status "${event.status}"${
+                event.rawStopReason ? ` (${event.rawStopReason})` : ''
+              }: ${interruptedIssueLabel} was left unvalidated`
+            );
+          }
+
+          if (currentIssue) {
+            if (currentResponses.length > 0) {
+              completeCurrentIssue(
+                this.responseToValidatedIssue(
+                  currentResponses[currentResponses.length - 1]!,
+                  currentIssue,
+                  'Validation interrupted'
+                )
+              );
+            } else {
+              completeCurrentIssue(this.createUncertainIssue(currentIssue, 'Validation failed'));
+            }
+          }
+
+          if (session.queue.length > 0) {
+            const remaining = session.queue.splice(0);
+            for (const queuedIssue of remaining) {
+              completeCurrentIssue(
+                this.createUncertainIssue(
+                  queuedIssue,
+                  'Validation session ended before this issue was validated'
+                )
+              );
+            }
+            this.recordIncomplete(
+              `Validation session ended before ${remaining.length} queued issue(s) in ${session.file} could be validated`
+            );
+          }
+
+          endSession();
         }
       }
     } catch (error) {
+      console.error(`[StreamingValidator] Session ${session.file} exception:`, error);
+      // Close the failed session before awaiting execution cleanup so issues that
+      // arrive concurrently create a fresh session instead of joining this one.
       session.isClosed = true;
-      failure = {
-        error,
-        reason: getFailureReason(error),
-        cancelled: isCancellationError(error, abortController.signal),
-      };
-      if (failure.cancelled) {
-        this.stopValidation(`Validation cancelled: ${failure.reason}`);
+
+      const issuesToRetry: RawIssue[] = [];
+
+      if (currentIssue) {
+        if (currentResponses.length > 0) {
+          this.recordIncomplete(
+            `Validation session crashed before completing "${currentIssue.title}" (${currentIssue.file}:${currentIssue.line_start}); retained the last available round`
+          );
+          completeCurrentIssue(
+            this.responseToValidatedIssue(
+              currentResponses[currentResponses.length - 1]!,
+              currentIssue,
+              'Validation session crashed'
+            )
+          );
+        } else {
+          issuesToRetry.push(currentIssue);
+        }
+      }
+
+      while (session.queue.length > 0) {
+        issuesToRetry.push(session.queue.shift()!);
+      }
+
+      const retryCount = session.crashRetryCount ?? 0;
+      if (issuesToRetry.length > 0 && retryCount < MAX_SESSION_CRASH_RETRIES) {
+        console.log(
+          `[StreamingValidator] Session ${session.file} crashed, attempting recovery (retry ${retryCount + 1}/${MAX_SESSION_CRASH_RETRIES})`
+        );
+        session.isProcessing = false;
+        session.isClosed = true;
+        this.startRecoverySession(session.file, issuesToRetry, retryCount + 1);
+        return;
+      }
+
+      if (issuesToRetry.length > 0) {
+        console.warn(
+          `[StreamingValidator] Session ${session.file} max retries exceeded, marking ${issuesToRetry.length} issues as uncertain`
+        );
+        this.recordIncomplete(
+          `Validation session crashed after maximum retries: ${issuesToRetry.length} issue(s) in ${session.file || 'unknown file'} could not be validated`
+        );
+        for (const issue of issuesToRetry) {
+          const uncertainIssue = this.createUncertainIssue(
+            issue,
+            'Session crashed after maximum retries'
+          );
+          session.results.push(uncertainIssue);
+          this.completedCount++;
+          this.options.callbacks?.onIssueValidated?.(uncertainIssue);
+          if (this.options.onProgress) {
+            this.options.onProgress(
+              this.completedCount,
+              this.totalEnqueued,
+              uncertainIssue.id,
+              'uncertain'
+            );
+          }
+        }
       }
     } finally {
       if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
       if (sigintHandler) process.off('SIGINT', sigintHandler);
-      if (session.idleTimeout) {
-        globalThis.clearTimeout(session.idleTimeout);
-        session.idleTimeout = undefined;
-      }
-      await closeExecution();
-    }
 
-    // Keep this processing promise active while cleanup and backoff finish.
-    // New issues remain deferred on this session and cannot reset its retry count.
-    if (failure && !failure.cancelled && !this.getStopReason()) {
-      const retryCount = session.crashRetryCount ?? 0;
-      if ((currentIssue || session.queue.length > 0) && retryCount < MAX_SESSION_CRASH_RETRIES) {
-        const delayMs = calculateRetryDelayMs(retryCount + 1, {
-          retryAfterMs: getRetryAfterMs(failure.error),
-        });
-        console.warn(
-          `[StreamingValidator] Session ${session.file} recovery ${retryCount + 1}/${MAX_SESSION_CRASH_RETRIES} in ${delayMs}ms: ${failure.reason}`
-        );
-        const canRetry = await waitForRetry(delayMs, abortController.signal);
-        if (canRetry && !this.getStopReason()) {
-          const issues = currentIssue
-            ? [currentIssue, ...session.queue.splice(0)]
-            : session.queue.splice(0);
-          parentSignal?.removeEventListener('abort', onAbort);
-          session.closeExecution = undefined;
-          session.cancelPending = undefined;
-          this.startRecoverySession(session, issues, retryCount + 1);
-          session.isProcessing = false;
-          return;
+      if (execution) {
+        try {
+          await execution.close();
+        } catch (cleanupError) {
+          if (this.options.verbose) {
+            console.warn(
+              `[StreamingValidator] Cleanup warning for session ${session.file}:`,
+              cleanupError
+            );
+          }
         }
       }
     }
 
-    const pending = currentIssue
-      ? [currentIssue, ...session.queue.splice(0)]
-      : session.queue.splice(0);
-    const deferred = session.deferredIssues?.splice(0) ?? [];
-    const stopReason = this.getStopReason();
-    if (failure || stopReason) {
-      const reason =
-        stopReason ??
-        `Validation session crashed after maximum retries (${MAX_SESSION_CRASH_RETRIES} retries): ${failure!.reason}`;
-      if (failure || pending.length > 0 || (stopReason && deferred.length > 0)) {
-        const issueLabels = pending
-          .map((issue) => `"${issue.title}" (${issue.file}:${issue.line_start})`)
-          .join(', ');
-        this.recordIncomplete(`${reason}${issueLabels ? `: ${issueLabels}` : ''}`);
-      }
-      for (const issue of [...pending, ...(stopReason ? deferred : [])]) {
-        this.completeIssue(session, this.createUncertainIssue(issue, reason));
-      }
-    }
-
-    parentSignal?.removeEventListener('abort', onAbort);
-    session.closeExecution = undefined;
-    session.cancelPending = undefined;
     session.isProcessing = false;
     session.isClosed = true;
-    if (!stopReason && deferred.length > 0) {
-      const nextSession = this.getOrCreateSession(session.file);
-      nextSession.queue.push(...deferred);
-      this.startSessionProcessing(nextSession);
+    this.startDeferredSession(session);
+
+    if (this.options.verbose) {
+      console.log(
+        `[StreamingValidator] Session ${session.file} closed: ${session.results.length} issues, ${session.tokensUsed} tokens`
+      );
     }
   }
 
-  private startRecoverySession(
-    previous: FileSession,
-    issues: RawIssue[],
-    retryCount: number
-  ): void {
+  /**
+   * Start a recovery session to retry failed issues
+   */
+  private startRecoverySession(file: string, issues: RawIssue[], retryCount: number): void {
+    const oldSession = this.sessions.get(file);
+
+    // Create a new session for recovery
     const recoverySession: FileSession = {
-      file: previous.file,
+      file,
       queue: issues,
       isProcessing: false,
       isClosed: false,
-      tokensUsed: previous.tokensUsed,
-      inputTokensUsed: previous.inputTokensUsed,
-      cachedInputTokensUsed: previous.cachedInputTokensUsed,
-      outputTokensUsed: previous.outputTokensUsed,
-      results: [...previous.results],
+      tokensUsed: 0,
+      inputTokensUsed: 0,
+      cachedInputTokensUsed: 0,
+      outputTokensUsed: 0,
+      results: [],
       crashRetryCount: retryCount,
-      deferredIssues: previous.deferredIssues,
+      deferredIssues: oldSession?.deferredIssues,
     };
-    previous.deferredIssues = undefined;
-    this.sessions.set(previous.file, recoverySession);
+
+    // Replace the old session
+    if (oldSession) {
+      // Preserve results from old session
+      recoverySession.results = [...oldSession.results];
+      recoverySession.tokensUsed = oldSession.tokensUsed;
+      recoverySession.inputTokensUsed = oldSession.inputTokensUsed;
+      recoverySession.cachedInputTokensUsed = oldSession.cachedInputTokensUsed;
+      recoverySession.outputTokensUsed = oldSession.outputTokensUsed;
+      oldSession.deferredIssues = undefined;
+    }
+
+    this.sessions.set(file, recoverySession);
+
+    // Start processing the recovery session
     this.startSessionProcessing(recoverySession);
+  }
+
+  private startDeferredSession(failedSession: FileSession): void {
+    const deferredIssues = failedSession.deferredIssues?.splice(0) ?? [];
+    if (deferredIssues.length === 0) {
+      return;
+    }
+
+    const currentSession = this.sessions.get(failedSession.file);
+    const targetSession =
+      !currentSession || currentSession.isClosed
+        ? this.getOrCreateSession(failedSession.file)
+        : currentSession;
+
+    targetSession.queue.push(...deferredIssues);
+    if (targetSession.notifyNewIssue) {
+      targetSession.notifyNewIssue();
+    } else if (!targetSession.isProcessing && !targetSession.isClosed) {
+      this.startSessionProcessing(targetSession);
+    }
   }
 
   // ============ Helper Methods ============

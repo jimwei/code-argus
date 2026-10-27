@@ -40,15 +40,6 @@ import type {
   RuntimeUsage,
 } from './types.js';
 import { compactTranscript, estimateTextTokens } from './transcript-budget.js';
-import {
-  calculateRetryDelayMs,
-  createAbortError,
-  createStreamIdleWatchdog,
-  DEFAULT_PROVIDER_MAX_RETRIES,
-  getRetryAfterMs,
-  throwIfAborted,
-  waitForRetry,
-} from '../review/retry-policy.js';
 
 /** 网关真实上下文长度不可知；pi-ai 用它裁剪 maxTokens。 */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -58,8 +49,11 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
 /** 与旧实现一致：没有会话级 instructions 时的兜底指令。 */
 const DEFAULT_RUNTIME_INSTRUCTIONS = 'Follow the user instructions and tool definitions exactly.';
 
-/** The runtime owns the existing provider budget; pi-ai must make one request per attempt. */
-const PI_PROVIDER_MAX_RETRIES = 0;
+/**
+ * 改造前用的 OpenAI/Anthropic SDK 默认会自己重试 2 次；pi-ai 把这个策略显式化，
+ * 且默认值是 0，所以这里显式传回 SDK 的既有语义（pi-ai 的重试支持 abort signal）。
+ */
+const PI_PROVIDER_MAX_RETRIES = 2;
 
 export type PiStreamFn = (
   model: Model<Api>,
@@ -475,28 +469,6 @@ export function normalizeUsage(message: AssistantMessage | undefined): RuntimeUs
   };
 }
 
-/** pi-ai does not finalize usage on response.failed; preserve the upstream record directly. */
-function normalizeProviderUsage(event: unknown): RuntimeUsage | undefined {
-  if (!isPlainObject(event) || !isPlainObject(event.response)) return undefined;
-  const usage = event.response.usage;
-  if (
-    !isPlainObject(usage) ||
-    typeof usage.input_tokens !== 'number' ||
-    typeof usage.output_tokens !== 'number'
-  )
-    return undefined;
-  const cachedInputTokens =
-    isPlainObject(usage.input_tokens_details) &&
-    typeof usage.input_tokens_details.cached_tokens === 'number'
-      ? usage.input_tokens_details.cached_tokens
-      : 0;
-  return {
-    inputTokens: usage.input_tokens,
-    outputTokens: usage.output_tokens,
-    ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
-  };
-}
-
 /** 预算耗尽或空响应时保留 stopReason 与已消耗的 token，便于线上定位。 */
 function buildNoTextError(
   message: AssistantMessage,
@@ -535,35 +507,27 @@ function totalTokens(usage: RuntimeUsage | undefined): number {
 }
 
 /**
+ * 用户中断要抛 AbortError（而不是把 aborted 当成普通 result 返回），
+ * streaming-orchestrator 依赖 `error.name === 'AbortError'` 走优雅退出分支。
+ */
+function createAbortError(message?: string): Error {
+  const error = new Error(message || 'OpenAI Responses runtime aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
+/**
  * pi-ai 把 provider 错误归一化成 `"<prefix> (<status>): <body>"` 后塞进
  * `AssistantMessage.errorMessage`，错误对象本身不再带 status。调用方
  * （如 realtime-deduplicator）按 `error.status` 判断是否重试，这里把状态码还原回去。
  */
-function createProviderError(errorMessage: string, retryAfterMs?: number): Error {
+function createProviderError(errorMessage: string): Error {
   const error = new Error(errorMessage);
   const status = /\((\d{3})\)/.exec(errorMessage)?.[1] ?? /^(\d{3})\b/.exec(errorMessage)?.[1];
   if (status) {
     (error as Error & { status?: number }).status = Number.parseInt(status, 10);
   }
-  if (retryAfterMs !== undefined) {
-    (error as Error & { retryAfterMs?: number }).retryAfterMs = retryAfterMs;
-  }
   return error;
-}
-
-/** pi-ai drops HTTP error headers during normalization; capture them per request. */
-function createProviderTransport(): {
-  fetch: typeof globalThis.fetch;
-  retryAfterMs?: number;
-} {
-  const transport: { fetch: typeof globalThis.fetch; retryAfterMs?: number } = {
-    fetch: async (...args) => {
-      const response = await globalThis.fetch(...args);
-      transport.retryAfterMs = getRetryAfterMs({ headers: response.headers });
-      return response;
-    },
-  };
-  return transport;
 }
 
 export class OpenAIResponsesRuntime implements AgentRuntime {
@@ -615,71 +579,30 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
       ...(options.abortController ? { signal: options.abortController.signal } : {}),
     });
 
-    let usage: RuntimeUsage | undefined;
-    for (let attempt = 0; ; attempt++) {
-      const watchdog = createStreamIdleWatchdog(options.abortController?.signal);
-      const transport = createProviderTransport();
-      let message: AssistantMessage | undefined;
-      let reportedUsage: RuntimeUsage | undefined;
-      try {
-        throwIfAborted(options.abortController?.signal);
-        message = await watchdog.wait(() =>
-          this.completeFn(model, context, {
-            ...baseOptions,
-            fetch: transport.fetch,
-            signal: watchdog.signal,
-            onProviderStreamEvent: (event) => {
-              watchdog.touch();
-              reportedUsage = normalizeProviderUsage(event) ?? reportedUsage;
-            },
-          })
-        );
-        throwIfAborted(options.abortController?.signal);
-        if (message.stopReason === 'aborted') throw createAbortError(message.errorMessage);
-        if (message.stopReason === 'error')
-          throw createProviderError(
-            message.errorMessage || 'pi-ai completion error',
-            transport.retryAfterMs
-          );
-      } catch (error) {
-        throwIfAborted(options.abortController?.signal, error);
-        watchdog.dispose();
-        usage = mergeUsage(usage, reportedUsage ?? normalizeUsage(message));
-        if (attempt >= DEFAULT_PROVIDER_MAX_RETRIES) throw error;
-        const delayMs = calculateRetryDelayMs(attempt + 1, {
-          retryAfterMs: transport.retryAfterMs ?? getRetryAfterMs(error),
-        });
-        console.warn(
-          `[OpenAIResponsesRuntime] Text request retry ${attempt + 1}/${DEFAULT_PROVIDER_MAX_RETRIES} in ${delayMs}ms: ${error instanceof Error ? error.message : String(error)}`
-        );
-        if (!(await waitForRetry(delayMs, options.abortController?.signal))) {
-          throwIfAborted(options.abortController?.signal);
-        }
-        continue;
-      } finally {
-        watchdog.dispose();
-      }
-      usage = mergeUsage(usage, reportedUsage ?? normalizeUsage(message));
-      const text = extractAssistantText(message);
-      if (!text) {
-        const error = buildNoTextError(message, {
-          attempts: attempt + 1,
-          tokensUsed: totalTokens(usage),
-        });
-        if (message.stopReason !== 'stop' || attempt >= DEFAULT_PROVIDER_MAX_RETRIES) {
-          throw error;
-        }
-        const delayMs = calculateRetryDelayMs(attempt + 1);
-        console.warn(
-          `[OpenAIResponsesRuntime] Text request retry ${attempt + 1}/${DEFAULT_PROVIDER_MAX_RETRIES} in ${delayMs}ms: ${error.message}`
-        );
-        if (!(await waitForRetry(delayMs, options.abortController?.signal))) {
-          throwIfAborted(options.abortController?.signal);
-        }
-        continue;
-      }
-      return { text, usage };
+    // 请求不再携带 max_output_tokens（见 buildPiModel 的 compat），因此没有
+    // 「升档重试」这条路径：上游若返回无文本结果，直接按无文本错误上报。
+    const message = await this.completeFn(model, context, baseOptions);
+
+    if (message.stopReason === 'aborted') {
+      throw createAbortError(message.errorMessage);
     }
+
+    if (message.stopReason === 'error') {
+      throw createProviderError(message.errorMessage || 'pi-ai completion error');
+    }
+
+    const text = extractAssistantText(message);
+    if (!text) {
+      throw buildNoTextError(message, {
+        attempts: 1,
+        tokensUsed: totalTokens(normalizeUsage(message)),
+      });
+    }
+
+    return {
+      text,
+      usage: normalizeUsage(message),
+    };
   }
 
   execute(options: RuntimeExecuteOptions): RuntimeExecution {
@@ -781,81 +704,50 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             };
 
             let assistant: AssistantMessage | undefined;
-            for (let attempt = 0; ; attempt++) {
-              assistant = undefined;
-              let partial: AssistantMessage | undefined;
-              let reportedUsage: RuntimeUsage | undefined;
-              const watchdog = createStreamIdleWatchdog(abortController.signal);
-              const transport = createProviderTransport();
-              try {
-                throwIfAborted(abortController.signal);
-                for await (const event of watchdog.wrap(
-                  streamFn(
-                    model,
-                    context,
-                    buildOptions({
-                      fetch: transport.fetch,
-                      signal: watchdog.signal,
-                      onProviderStreamEvent: (event) => {
-                        watchdog.touch();
-                        reportedUsage = normalizeProviderUsage(event) ?? reportedUsage;
-                      },
-                    })
-                  )
-                )) {
-                  if ('partial' in event) partial = event.partial;
-                  if (event.type === 'done') {
-                    assistant = event.message;
-                    break;
-                  }
-                  if (event.type === 'error') {
-                    assistant = event.error;
-                    break;
-                  }
-                }
-                throwIfAborted(abortController.signal);
-                if (!assistant)
-                  throw new Error('OpenAI Responses runtime stream ended without a response');
-                if (assistant.stopReason === 'aborted')
-                  throw createAbortError(assistant.errorMessage);
-                if (assistant.stopReason === 'error')
-                  throw createProviderError(
-                    assistant.errorMessage || 'pi-ai completion error',
-                    transport.retryAfterMs
-                  );
-              } catch (error) {
-                throwIfAborted(abortController.signal, error);
-                watchdog.dispose();
-                lastUsage = mergeUsage(
-                  lastUsage,
-                  reportedUsage ?? normalizeUsage(assistant ?? partial)
-                );
-                if (attempt >= DEFAULT_PROVIDER_MAX_RETRIES) {
+            try {
+              for await (const event of streamFn(
+                model,
+                context,
+                buildOptions({ signal: abortController.signal })
+              )) {
+                if (event.type === 'done') {
+                  assistant = event.message;
+                } else if (event.type === 'error') {
+                  assistant = event.error;
+                } else if (event.type === 'toolcall_end') {
                   yield {
-                    type: 'result',
-                    status: 'error',
-                    usage: lastUsage,
-                    error: error instanceof Error ? error.message : String(error),
+                    type: 'activity',
+                    event: `function_call:${event.toolCall.name}`,
                   };
-                  return;
                 }
-                const delayMs = calculateRetryDelayMs(attempt + 1, {
-                  retryAfterMs: transport.retryAfterMs ?? getRetryAfterMs(error),
-                });
-                console.warn(
-                  `[OpenAIResponsesRuntime] Stream request retry ${attempt + 1}/${DEFAULT_PROVIDER_MAX_RETRIES} in ${delayMs}ms: ${error instanceof Error ? error.message : String(error)}`
-                );
-                if (!(await waitForRetry(delayMs, abortController.signal))) {
-                  throwIfAborted(abortController.signal);
-                }
-                continue;
-              } finally {
-                watchdog.dispose();
               }
-              lastUsage = mergeUsage(lastUsage, reportedUsage ?? normalizeUsage(assistant));
-              break;
+            } catch (error) {
+              // 用户中断继续向上抛，其余错误按 result 事件返回，保持事件契约。
+              if (error instanceof Error && error.name === 'AbortError') {
+                throw error;
+              }
+
+              yield {
+                type: 'result',
+                status: 'error',
+                usage: lastUsage,
+                error: error instanceof Error ? error.message : String(error),
+              };
+              return;
             }
 
+            if (!assistant) {
+              yield {
+                type: 'result',
+                status: 'error',
+                usage: lastUsage,
+                error: 'OpenAI Responses runtime stream ended without a response',
+              };
+              return;
+            }
+
+            // 每个 result 汇总当前 prompt 的全部工具轮次；下个 prompt 重新计数。
+            lastUsage = mergeUsage(lastUsage, normalizeUsage(assistant));
             const responseText = extractAssistantText(assistant);
             messages.push(assistant);
 
@@ -865,6 +757,21 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                 type: 'assistant.text',
                 text: responseText,
               };
+            }
+
+            if (assistant.stopReason === 'aborted') {
+              throw createAbortError(assistant.errorMessage);
+            }
+
+            if (assistant.stopReason === 'error') {
+              yield {
+                type: 'result',
+                status: 'error',
+                ...(responseText ? { text: responseText } : {}),
+                usage: lastUsage,
+                error: assistant.errorMessage || 'pi-ai completion error',
+              };
+              return;
             }
 
             const toolCalls = assistant.content.filter((block) => block.type === 'toolCall');
@@ -912,9 +819,6 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             }
 
             for (const toolCall of toolCalls) {
-              throwIfAborted(abortController.signal);
-              yield { type: 'activity', event: `function_call:${toolCall.name}` };
-              throwIfAborted(abortController.signal);
               const toolResult: ToolResultMessage = {
                 role: 'toolResult',
                 toolCallId: toolCall.id,
@@ -951,7 +855,6 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                 const result = await runtimeTool.execute(args);
                 toolResult.content = [{ type: 'text', text: toolResultToOutput(result) }];
               } catch (error) {
-                throwIfAborted(abortController.signal, error);
                 const message = error instanceof Error ? error.message : String(error);
                 toolResult.content = [
                   { type: 'text', text: `Tool "${toolCall.name}" failed: ${message}` },
@@ -963,7 +866,6 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
             }
           }
 
-          throwIfAborted(abortController.signal);
           if (!closed && remainingTurns === 0 && !promptFinished) {
             yield {
               type: 'result',

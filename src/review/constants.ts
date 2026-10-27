@@ -205,13 +205,13 @@ export const FAST_MODE_CHALLENGE_ROUNDS = 2;
 export const MAX_ISSUES_PER_GROUP = 5;
 
 /**
- * Agent 执行失败时的最大总尝试次数（含首次调用）
- * 所有非取消失败共享此上限，不能额外叠加恢复次数
+ * Agent 执行失败时的最大重试次数
+ * 用于处理瞬态错误（如网络超时、API 限流）
  */
 export const MAX_AGENT_RETRIES = 2;
 
 /**
  * Agent 重试前的基础延迟（毫秒）
- * retry-policy 以此为默认基础延迟，按指数增长，加入 jitter 并设置上限。
+ * 实际延迟 = BASE_DELAY * attempt（指数退避）
  */
 export const AGENT_RETRY_DELAY_MS = 2000;
