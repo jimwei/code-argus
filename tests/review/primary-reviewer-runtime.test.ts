@@ -102,15 +102,12 @@ describe('primary reviewer runtime', () => {
       onEvent: (event: any) => events.push(event),
     } as any);
     await (orchestrator as any).preparePrimaryReviewer();
-    await expect((orchestrator as any).runAgentsWithStreaming(context, '.', [])).rejects.toThrow(
-      'Missing policy implementation'
-    );
-    expect(executeMock).toHaveBeenCalledTimes(2);
+    await (orchestrator as any).runAgentsWithStreaming(context, '.', []);
     const terminal = events.filter((event) => event.type === 'agent:complete');
     expect(terminal).toHaveLength(1);
     expect(terminal.at(-1)?.data?.status).toBe('error');
-    expect((orchestrator as any).incompleteReasons.join(' ')).toContain(
-      'Missing policy implementation'
+    expect((orchestrator as any).incompleteReasons).toContain(
+      'custom:comprehensive-reviewer: Missing policy implementation'
     );
   });
 
@@ -169,12 +166,9 @@ describe('primary reviewer runtime', () => {
         skipValidation: true,
         progressMode: 'silent',
       });
-      const error = await (orchestrator as any)
-        .runAgentsWithStreaming(context, '.', [])
-        .catch((error: Error) => error);
-      expect(error).toBeInstanceOf(Error);
-      expect(executeMock).toHaveBeenCalledTimes(2);
-      expect(error.reviewUsage.tokens).toBe(24);
+      const result = await (orchestrator as any).runAgentsWithStreaming(context, '.', []);
+      expect(executeMock).toHaveBeenCalledOnce();
+      expect(result.tokens).toBe(12);
       expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(1);
       expect((orchestrator as any).getReviewExecutionMetadata().review_complete).toBe(false);
     }

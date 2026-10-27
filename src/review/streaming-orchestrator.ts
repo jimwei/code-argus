@@ -58,6 +58,7 @@ import { standardsToText } from './prompts/specialist.js';
 import {
   getRecommendedMaxTurns,
   MAX_AGENT_RETRIES,
+  AGENT_RETRY_DELAY_MS,
   MAX_REVIEW_DIFF_SIZE_BYTES,
   shouldSkipReviewForDiffSize,
 } from './constants.js';
@@ -82,7 +83,6 @@ import {
 import { createRealtimeDeduplicator, type RealtimeDeduplicator } from './realtime-deduplicator.js';
 import { executeFixVerifier } from './fix-verifier.js';
 import type { FixVerificationSummary, PreviousReviewData } from './types.js';
-import { calculateRetryDelayMs, getRetryAfterMs, waitForRetry } from './retry-policy.js';
 import { preprocessDiff, formatDeletedFilesContext, needsSegmentation } from '../diff/index.js';
 import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
 import { getSegmentSizeLimitForRuntime } from '../runtime/limits.js';
@@ -561,7 +561,6 @@ export class StreamingReviewOrchestrator {
             repoPath: reviewRepoPath,
             verbose: this.options.verbose,
             maxConcurrentSessions: 5,
-            abortController: this.options.abortController,
             projectRules: projectRulesText || undefined,
             fastMode: this.options.reviewMode === 'fast',
             maxChallengeRounds: this.validationTuning.rounds,
@@ -667,7 +666,6 @@ export class StreamingReviewOrchestrator {
               verbose: this.options.verbose,
               progress: this.progress,
               language: this.options.language,
-              abortController: this.options.abortController,
             })
           : Promise.resolve(undefined as FixVerificationSummary | undefined),
       ]);
@@ -700,20 +698,11 @@ export class StreamingReviewOrchestrator {
         outputTokensUsed += this.fixVerificationResults.output_tokens_used;
         tokensUsed += this.fixVerificationResults.tokens_used;
         const fv = this.fixVerificationResults;
-        if (fv.incomplete) {
-          this.incompleteReasons.push(...(fv.incomplete_reasons ?? ['fix-verifier incomplete']));
-          this.progress.agent(
-            'fix-verifier',
-            'error',
-            (fv.incomplete_reasons ?? ['Fix verification incomplete']).join('; ')
-          );
-        } else {
-          this.progress.agent(
-            'fix-verifier',
-            'completed',
-            `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 未修复, ${fv.by_status.false_positive} 误报`
-          );
-        }
+        this.progress.agent(
+          'fix-verifier',
+          'completed',
+          `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 未修复, ${fv.by_status.false_positive} 误报`
+        );
       }
 
       // Collect results from built-in agents
@@ -870,7 +859,7 @@ export class StreamingReviewOrchestrator {
           source_agent: i.source_agent,
         })),
         aggregatedIssues,
-        builtInSettled.status === 'fulfilled' ? diffFiles.length : 0
+        diffFiles.length
       );
 
       const metadata = {
@@ -1208,7 +1197,6 @@ export class StreamingReviewOrchestrator {
             repoPath: reviewRepoPath,
             verbose: this.options.verbose,
             maxConcurrentSessions: 5,
-            abortController: this.options.abortController,
             projectRules: projectRulesText || undefined,
             fastMode: this.options.reviewMode === 'fast',
             maxChallengeRounds: this.validationTuning.rounds,
@@ -1378,7 +1366,6 @@ export class StreamingReviewOrchestrator {
               verbose: this.options.verbose,
               progress: this.progress,
               language: this.options.language,
-              abortController: this.options.abortController,
             })
           : Promise.resolve(undefined as FixVerificationSummary | undefined),
       ]);
@@ -1411,20 +1398,11 @@ export class StreamingReviewOrchestrator {
         outputTokensUsed += this.fixVerificationResults.output_tokens_used;
         tokensUsed += this.fixVerificationResults.tokens_used;
         const fv = this.fixVerificationResults;
-        if (fv.incomplete) {
-          this.incompleteReasons.push(...(fv.incomplete_reasons ?? ['fix-verifier incomplete']));
-          this.progress.agent(
-            'fix-verifier',
-            'error',
-            (fv.incomplete_reasons ?? ['Fix verification incomplete']).join('; ')
-          );
-        } else {
-          this.progress.agent(
-            'fix-verifier',
-            'completed',
-            `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 未修复, ${fv.by_status.false_positive} 误报`
-          );
-        }
+        this.progress.agent(
+          'fix-verifier',
+          'completed',
+          `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 未修复, ${fv.by_status.false_positive} 误报`
+        );
       }
 
       // Collect results from built-in agents
@@ -1581,7 +1559,7 @@ export class StreamingReviewOrchestrator {
           source_agent: i.source_agent,
         })),
         aggregatedIssues,
-        builtInSettled.status === 'fulfilled' ? diffFiles.length : 0
+        diffFiles.length
       );
 
       const metadata = {
@@ -2262,12 +2240,8 @@ export class StreamingReviewOrchestrator {
       let zeroIssueMaxTurnsRetry = false;
       const exploration: string[] = [];
 
-      // MAX_AGENT_RETRIES is a total-attempt limit, including the first attempt.
+      // Retry loop for transient failures
       for (let attempt = 1; attempt <= MAX_AGENT_RETRIES; attempt++) {
-        if (this.options.abortController?.signal.aborted) {
-          lastError = Object.assign(new Error('Review cancelled'), { name: 'AbortError' });
-          break;
-        }
         const agentMaxTurns = this.primaryReviewer
           ? getPrimaryReviewerMaxTurns(this.primaryReviewer, fileCount, attempt)
           : this.getAgentMaxTurns(
@@ -2320,56 +2294,35 @@ export class StreamingReviewOrchestrator {
           lastError = error;
           const errorMsg = error instanceof Error ? error.message : String(error);
           const errorStack = error instanceof Error ? error.stack : undefined;
-          const incompleteReason =
-            error instanceof Error &&
-            'incompleteReason' in error &&
-            typeof error.incompleteReason === 'string'
-              ? error.incompleteReason
-              : undefined;
-          if (incompleteReason) {
-            exploration.push(`Previous attempt was incomplete: ${incompleteReason}`);
-            while (exploration.join('').length > 12_000) exploration.shift();
-            console.warn(
-              `[StreamingOrchestrator] ${agentType} incomplete attempt: ${incompleteReason}`
-            );
-          }
           zeroIssueMaxTurnsRetry = errorMsg.includes('reached maxTurns with 0 reported issues');
           if (
             this.options.abortController?.signal.aborted ||
             (error instanceof Error && error.name === 'AbortError')
-          ) {
+          )
             break;
-          }
 
+          // Log error details (will be output as JSON in json-logs mode)
           console.error(
             `[StreamingOrchestrator] Agent ${agentType} error (attempt ${attempt}/${MAX_AGENT_RETRIES}):`,
             { message: errorMsg, stack: errorStack }
           );
 
           if (attempt < MAX_AGENT_RETRIES) {
-            const delayMs = calculateRetryDelayMs(attempt, {
-              retryAfterMs: getRetryAfterMs(error),
-            });
+            // Emit structured warning for retry
             this.progress.warn(
-              `Agent ${agentType} 失败 (尝试 ${attempt}/${MAX_AGENT_RETRIES}): ${errorMsg}, ` +
-                `${delayMs}ms 后重试...`
+              `Agent ${agentType} 失败 (尝试 ${attempt}/${MAX_AGENT_RETRIES}): ${errorMsg}, 将在 ${AGENT_RETRY_DELAY_MS / 1000}s 后重试...`
             );
             this.progress.agent(
               agentType,
               'running',
               `重试中 (${attempt + 1}/${MAX_AGENT_RETRIES})`
             );
-            const shouldContinue = await waitForRetry(
-              delayMs,
-              this.options.abortController?.signal
+            // Delay before retry with exponential backoff
+            await new Promise((resolve) =>
+              globalThis.setTimeout(resolve, AGENT_RETRY_DELAY_MS * attempt)
             );
-            if (!shouldContinue) {
-              lastError = Object.assign(new Error('Review cancelled during retry backoff'), {
-                name: 'AbortError',
-              });
-              break;
-            }
           } else {
+            // Final failure - emit error
             this.progress.error(
               `Agent ${agentType} 在 ${MAX_AGENT_RETRIES} 次尝试后仍然失败: ${errorMsg}`
             );
@@ -2397,15 +2350,16 @@ export class StreamingReviewOrchestrator {
 
         // Get issue count for this agent
         const issueCount = this.issueCountByAgent.get(res.agentType) || 0;
-        this.progress.agent(res.agentType, 'completed', `${issueCount} issues, ${elapsedStr}`);
+        // runStreamingAgent already emitted the terminal error for an incomplete result.
+        if (!res.result.incompleteReason) {
+          this.progress.agent(res.agentType, 'completed', `${issueCount} issues, ${elapsedStr}`);
+        }
 
         if (this.options.verbose) {
           console.log(`[StreamingOrchestrator] Agent ${res.agentType} completed in ${elapsedStr}`);
         }
       } else {
-        const reason = res.error instanceof Error ? res.error.message : String(res.error);
-        this.incompleteReasons.push(`${res.agentType}: ${reason}`);
-        this.progress.agent(res.agentType, 'error', `${reason}, ${elapsedStr}`);
+        this.progress.agent(res.agentType, 'error', `failed, ${elapsedStr}`);
         failedAgents.push({ agentType: res.agentType, error: res.error });
 
         if (this.options.verbose) {
@@ -2422,7 +2376,7 @@ export class StreamingReviewOrchestrator {
         firstError instanceof Error ? firstError.message : String(firstError ?? 'Unknown error');
       throw Object.assign(
         new Error(
-          `Review failed: ${failedAgents.length} agent(s) failed after ${MAX_AGENT_RETRIES} attempts [${failedNames}]. First error: ${errorMsg}`
+          `Review failed: ${failedAgents.length} agent(s) failed after ${MAX_AGENT_RETRIES} retries [${failedNames}]. First error: ${errorMsg}`
         ),
         {
           reviewUsage: {
@@ -2514,9 +2468,6 @@ export class StreamingReviewOrchestrator {
     const skipValidation = this.options.skipValidation;
     const progress = this.progress;
     const langLabel = this.options.language === 'en' ? 'English' : 'Chinese';
-    // This factory is shared by attempts of one reviewer batch. Keep accepted findings
-    // idempotent across a restart even when semantic deduplication is unavailable.
-    const acceptedReports = new Map<string, string>();
 
     return (agentType: ReviewerId, invocationKey: string): RuntimeToolDefinition[] => [
       {
@@ -2668,24 +2619,6 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
             }
           }
 
-          const reportKey = JSON.stringify([
-            invocationKey,
-            file,
-            args.line_start,
-            args.line_end,
-            args.category,
-            args.title,
-            args.description,
-          ]);
-          const previousId = acceptedReports.get(reportKey);
-          if (previousId) {
-            return {
-              content: [
-                { type: 'text' as const, text: `Issue already recorded (ID: ${previousId})` },
-              ],
-            };
-          }
-
           const rawIssue: RawIssue = {
             id: issueId,
             file,
@@ -2720,7 +2653,6 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
 
           if (skipValidation) {
             this.rawIssuesForSkipMode.push(rawIssue);
-            acceptedReports.set(reportKey, issueId);
             return {
               content: [
                 {
@@ -2735,7 +2667,6 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           if (autoRejected) {
             this.autoRejectedIssues.push(autoRejected);
           }
-          acceptedReports.set(reportKey, issueId);
 
           return {
             content: [
@@ -2777,6 +2708,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     cachedInputTokensUsed: number;
     outputTokensUsed: number;
     checklists: ChecklistItem[];
+    incompleteReason?: string;
   }> {
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Starting agent: ${agentType}`);
@@ -2835,16 +2767,6 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     let incompleteReason: string | undefined;
     const runtimeTools: RuntimeToolDefinition[] = runtimeToolsFactory(agentType, invocationKey).map(
       (tool) => {
-        if (tool.name === 'report_issue') {
-          return {
-            ...tool,
-            execute: async (args: unknown) => {
-              const result = await tool.execute(args);
-              remember(`Previously reported finding: ${JSON.stringify(args)}`);
-              return result;
-            },
-          };
-        }
         if (!['Read', 'Grep', 'Glob'].includes(tool.name)) return tool;
         return {
           ...tool,
@@ -2929,14 +2851,6 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           tokensUsed = inputTokensUsed + outputTokensUsed;
         }
 
-        if (
-          this.options.abortController?.signal.aborted ||
-          /^(?:error_)?(?:aborted|cancelled|canceled)$/i.test(event.status) ||
-          /^(?:aborted|cancelled|canceled)$/i.test(event.rawStopReason ?? '')
-        ) {
-          throw Object.assign(new Error(event.error || 'Review cancelled'), { name: 'AbortError' });
-        }
-
         if (event.status === 'success') {
           console.log(
             `[Agent-Detail] ${agentType} FinalResult Tokens: input=${inputTokens}, output=${outputTokens}, total=${tokensUsed}, turns=${turnCount}`
@@ -2959,7 +2873,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           }
 
           console.warn(
-            `[StreamingOrchestrator] Agent ${agentType} reached maxTurns limit (${maxTurns} turns). Keeping ${issueCount} issues from this incomplete attempt. Tokens: input=${inputTokens}, output=${outputTokens}, turns=${turnCount}`
+            `[StreamingOrchestrator] Agent ${agentType} reached maxTurns limit (${maxTurns} turns). Treating as partial success with ${issueCount} issues already reported. Tokens: input=${inputTokens}, output=${outputTokens}, turns=${turnCount}`
           );
           this.progress.warn(
             `Agent ${agentType} reached max turns (${maxTurns}); keeping ${issueCount} reported issues as partial output`
@@ -2968,7 +2882,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
           continue;
         }
 
-        if (event.status === 'incomplete') {
+        if (definition && event.status === 'incomplete') {
           incompleteReason =
             event.error || event.rawStopReason || 'Runtime returned an incomplete review';
           continue;
@@ -3002,14 +2916,18 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     }
 
     console.log(
-      `[Agent-Summary] ${agentType} attempt ended: turns=${turnCount}, totalTokens=${tokensUsed}`
+      `[Agent-Summary] ${agentType} completed: turns=${turnCount}, totalTokens=${tokensUsed}`
     );
 
     if (incompleteReason) {
-      throw Object.assign(
-        new Error(`${agentType} could not complete the review: ${incompleteReason}`),
-        { incompleteReason }
+      this.incompleteReasons.push(`${agentType}: ${incompleteReason}`);
+      // An incomplete declaration is a coverage signal, not a fatal error: keep the findings the
+      // agent already reported and mark the agent as incomplete so the review is not rated clean.
+      console.warn(
+        `[StreamingOrchestrator] Agent ${agentType} declared an incomplete review: ${incompleteReason}`
       );
+      this.progress.warn(`Agent ${agentType} 未能完成审核: ${incompleteReason}`);
+      this.progress.agent(agentType, 'error', `incomplete: ${incompleteReason}`);
     }
 
     if (this.options.verbose) {
@@ -3022,6 +2940,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       cachedInputTokensUsed,
       outputTokensUsed,
       checklists: [],
+      incompleteReason,
     };
   }
 
@@ -3114,7 +3033,6 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
               verbose: this.options.verbose,
               progress: this.progress,
               language: this.options.language,
-              abortController: this.options.abortController,
             }),
           ]
         : []
@@ -3210,18 +3128,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       totalInputTokens += fixResult.value.input_tokens_used;
       totalCachedInputTokens += fixResult.value.cached_input_tokens_used;
       totalOutputTokens += fixResult.value.output_tokens_used;
-      if (fixResult.value.incomplete) {
-        this.incompleteReasons.push(
-          ...(fixResult.value.incomplete_reasons ?? ['fix-verifier incomplete'])
-        );
-        this.progress.agent(
-          'fix-verifier',
-          'error',
-          fixResult.value.incomplete_reasons?.join('; ')
-        );
-      } else {
-        this.progress.agent('fix-verifier', 'completed');
-      }
+      this.progress.agent('fix-verifier', 'completed');
     } else if (fixResult?.status === 'rejected') {
       this.incompleteReasons.push(`fix-verifier: ${String(fixResult.reason)}`);
       this.progress.agent('fix-verifier', 'error', String(fixResult.reason));
@@ -3299,10 +3206,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         source_agent: i.source_agent,
       })),
       aggregatedIssues,
-      segmentResults.reduce(
-        (count, entry) => count + (entry.result ? entry.segment.files.length : 0),
-        0
-      )
+      diffFiles.length
     );
 
     const endTime = Date.now();

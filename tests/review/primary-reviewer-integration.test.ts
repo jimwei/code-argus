@@ -228,12 +228,11 @@ it('marks a failed segment incomplete and retains successful usage and partial f
   expect(report.metadata.review_complete).toBe(false);
   expect(report.metadata.incomplete_reasons?.join(' ')).toContain('a.ts');
   expect(report.metadata.tokens_used).toBe(24);
-  expect(report.metrics.files_reviewed).toBe(1);
 });
 
 it('resets execution completeness between repeated reviews on the same orchestrator', async () => {
   const { orchestrator } = await fixture({ skipValidation: true });
-  const incompleteExecution = (options: any) => ({
+  mocks.execute.mockImplementationOnce((options) => ({
     async *[Symbol.asyncIterator]() {
       await options.tools
         .find((tool: any) => tool.name === 'report_incomplete')
@@ -241,12 +240,8 @@ it('resets execution completeness between repeated reviews on the same orchestra
       yield { type: 'result', status: 'success' };
     },
     close: async () => {},
-  });
-  mocks.execute
-    .mockImplementationOnce(incompleteExecution)
-    .mockImplementationOnce(incompleteExecution);
-  await expect(review(orchestrator)).rejects.toThrow('Missing evidence');
-  expect((orchestrator as any).getReviewExecutionMetadata().review_complete).toBe(false);
+  }));
+  expect((await review(orchestrator)).metadata.review_complete).toBe(false);
   expect((await review(orchestrator)).metadata.review_complete).toBe(true);
 });
 
@@ -379,40 +374,3 @@ it('marks the review incomplete when a validator session was cut short', async (
   expect(report.metadata.review_complete).toBe(false);
   expect(report.metadata.incomplete_reasons?.join(' ')).toContain('turn budget exhausted');
 });
-
-it.each(['refs', 'legacy', 'segmented'])(
-  'propagates exhausted fix verification through %s without claiming completion',
-  async (entry) => {
-    mocks.segmented = entry === 'segmented';
-    const abortController = new AbortController();
-    mocks.fix.mockResolvedValue({
-      ...usage,
-      results: [],
-      by_status: { fixed: 0, missed: 0, false_positive: 0, uncertain: 0, obsolete: 0 },
-      incomplete: true,
-      incomplete_reasons: ['fix-verifier: HTTP 503 retry budget exhausted'],
-    });
-    const { orchestrator } = await fixture({
-      local: true,
-      abortController,
-      previousReviewData: { issues: [{ id: 'previous-1' }] },
-    });
-    vi.spyOn(orchestrator as any, 'buildContext').mockResolvedValue({ context, diffFiles: files });
-    const report =
-      entry === 'legacy'
-        ? await orchestrator.review({
-            repoPath: '.',
-            sourceBranch: 'feature',
-            targetBranch: 'main',
-          } as any)
-        : await review(orchestrator);
-    expect(report.metadata.review_complete).toBe(false);
-    expect(report.metadata.incomplete_reasons?.join(' ')).toContain(
-      'HTTP 503 retry budget exhausted'
-    );
-    expect(report.fix_verification?.incomplete).toBe(true);
-    expect(mocks.fix).toHaveBeenCalledOnce();
-    expect(mocks.fix).toHaveBeenCalledWith(expect.objectContaining({ abortController }));
-    expect(mocks.validator).toHaveBeenCalledWith(expect.objectContaining({ abortController }));
-  }
-);

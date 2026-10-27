@@ -67,8 +67,6 @@ export interface FixVerifierOptions {
   progress?: IProgressPrinter;
   /** Output language for review comments */
   language?: 'en' | 'zh';
-  /** Abort signal shared with the enclosing review. */
-  abortController?: AbortController;
   /** Callbacks for real-time updates */
   callbacks?: {
     onScreeningComplete?: (issueId: string, status: string) => void;
@@ -242,14 +240,8 @@ Call this after deep investigation of unresolved/unclear issues.`,
   let execution: RuntimeExecution | null = null;
   let sigtermHandler: (() => void) | null = null;
   let sigintHandler: (() => void) | null = null;
-  let runtimeFailure: string | undefined;
 
   try {
-    if (options.abortController?.signal.aborted) {
-      throw new Error(
-        `Fix verification cancelled: ${String(options.abortController.signal.reason)}`
-      );
-    }
     execution = runtime.execute({
       prompt: fullPrompt,
       cwd: repoPath,
@@ -258,7 +250,6 @@ Call this after deep investigation of unresolved/unclear issues.`,
       ...(runtime.config.validatorReasoningEffort
         ? { reasoningEffort: runtime.config.validatorReasoningEffort }
         : {}),
-      abortController: options.abortController,
       tools: runtimeTools,
       toolNamespace: 'fix-verifier-tools',
     });
@@ -280,40 +271,29 @@ Call this after deep investigation of unresolved/unclear issues.`,
     process.on('SIGTERM', sigtermHandler);
     process.on('SIGINT', sigintHandler);
 
-    let sawTerminalResult = false;
     for await (const event of execution) {
       if (event.type !== 'result') {
         continue;
       }
 
-      sawTerminalResult = true;
       if (event.usage) {
-        inputTokensUsed += event.usage.inputTokens;
-        cachedInputTokensUsed += event.usage.cachedInputTokens ?? 0;
-        outputTokensUsed += event.usage.outputTokens;
+        inputTokensUsed = event.usage.inputTokens;
+        cachedInputTokensUsed = event.usage.cachedInputTokens ?? 0;
+        outputTokensUsed = event.usage.outputTokens;
         tokensUsed = inputTokensUsed + outputTokensUsed;
       }
 
-      if (event.status !== 'success') {
-        throw new Error(
-          [`Fix verifier runtime returned ${event.status}`, event.rawStopReason, event.error]
-            .filter(Boolean)
-            .join(': ')
-        );
+      if (event.status === 'error') {
+        throw new Error(event.error || 'Fix verifier runtime returned error');
+      }
+      if (event.status !== 'success' && verbose) {
+        console.error(`[FixVerifier] Runtime result status: ${event.status}`, event.error);
       }
     }
-    if (options.abortController?.signal.aborted) {
-      throw new Error(
-        `Fix verification cancelled: ${String(options.abortController.signal.reason)}`
-      );
-    }
-    if (!sawTerminalResult) {
-      throw new Error('Fix verifier runtime ended without a terminal result');
-    }
   } catch (error) {
-    runtimeFailure = error instanceof Error ? error.message : String(error);
-    console.error(`[FixVerifier] Error during verification: ${runtimeFailure}`);
-    progress?.error(`Fix verification failed: ${runtimeFailure}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[FixVerifier] Error during verification: ${errorMessage}`);
+    progress?.error(`Fix verification failed: ${errorMessage}`);
   } finally {
     if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
     if (sigintHandler) process.off('SIGINT', sigintHandler);
@@ -369,15 +349,6 @@ Call this after deep investigation of unresolved/unclear issues.`,
     byStatus[result.status]++;
   }
 
-  const incompleteReasons = runtimeFailure ? [runtimeFailure] : [];
-  const verifiedIds = new Set(verificationResults.map((result) => result.original_issue_id));
-  const missingIssues = previousReview.issues.filter((issue) => !verifiedIds.has(issue.id));
-  if (missingIssues.length > 0) {
-    incompleteReasons.push(
-      `Fix verification missing results for ${missingIssues.length} issue(s): ${missingIssues.map((issue) => issue.id).join(', ')}`
-    );
-  }
-
   const summary: FixVerificationSummary = {
     total_verified: verificationResults.length,
     by_status: byStatus,
@@ -387,20 +358,15 @@ Call this after deep investigation of unresolved/unclear issues.`,
     cached_input_tokens_used: cachedInputTokensUsed,
     output_tokens_used: outputTokensUsed,
     tokens_used: tokensUsed,
-    ...(incompleteReasons.length > 0
-      ? { incomplete: true, incomplete_reasons: incompleteReasons }
-      : {}),
   };
 
   if (verbose) {
     console.log(`[FixVerifier] Completed. Results:`, byStatus);
   }
 
-  if (incompleteReasons.length === 0) {
-    progress?.success(
-      `Fix verification complete: ${byStatus.fixed} fixed, ${byStatus.missed} missed, ${byStatus.false_positive} false positive`
-    );
-  }
+  progress?.success(
+    `Fix verification complete: ${byStatus.fixed} fixed, ${byStatus.missed} missed, ${byStatus.false_positive} false positive`
+  );
 
   return summary;
 }

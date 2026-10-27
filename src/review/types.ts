@@ -452,10 +452,6 @@ export interface FixVerificationSummary {
   output_tokens_used: number;
   /** Tokens used for verification */
   tokens_used: number;
-  /** Whether verification did not reach a complete terminal result. */
-  incomplete?: boolean;
-  /** Reasons retained when verification is incomplete. */
-  incomplete_reasons?: string[];
 }
 
 /**

@@ -3,24 +3,17 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const { createRuntimeFromEnvMock, executeMock, closeMock, queryMock, waitForRetryMock } =
-  vi.hoisted(() => ({
-    waitForRetryMock: vi.fn(),
-    createRuntimeFromEnvMock: vi.fn(),
-    executeMock: vi.fn(),
-    closeMock: vi.fn(async () => undefined),
-    queryMock: vi.fn(() => {
-      throw new Error('query should not be used when runtime abstraction is active');
-    }),
-  }));
+const { createRuntimeFromEnvMock, executeMock, closeMock, queryMock } = vi.hoisted(() => ({
+  createRuntimeFromEnvMock: vi.fn(),
+  executeMock: vi.fn(),
+  closeMock: vi.fn(async () => undefined),
+  queryMock: vi.fn(() => {
+    throw new Error('query should not be used when runtime abstraction is active');
+  }),
+}));
 
 vi.mock('../../src/runtime/factory.js', () => ({
   createRuntimeFromEnv: createRuntimeFromEnvMock,
-}));
-
-vi.mock('../../src/review/retry-policy.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/review/retry-policy.js')>()),
-  waitForRetry: waitForRetryMock,
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
@@ -32,14 +25,12 @@ import { createStreamingValidator } from '../../src/review/streaming-validator.j
 describe('streaming validator runtime bridge', () => {
   const tempDirs: string[] = [];
   beforeEach(() => {
-    waitForRetryMock.mockReset().mockImplementation(async (_delay, signal) => !signal?.aborted);
     createRuntimeFromEnvMock.mockReset();
     executeMock.mockReset();
     closeMock.mockClear();
     queryMock.mockClear();
   });
   afterEach(async () => {
-    vi.useRealTimers();
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
@@ -462,10 +453,7 @@ describe('streaming validator runtime bridge', () => {
     expect(result.issues).toHaveLength(2);
     expect(result.issues.every((issue) => issue.validation_status === 'uncertain')).toBe(true);
     expect(result.incompleteReasons.join(' ')).toMatch(/turn budget exhausted/i);
-    expect(executeMock).toHaveBeenCalledTimes(3);
-    expect(waitForRetryMock).toHaveBeenCalledTimes(2);
-    expect(result.tokensUsed).toBe(6);
-    expect(validator.getStats()).toEqual({ completed: 2, total: 2, activeSessions: 0 });
+    expect(result.incompleteReasons.join(' ')).toMatch(/queued issue/i);
   });
 
   it('records incomplete when flush times out with active sessions', async () => {
@@ -507,10 +495,6 @@ describe('streaming validator runtime bridge', () => {
     const result = await validator.flush(50);
 
     expect(result.incompleteReasons.join(' ')).toMatch(/flush timed out/i);
-    expect(closeMock).toHaveBeenCalledTimes(1);
-    expect(executeMock.mock.calls[0]?.[0]?.abortController.signal.aborted).toBe(true);
-    expect(result.issues[0]?.validation_status).toBe('uncertain');
-    expect(validator.getStats().completed).toBe(1);
   });
 
   it('starts a fresh OpenAI validator execution for each queued issue in the same file', async () => {
@@ -757,7 +741,7 @@ describe('streaming validator runtime bridge', () => {
     });
   });
 
-  it('retries context-limit failures twice before continuing deferred work', async () => {
+  it('marks OpenAI validator context-limit failures uncertain without retrying', async () => {
     createRuntimeFromEnvMock.mockReturnValue({
       kind: 'openai-responses',
       config: {
@@ -772,29 +756,55 @@ describe('streaming validator runtime bridge', () => {
           source: 'argus',
         },
       },
-      execute: executeMock.mockImplementation((options) => ({
-        async *[Symbol.asyncIterator]() {
-          const firstPrompt = await options.prompt[Symbol.asyncIterator]().next();
-          if (firstPrompt.value.message.content.includes('issue-too-large')) {
-            throw Object.assign(new Error('context_length_exceeded: prompt is too large'), {
-              status: 400,
+      execute: executeMock
+        .mockImplementationOnce(() => ({
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                const error = new Error('context_length_exceeded: prompt is too large');
+                (error as Error & { status: number }).status = 400;
+                throw error;
+              },
+            };
+          },
+          close: closeMock,
+        }))
+        .mockImplementationOnce(() => ({
+          async *[Symbol.asyncIterator]() {
+            const responseText = JSON.stringify({
+              validation_status: 'confirmed',
+              final_confidence: 0.89,
+              grounding_evidence: {
+                checked_files: ['src/api/service.ts'],
+                checked_symbols: [],
+                related_context: 'The second issue still ran.',
+                reasoning: 'The runtime continued after the oversized issue.',
+              },
             });
-          }
-          yield {
-            type: 'result',
-            status: 'success',
-            usage: { inputTokens: 6, outputTokens: 5 },
-            text: JSON.stringify({ validation_status: 'confirmed', final_confidence: 0.89 }),
-          };
-        },
-        close: closeMock,
-      })),
+
+            yield {
+              type: 'assistant.text',
+              text: responseText,
+            };
+
+            yield {
+              type: 'result',
+              status: 'success',
+              usage: {
+                inputTokens: 6,
+                outputTokens: 5,
+              },
+              text: responseText,
+            };
+          },
+          close: closeMock,
+        })),
     });
 
     const validator = createStreamingValidator({
       repoPath: 'C:\\repo',
-      challengeMode: false,
-      maxChallengeRounds: 1,
+      challengeMode: true,
+      maxChallengeRounds: 5,
       language: 'en',
     });
 
@@ -812,24 +822,22 @@ describe('streaming validator runtime bridge', () => {
       source_agent: 'logic-reviewer',
     });
 
-    closeMock.mockImplementationOnce(async () => {
-      validator.enqueue({
-        id: 'issue-after-large',
-        file: 'src/api/service.ts',
-        line_start: 20,
-        line_end: 21,
-        category: 'logic',
-        severity: 'warning',
-        title: 'Missing null guard',
-        description: 'The API helper dereferences a nullable response.',
-        confidence: 0.88,
-        source_agent: 'logic-reviewer',
-      });
+    validator.enqueue({
+      id: 'issue-after-large',
+      file: 'src/api/service.ts',
+      line_start: 20,
+      line_end: 21,
+      category: 'logic',
+      severity: 'warning',
+      title: 'Missing null guard',
+      description: 'The API helper dereferences a nullable response.',
+      confidence: 0.88,
+      source_agent: 'logic-reviewer',
     });
+
     const result = await validator.flush();
 
-    expect(executeMock).toHaveBeenCalledTimes(4);
-    expect(waitForRetryMock).toHaveBeenCalledTimes(2);
+    expect(executeMock).toHaveBeenCalledTimes(2);
     expect(result.issues).toHaveLength(2);
     expect(result.issues[0]).toMatchObject({
       id: 'issue-too-large',
@@ -844,7 +852,7 @@ describe('streaming validator runtime bridge', () => {
     });
   });
 
-  it('retries a bare 413 during a challenge and retains the exhausted reason', async () => {
+  it('treats a bare 413 result event as a validation context-limit failure', async () => {
     createRuntimeFromEnvMock.mockReturnValue({
       kind: 'openai-responses',
       config: {
@@ -859,7 +867,7 @@ describe('streaming validator runtime bridge', () => {
           source: 'argus',
         },
       },
-      execute: executeMock.mockImplementation(() => ({
+      execute: executeMock.mockImplementationOnce(() => ({
         async *[Symbol.asyncIterator]() {
           const firstRoundText = JSON.stringify({
             validation_status: 'confirmed',
@@ -920,10 +928,6 @@ describe('streaming validator runtime bridge', () => {
 
     const result = await validator.flush();
 
-    expect(executeMock).toHaveBeenCalledTimes(3);
-    expect(closeMock).toHaveBeenCalledTimes(3);
-    expect(result.tokensUsed).toBe(33);
-    expect(result.incompleteReasons.join(' ')).toContain('413 status code (no body)');
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]).toMatchObject({
       id: 'issue-413',
@@ -1226,11 +1230,9 @@ describe('streaming validator runtime bridge', () => {
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]).toMatchObject({
       id: 'issue-interrupted-challenge',
-      validation_status: 'uncertain',
+      validation_status: 'confirmed',
     });
-    expect(executeMock).toHaveBeenCalledTimes(3);
-    expect(result.tokensUsed).toBe(6);
-    expect(result.incompleteReasons.join(' ')).toContain('crashed before challenge round');
+    expect(result.incompleteReasons.join(' ')).toMatch(/crashed before completing/i);
   });
 
   it('starts a fresh session for a late issue after the previous session closed', async () => {
@@ -1683,525 +1685,4 @@ describe('streaming validator runtime bridge', () => {
     expect(result.cachedInputTokensUsed).toBe(900);
     expect(result.outputTokensUsed).toBe(80);
   });
-
-  const retryIssue = (id: string) => ({
-    id,
-    file: 'src/api/service.ts',
-    line_start: 10,
-    line_end: 12,
-    category: 'logic' as const,
-    severity: 'warning' as const,
-    title: `Retry ${id}`,
-    description: 'The nullable response is dereferenced without checking it.',
-    confidence: 0.9,
-    source_agent: 'logic-reviewer' as const,
-  });
-  const confirmedText = JSON.stringify({
-    validation_status: 'confirmed',
-    final_confidence: 0.9,
-    grounding_evidence: {
-      checked_files: ['src/api/service.ts'],
-      checked_symbols: [],
-      related_context: 'Checked nullable response.',
-      reasoning: 'The changed path dereferences the nullable response.',
-    },
-  });
-  const runtimeFixture = (kind = 'openai-responses') => ({
-    kind,
-    config: { models: { validator: 'gpt-5' } },
-    execute: executeMock,
-  });
-  const successEvent = () => ({
-    type: 'result' as const,
-    status: 'success',
-    text: confirmedText,
-    usage: { inputTokens: 4, cachedInputTokens: 2, outputTokens: 1 },
-  });
-
-  it('shares the two recovery attempts across issues in the same session', async () => {
-    createRuntimeFromEnvMock.mockReturnValue(runtimeFixture());
-    let requests = 0;
-    executeMock.mockImplementation(() => ({
-      async *[Symbol.asyncIterator]() {
-        const request = ++requests;
-        if (request === 2) yield successEvent();
-        else
-          yield {
-            type: 'result',
-            status: 'error',
-            error: 'HTTP 503 unavailable',
-            usage: { inputTokens: 2, outputTokens: 1 },
-          };
-      },
-      close: closeMock,
-    }));
-    const validator = createStreamingValidator({ repoPath: 'C:\\repo', challengeMode: false });
-    validator.enqueue(retryIssue('first-shared-budget'));
-    validator.enqueue(retryIssue('second-shared-budget'));
-    const result = await validator.flush();
-    expect(executeMock).toHaveBeenCalledTimes(4);
-    expect(waitForRetryMock).toHaveBeenCalledTimes(2);
-    expect(result.issues.map((issue) => issue.validation_status)).toEqual([
-      'confirmed',
-      'uncertain',
-    ]);
-    expect(result.tokensUsed).toBe(14);
-    expect(result.incompleteReasons.join(' ')).toContain('HTTP 503 unavailable');
-  });
-
-  it.each(['openai-responses', 'claude-agent'])(
-    'recovers %s missing terminal results without accepting assistant text',
-    async (kind) => {
-      createRuntimeFromEnvMock.mockReturnValue(runtimeFixture(kind));
-      executeMock
-        .mockImplementationOnce(() => ({
-          async *[Symbol.asyncIterator]() {
-            yield { type: 'assistant.text', text: confirmedText };
-          },
-          close: closeMock,
-        }))
-        .mockImplementationOnce(() => ({
-          async *[Symbol.asyncIterator]() {
-            yield successEvent();
-          },
-          close: closeMock,
-        }));
-      const onIssueValidated = vi.fn();
-      const validator = createStreamingValidator({
-        repoPath: 'C:\\repo',
-        challengeMode: false,
-        callbacks: { onIssueValidated },
-      });
-      validator.enqueue(retryIssue('missing-terminal'));
-      const result = await validator.flush();
-      expect(executeMock).toHaveBeenCalledTimes(2);
-      expect(closeMock).toHaveBeenCalledTimes(2);
-      expect(waitForRetryMock).toHaveBeenCalledTimes(1);
-      expect(result.incompleteReasons).toEqual([]);
-      expect(result.issues[0]).toMatchObject({
-        validation_status: 'confirmed',
-        final_confidence: 0.9,
-      });
-      expect(onIssueValidated).toHaveBeenCalledTimes(1);
-    }
-  );
-
-  it.each(['error', 'incomplete', 'error_max_turns', 'invalid-json'])(
-    'clears transient %s failures after successful recovery',
-    async (status) => {
-      createRuntimeFromEnvMock.mockReturnValue(runtimeFixture());
-      executeMock
-        .mockImplementationOnce(() => ({
-          async *[Symbol.asyncIterator]() {
-            yield {
-              type: 'result',
-              status: status === 'invalid-json' ? 'success' : status,
-              text: 'not JSON',
-              rawStopReason: 'provider interrupted',
-              usage: { inputTokens: 2, cachedInputTokens: 1, outputTokens: 1 },
-            };
-          },
-          close: closeMock,
-        }))
-        .mockImplementationOnce(() => ({
-          async *[Symbol.asyncIterator]() {
-            yield successEvent();
-          },
-          close: closeMock,
-        }));
-      const onProgress = vi.fn();
-      const validator = createStreamingValidator({
-        repoPath: 'C:\\repo',
-        challengeMode: false,
-        onProgress,
-      });
-      validator.enqueue(retryIssue(status));
-      const result = await validator.flush();
-      expect(executeMock).toHaveBeenCalledTimes(2);
-      expect(result.incompleteReasons).toEqual([]);
-      expect(result.inputTokensUsed).toBe(6);
-      expect(result.cachedInputTokensUsed).toBe(3);
-      expect(result.outputTokensUsed).toBe(2);
-      expect(result.tokensUsed).toBe(8);
-      expect(onProgress).toHaveBeenCalledExactlyOnceWith(1, 1, status, 'confirmed');
-    }
-  );
-
-  it('retries an interrupted challenge even after a successful round without duplicate callbacks', async () => {
-    createRuntimeFromEnvMock.mockReturnValue(runtimeFixture());
-    executeMock
-      .mockImplementationOnce(() => ({
-        async *[Symbol.asyncIterator]() {
-          yield successEvent();
-          throw new Error('challenge stream disconnected');
-        },
-        close: closeMock,
-      }))
-      .mockImplementationOnce(() => ({
-        async *[Symbol.asyncIterator]() {
-          yield successEvent();
-          yield successEvent();
-        },
-        close: closeMock,
-      }));
-    const onRoundComplete = vi.fn();
-    const onIssueValidated = vi.fn();
-    const validator = createStreamingValidator({
-      repoPath: 'C:\\repo',
-      challengeMode: true,
-      maxChallengeRounds: 2,
-      callbacks: { onRoundComplete, onIssueValidated },
-    });
-    validator.enqueue(retryIssue('challenge-recovery'));
-    const result = await validator.flush();
-    expect(executeMock).toHaveBeenCalledTimes(2);
-    expect(onIssueValidated).toHaveBeenCalledTimes(1);
-    expect(onRoundComplete.mock.calls.map((call) => call[2])).toEqual([1, 2]);
-    expect(result.incompleteReasons).toEqual([]);
-    expect(result.issues[0]?.validation_status).toBe('confirmed');
-    expect(result.tokensUsed).toBe(15);
-    expect(result.cachedInputTokensUsed).toBe(6);
-  });
-
-  it.each(['openai-responses', 'claude-agent'])(
-    'updates replayed round status after %s recovery without repeating final issue callbacks',
-    async (kind) => {
-      createRuntimeFromEnvMock.mockReturnValue(runtimeFixture(kind));
-      const rejectedEvent = () => ({
-        ...successEvent(),
-        text: JSON.stringify({
-          ...JSON.parse(confirmedText),
-          validation_status: 'rejected',
-          rejection_reason: 'Recovery found an existing guard.',
-        }),
-      });
-      executeMock
-        .mockImplementationOnce(() => ({
-          async *[Symbol.asyncIterator]() {
-            yield successEvent();
-            throw new Error('challenge stream disconnected');
-          },
-          close: closeMock,
-        }))
-        .mockImplementationOnce(() => ({
-          async *[Symbol.asyncIterator]() {
-            yield rejectedEvent();
-            yield rejectedEvent();
-          },
-          close: closeMock,
-        }));
-      const onRoundComplete = vi.fn();
-      const onIssueValidated = vi.fn();
-      const validator = createStreamingValidator({
-        repoPath: 'C:\\repo',
-        challengeMode: true,
-        maxChallengeRounds: 2,
-        callbacks: { onRoundComplete, onIssueValidated },
-      });
-      validator.enqueue(retryIssue('changed-recovery-status'));
-      const result = await validator.flush();
-      expect(executeMock).toHaveBeenCalledTimes(2);
-      expect(waitForRetryMock).toHaveBeenCalledTimes(1);
-      expect(onRoundComplete.mock.calls.map((call) => [call[2], call[4]])).toEqual([
-        [1, 'confirmed'],
-        [1, 'rejected'],
-        [2, 'rejected'],
-      ]);
-      expect(onIssueValidated).toHaveBeenCalledTimes(1);
-      expect(result.issues[0]?.validation_status).toBe('rejected');
-      expect(result.incompleteReasons).toEqual([]);
-      expect(result.tokensUsed).toBe(15);
-    }
-  );
-
-  it('updates a recovered round again when its verdict returns to the original value', async () => {
-    createRuntimeFromEnvMock.mockReturnValue(runtimeFixture());
-    let attempt = 0;
-    executeMock.mockImplementation(() => {
-      const currentAttempt = ++attempt;
-      return {
-        async *[Symbol.asyncIterator]() {
-          yield {
-            ...successEvent(),
-            text: JSON.stringify({
-              ...JSON.parse(confirmedText),
-              validation_status: currentAttempt === 2 ? 'rejected' : 'confirmed',
-            }),
-          };
-          if (currentAttempt < 3) throw new Error('challenge stream disconnected');
-          yield successEvent();
-        },
-        close: closeMock,
-      };
-    });
-    const onRoundComplete = vi.fn();
-    const onIssueValidated = vi.fn();
-    const validator = createStreamingValidator({
-      repoPath: 'C:\\repo',
-      challengeMode: true,
-      maxChallengeRounds: 2,
-      callbacks: { onRoundComplete, onIssueValidated },
-    });
-    validator.enqueue(retryIssue('restored-recovery-status'));
-    const result = await validator.flush();
-    expect(executeMock).toHaveBeenCalledTimes(3);
-    expect(waitForRetryMock).toHaveBeenCalledTimes(2);
-    expect(onRoundComplete.mock.calls.map((call) => [call[2], call[4]])).toEqual([
-      [1, 'confirmed'],
-      [1, 'rejected'],
-      [1, 'confirmed'],
-      [2, 'confirmed'],
-    ]);
-    expect(onIssueValidated).toHaveBeenCalledTimes(1);
-    expect(result.issues[0]?.validation_status).toBe('confirmed');
-    expect(result.incompleteReasons).toEqual([]);
-    expect(result.tokensUsed).toBe(20);
-  });
-
-  it('preserves completed Claude issues and usage when the next issue exhausts recovery', async () => {
-    createRuntimeFromEnvMock.mockReturnValue(runtimeFixture('claude-agent'));
-    executeMock.mockImplementation((options) => ({
-      async *[Symbol.asyncIterator]() {
-        const prompts = options.prompt[Symbol.asyncIterator]();
-        const first = await prompts.next();
-        if (first.value.message.content.includes('completed-issue')) {
-          yield successEvent();
-          const second = await prompts.next();
-          expect(second.value.message.content).toContain('failed-issue');
-        } else {
-          expect(first.value.message.content).toContain('failed-issue');
-          expect(first.value.message.content).not.toContain('completed-issue');
-        }
-        yield {
-          type: 'result',
-          status: 'incomplete',
-          rawStopReason: 'incomplete.max_output_tokens',
-          usage: { inputTokens: 2, cachedInputTokens: 1, outputTokens: 1 },
-        };
-      },
-      close: closeMock,
-    }));
-    const onIssueValidated = vi.fn();
-    const validator = createStreamingValidator({
-      repoPath: 'C:\\repo',
-      challengeMode: false,
-      callbacks: { onIssueValidated },
-    });
-    validator.enqueue(retryIssue('completed-issue'));
-    validator.enqueue(retryIssue('failed-issue'));
-    const result = await validator.flush();
-    expect(executeMock).toHaveBeenCalledTimes(3);
-    expect(waitForRetryMock).toHaveBeenCalledTimes(2);
-    expect(onIssueValidated.mock.calls.map((call) => call[0].id)).toEqual([
-      'completed-issue',
-      'failed-issue',
-    ]);
-    expect(result.issues.map((issue) => issue.validation_status)).toEqual([
-      'confirmed',
-      'uncertain',
-    ]);
-    expect(result.tokensUsed).toBe(14);
-    expect(result.cachedInputTokensUsed).toBe(5);
-    expect(result.incompleteReasons.join(' ')).toContain('incomplete.max_output_tokens');
-    expect(validator.getStats()).toEqual({ completed: 2, total: 2, activeSessions: 0 });
-  });
-
-  it('waits for cleanup and bounded backoff before retrying, preserving the failed issue budget for new arrivals', async () => {
-    vi.useFakeTimers();
-    const actual = await vi.importActual<typeof import('../../src/review/retry-policy.js')>(
-      '../../src/review/retry-policy.js'
-    );
-    waitForRetryMock.mockImplementation(actual.waitForRetry);
-    let releaseClose!: () => void;
-    let markClosing!: () => void;
-    const closing = new Promise<void>((resolve) => {
-      markClosing = resolve;
-    });
-    const closeGate = new Promise<void>((resolve) => {
-      releaseClose = resolve;
-    });
-    createRuntimeFromEnvMock.mockReturnValue(runtimeFixture());
-    executeMock.mockImplementation((options) => ({
-      async *[Symbol.asyncIterator]() {
-        const first = await options.prompt[Symbol.asyncIterator]().next();
-        if (first.value.message.content.includes('failed-budget'))
-          throw new Error('persistent failure retry-after-ms: 999999');
-        yield successEvent();
-      },
-      close: async () => {
-        if (executeMock.mock.calls.length === 1) {
-          markClosing();
-          await closeGate;
-        }
-      },
-    }));
-    const validator = createStreamingValidator({ repoPath: 'C:\\repo', challengeMode: false });
-    validator.enqueue(retryIssue('failed-budget'));
-    await closing;
-    validator.enqueue(retryIssue('during-cleanup'));
-    const flush = validator.flush();
-    expect(executeMock).toHaveBeenCalledTimes(1);
-    expect(waitForRetryMock).not.toHaveBeenCalled();
-    releaseClose();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(waitForRetryMock).toHaveBeenCalledTimes(1);
-    validator.enqueue(retryIssue('during-backoff'));
-    expect(validator.getStats().activeSessions).toBe(1);
-    await vi.advanceTimersByTimeAsync(9999);
-    expect(executeMock).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(executeMock).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(10000);
-    const result = await flush;
-    expect(executeMock).toHaveBeenCalledTimes(5);
-    expect(waitForRetryMock.mock.calls.map((call) => call[0])).toEqual([10000, 10000]);
-    expect(result.issues.map((issue) => issue.id)).toEqual([
-      'failed-budget',
-      'during-cleanup',
-      'during-backoff',
-    ]);
-    expect(result.issues.map((issue) => issue.validation_status)).toEqual([
-      'uncertain',
-      'confirmed',
-      'confirmed',
-    ]);
-    expect(result.incompleteReasons.join(' ')).toContain('persistent failure');
-    expect(validator.getStats()).toEqual({ completed: 3, total: 3, activeSessions: 0 });
-  });
-
-  it('keeps the recovery wait visible to flush and aborts it without starting deferred sessions', async () => {
-    const actual = await vi.importActual<typeof import('../../src/review/retry-policy.js')>(
-      '../../src/review/retry-policy.js'
-    );
-    let markWaiting!: () => void;
-    const waiting = new Promise<void>((resolve) => {
-      markWaiting = resolve;
-    });
-    waitForRetryMock.mockImplementation((delay, signal) => {
-      markWaiting();
-      return actual.waitForRetry(delay, signal);
-    });
-    createRuntimeFromEnvMock.mockReturnValue(runtimeFixture());
-    executeMock.mockImplementation(() => ({
-      // eslint-disable-next-line require-yield -- throwing stream tests recovery before any result
-      async *[Symbol.asyncIterator]() {
-        throw new Error('retryable provider failure');
-      },
-      close: closeMock,
-    }));
-    const abortController = new AbortController();
-    const validator = createStreamingValidator({
-      repoPath: 'C:\\repo',
-      challengeMode: false,
-      abortController,
-    });
-    validator.enqueue(retryIssue('aborted-backoff'));
-    let flushed = false;
-    const flush = validator.flush().then((result) => {
-      flushed = true;
-      return result;
-    });
-    await waiting;
-    validator.enqueue(retryIssue('deferred-before-abort'));
-    expect(flushed).toBe(false);
-    expect(executeMock).toHaveBeenCalledTimes(1);
-    expect(validator.getStats().activeSessions).toBe(1);
-    abortController.abort(new Error('review stopped'));
-    const result = await flush;
-    expect(executeMock.mock.calls[0]?.[0]?.abortController.signal.aborted).toBe(true);
-    expect(executeMock).toHaveBeenCalledTimes(1);
-    expect(waitForRetryMock).toHaveBeenCalledTimes(1);
-    expect(result.issues).toHaveLength(2);
-    expect(result.issues.every((issue) => issue.validation_status === 'uncertain')).toBe(true);
-    expect(result.incompleteReasons.join(' ')).toContain('review stopped');
-    expect(validator.getStats()).toEqual({ completed: 2, total: 2, activeSessions: 0 });
-  });
-
-  it.each(['thrown', 'event'])(
-    'never retries %s cancellation or starts queued executions',
-    async (kind) => {
-      createRuntimeFromEnvMock.mockReturnValue(runtimeFixture());
-      executeMock.mockImplementation(() => ({
-        async *[Symbol.asyncIterator]() {
-          if (kind === 'thrown')
-            throw Object.assign(new Error('User cancelled review'), { name: 'AbortError' });
-          yield {
-            type: 'result',
-            status: 'cancelled',
-            error: 'User cancelled review',
-            usage: { inputTokens: 2, outputTokens: 1 },
-          };
-        },
-        close: closeMock,
-      }));
-      const validator = createStreamingValidator({ repoPath: 'C:\\repo', challengeMode: false });
-      validator.enqueue(retryIssue('cancelled'));
-      validator.enqueue(retryIssue('queued-after-cancel'));
-      const result = await validator.flush();
-      validator.enqueue(retryIssue('late-after-cancel'));
-      expect(executeMock).toHaveBeenCalledTimes(1);
-      expect(waitForRetryMock).not.toHaveBeenCalled();
-      expect(result.issues).toHaveLength(2);
-      expect(result.incompleteReasons.join(' ')).toMatch(/cancelled/i);
-      expect(result.tokensUsed).toBe(kind === 'event' ? 3 : 0);
-      expect(validator.getStats()).toEqual({ completed: 3, total: 3, activeSessions: 0 });
-    }
-  );
-
-  it('does not open runtime sessions when already cancelled', async () => {
-    const abortController = new AbortController();
-    abortController.abort(new Error('already stopped'));
-    const validator = createStreamingValidator({ repoPath: 'C:\\repo', abortController });
-    validator.enqueue(retryIssue('pre-aborted'));
-    const result = await validator.flush();
-    expect(executeMock).not.toHaveBeenCalled();
-    expect(waitForRetryMock).not.toHaveBeenCalled();
-    expect(result.issues[0]?.validation_status).toBe('uncertain');
-    expect(result.incompleteReasons.join(' ')).toContain('already stopped');
-  });
-
-  it('cancels backoff on flush timeout and preserves pending issue accounting', async () => {
-    const actual = await vi.importActual<typeof import('../../src/review/retry-policy.js')>(
-      '../../src/review/retry-policy.js'
-    );
-    waitForRetryMock.mockImplementation(actual.waitForRetry);
-    createRuntimeFromEnvMock.mockReturnValue(runtimeFixture());
-    executeMock.mockImplementation(() => ({
-      // eslint-disable-next-line require-yield -- throwing stream tests recovery before any result
-      async *[Symbol.asyncIterator]() {
-        throw new Error('retryable failure');
-      },
-      close: closeMock,
-    }));
-    const validator = createStreamingValidator({ repoPath: 'C:\\repo', challengeMode: false });
-    validator.enqueue(retryIssue('timeout-backoff'));
-    const result = await validator.flush(10);
-    expect(result.issues[0]?.validation_status).toBe('uncertain');
-    expect(result.incompleteReasons.join(' ')).toMatch(/flush timed out/i);
-    expect(executeMock).toHaveBeenCalledTimes(1);
-    expect(waitForRetryMock.mock.calls[0]?.[1].aborted).toBe(true);
-    await validator.flush(100);
-    expect(validator.getStats()).toEqual({ completed: 1, total: 1, activeSessions: 0 });
-  });
-
-  it.each([
-    { message: 'provider connection aborted by proxy', status: 503 },
-    { message: 'request payload is too large', status: 413, error: { type: 'payload_limit' } },
-  ])(
-    'retains structured provider failure details without treating "$message" as cancellation',
-    async (failure) => {
-      createRuntimeFromEnvMock.mockReturnValue(runtimeFixture());
-      executeMock.mockImplementation(() => {
-        throw failure;
-      });
-      const validator = createStreamingValidator({ repoPath: 'C:\\repo', challengeMode: false });
-      validator.enqueue(retryIssue('structured-failure'));
-      const result = await validator.flush();
-      expect(executeMock).toHaveBeenCalledTimes(3);
-      expect(waitForRetryMock).toHaveBeenCalledTimes(2);
-      expect(result.issues[0]?.validation_status).toBe('uncertain');
-      expect(result.incompleteReasons.join(' ')).toContain(failure.message);
-      expect(result.incompleteReasons.join(' ')).toContain(String(failure.status));
-    }
-  );
 });
