@@ -245,26 +245,32 @@ describe('streaming orchestrator max-turn handling', () => {
     ).rejects.toThrow(/reached maxTurns with 0 reported issues/);
   });
 
-  it('keeps already reported issues as a partial success on max-turn exhaustion', async () => {
+  it('keeps findings and usage while requesting a retry on max-turn exhaustion', async () => {
     const orchestrator = new StreamingReviewOrchestrator({
       skipValidation: true,
       progressMode: 'silent',
     });
     const toolsFactory = (agentType: string, invocationKey: string) =>
       (orchestrator as any).createReportIssueRuntimeTools()(agentType, invocationKey);
+    const onUsage = vi.fn();
 
-    const result = await (orchestrator as any).runStreamingAgent(
-      'logic-reviewer',
-      minimalReviewContext,
-      '',
-      createMaxTurnsRuntime({ callReportIssue: true }),
-      toolsFactory,
-      'C:\\repo',
-      24,
-      'logic-invocation-1'
-    );
+    await expect(
+      (orchestrator as any).runStreamingAgent(
+        'logic-reviewer',
+        minimalReviewContext,
+        '',
+        createMaxTurnsRuntime({ callReportIssue: true }),
+        toolsFactory,
+        'C:\\repo',
+        24,
+        'logic-invocation-1',
+        [],
+        undefined,
+        onUsage
+      )
+    ).rejects.toThrow('Turn budget exhausted');
 
-    expect(result.tokensUsed).toBe(18);
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ tokensUsed: 18 }));
     expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(1);
     expect((orchestrator as any).getInvocationIssueCount('logic-invocation-1')).toBe(1);
   });
@@ -284,18 +290,18 @@ describe('streaming orchestrator max-turn handling', () => {
     const toolsFactory = (agentType: string, invocationKey: string) =>
       (orchestrator as any).createReportIssueRuntimeTools()(agentType, invocationKey);
 
-    const result = await (orchestrator as any).runStreamingAgent(
-      'logic-reviewer',
-      minimalReviewContext,
-      '',
-      createMaxTurnsRuntime({ callReportIssue: true }),
-      toolsFactory,
-      'C:\\repo',
-      24,
-      'dedup-invocation-1'
-    );
-
-    expect(result.tokensUsed).toBe(18);
+    await expect(
+      (orchestrator as any).runStreamingAgent(
+        'logic-reviewer',
+        minimalReviewContext,
+        '',
+        createMaxTurnsRuntime({ callReportIssue: true }),
+        toolsFactory,
+        'C:\\repo',
+        24,
+        'dedup-invocation-1'
+      )
+    ).rejects.toThrow('Turn budget exhausted');
     expect((orchestrator as any).getInvocationIssueCount('dedup-invocation-1')).toBe(1);
     expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(0);
   });
@@ -337,7 +343,7 @@ describe('streaming orchestrator max-turn handling', () => {
       (orchestrator as any).runAgentsWithStreaming(minimalReviewContext, 'C:\\repo', [
         'security-reviewer',
       ])
-    ).rejects.toThrow(/Review failed: 1 agent\(s\) failed after 2 retries/);
+    ).rejects.toThrow(/Review failed: 1 agent\(s\) failed after 2 attempts/);
 
     const maxTurnsPerAttempt = executeMock.mock.calls.map(
       (call) => (call[0] as { maxTurns?: number }).maxTurns
@@ -399,7 +405,7 @@ it('carries bounded exploration evidence into a retry instead of restarting blin
   expect(attempts).toBe(2);
 });
 
-it('keeps findings and marks the agent incomplete instead of failing the review', async () => {
+it('keeps findings when an incomplete attempt requests a retry', async () => {
   const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
   const orchestrator = new StreamingReviewOrchestrator({
     skipValidation: true,
@@ -433,31 +439,25 @@ it('keeps findings and marks the agent incomplete instead of failing the review'
     }),
   };
 
-  const result = await (orchestrator as any).runStreamingAgent(
-    'security-reviewer',
-    minimalReviewContext,
-    '',
-    runtime,
-    (orchestrator as any).createReportIssueRuntimeTools(),
-    '.',
-    29,
-    'incomplete-test'
-  );
-
-  // The attempt itself succeeds so already reported findings are kept, and the price is a
-  // visible agent error that keeps the review from being rated clean.
-  expect(result).toBeTruthy();
-  expect(
-    events.find(
-      (event) =>
-        event.type === 'agent:complete' &&
-        event.data?.status === 'error' &&
-        String(event.data?.error ?? '').includes('Missing authorization implementation')
+  await expect(
+    (orchestrator as any).runStreamingAgent(
+      'security-reviewer',
+      minimalReviewContext,
+      '',
+      runtime,
+      (orchestrator as any).createReportIssueRuntimeTools(),
+      '.',
+      29,
+      'incomplete-test'
     )
-  ).toBeDefined();
+  ).rejects.toThrow('Missing authorization implementation');
+
+  expect((orchestrator as any).rawIssuesForSkipMode).toHaveLength(1);
+  expect(events.filter((event) => event.type === 'agent:complete')).toHaveLength(0);
 });
 
-it('does not fail the whole review when an agent declares a review incomplete', async () => {
+it('retries an incomplete declaration and fails when both attempts are incomplete', async () => {
+  executeMock.mockReset();
   const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
 
   createRuntimeFromEnvMock.mockReturnValue({
@@ -483,13 +483,13 @@ it('does not fail the whole review when an agent declares a review incomplete', 
     onEvent: (event: any) => events.push(event),
   });
 
-  const aggregated = await (orchestrator as any).runAgentsWithStreaming(
-    minimalReviewContext,
-    'C:\\repo',
-    ['security-reviewer']
-  );
+  await expect(
+    (orchestrator as any).runAgentsWithStreaming(minimalReviewContext, 'C:\\repo', [
+      'security-reviewer',
+    ])
+  ).rejects.toThrow('Could not confirm the permission model');
 
-  expect(aggregated).toBeTruthy();
+  expect(executeMock).toHaveBeenCalledTimes(2);
   expect(
     events.find(
       (event) =>

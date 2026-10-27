@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 const {
@@ -34,11 +34,17 @@ vi.mock('@anthropic-ai/sdk', () => ({
   },
 }));
 
-vi.mock('openai', () => ({
-  default: class MockOpenAI {
-    constructor(_options: unknown) {}
-  },
-}));
+vi.mock('openai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('openai')>();
+  return {
+    ...actual,
+    default: class MockOpenAI {
+      static APIUserAbortError = actual.default.APIUserAbortError;
+
+      constructor(_options: unknown) {}
+    },
+  };
+});
 
 vi.mock('../../src/config/env.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/config/env.js')>();
@@ -58,6 +64,22 @@ import type { ArgusRuntimeConfig } from '../../src/config/env.js';
 beforeEach(() => {
   anthropicMessagesCreateMock.mockReset();
 });
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+async function finishRetries<T>(pending: Promise<T>): Promise<T> {
+  const observed = pending.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error })
+  );
+  await vi.runAllTimersAsync();
+  const outcome = await observed;
+  if ('error' in outcome) throw outcome.error;
+  return outcome.value;
+}
 
 function createAsyncStream(messages: unknown[], onReturn?: () => void) {
   const returnMock = vi.fn(async () => {
@@ -632,6 +654,7 @@ describe('runtime execution', () => {
   });
 
   it('falls back to stateless tool-loop replay when previous_response_id tool follow-ups fail upstream', async () => {
+    vi.useFakeTimers();
     const upstreamError = Object.assign(new Error('502 Upstream request failed'), {
       status: 502,
       error: {
@@ -740,9 +763,13 @@ describe('runtime execution', () => {
     });
 
     const events = [];
-    for await (const event of execution) {
-      events.push(event);
-    }
+    await finishRetries(
+      (async () => {
+        for await (const event of execution) {
+          events.push(event);
+        }
+      })()
+    );
 
     expect(createMock).toHaveBeenCalledTimes(3);
     expect(createMock).toHaveBeenNthCalledWith(
@@ -813,6 +840,7 @@ describe('runtime execution', () => {
   });
 
   it('falls back to stateless replay when the gateway cannot resolve a tool output against previous_response_id', async () => {
+    vi.useFakeTimers();
     const orphanedToolOutputError = Object.assign(
       new Error('400 No tool call found for tool output with call_id call_1.'),
       {
@@ -924,9 +952,13 @@ describe('runtime execution', () => {
     });
 
     const events = [];
-    for await (const event of execution) {
-      events.push(event);
-    }
+    await finishRetries(
+      (async () => {
+        for await (const event of execution) {
+          events.push(event);
+        }
+      })()
+    );
 
     expect(createMock).toHaveBeenCalledTimes(3);
     expect(createMock).toHaveBeenNthCalledWith(
@@ -995,6 +1027,7 @@ describe('runtime execution', () => {
   });
 
   it('falls back to stateless replay when a managed continuation loses its response id', async () => {
+    vi.useFakeTimers();
     // Gateways that only report the response id on `response.created` leave
     // `previousResponseId` empty, so the tool-output follow-up is sent without
     // `previous_response_id` while still carrying tool outputs only.
@@ -1107,9 +1140,13 @@ describe('runtime execution', () => {
     });
 
     const events = [];
-    for await (const event of execution) {
-      events.push(event);
-    }
+    await finishRetries(
+      (async () => {
+        for await (const event of execution) {
+          events.push(event);
+        }
+      })()
+    );
 
     expect(createMock).toHaveBeenCalledTimes(3);
     expect(createMock.mock.calls[1]?.[0]?.previous_response_id).toBeUndefined();
@@ -1135,6 +1172,7 @@ describe('runtime execution', () => {
   });
 
   it('falls back to stateless replay when the orphan tool-output error arrives as a stream error event', async () => {
+    vi.useFakeTimers();
     const createMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -1240,9 +1278,13 @@ describe('runtime execution', () => {
     });
 
     const events = [];
-    for await (const event of execution) {
-      events.push(event);
-    }
+    await finishRetries(
+      (async () => {
+        for await (const event of execution) {
+          events.push(event);
+        }
+      })()
+    );
 
     expect(createMock).toHaveBeenCalledTimes(3);
     expect(createMock.mock.calls[2]?.[0]?.previous_response_id).toBeUndefined();
@@ -1250,6 +1292,7 @@ describe('runtime execution', () => {
   });
 
   it('falls back to stateless tool-loop replay when HTTP responses reject previous_response_id continuation', async () => {
+    vi.useFakeTimers();
     const unsupportedContinuationError = Object.assign(
       new Error('400 previous_response_id is only supported on Responses WebSocket v2'),
       {
@@ -1361,9 +1404,13 @@ describe('runtime execution', () => {
     });
 
     const events = [];
-    for await (const event of execution) {
-      events.push(event);
-    }
+    await finishRetries(
+      (async () => {
+        for await (const event of execution) {
+          events.push(event);
+        }
+      })()
+    );
 
     expect(createMock).toHaveBeenCalledTimes(3);
     expect(createMock).toHaveBeenNthCalledWith(
@@ -1434,6 +1481,7 @@ describe('runtime execution', () => {
   });
 
   it('falls back to item_reference continuation when stateless tool replay is rejected by the gateway', async () => {
+    vi.useFakeTimers();
     const unsupportedContinuationError = Object.assign(
       new Error('400 previous_response_id is only supported on Responses WebSocket v2'),
       {
@@ -1560,9 +1608,13 @@ describe('runtime execution', () => {
     });
 
     const events = [];
-    for await (const event of execution) {
-      events.push(event);
-    }
+    await finishRetries(
+      (async () => {
+        for await (const event of execution) {
+          events.push(event);
+        }
+      })()
+    );
 
     expect(createMock).toHaveBeenCalledTimes(4);
     expect(createMock).toHaveBeenNthCalledWith(
@@ -1664,6 +1716,7 @@ describe('runtime execution', () => {
   });
 
   it('falls back to stateless replay when store=false previous_response_id cannot find reasoning items', async () => {
+    vi.useFakeTimers();
     const nonPersistedReasoningError = Object.assign(
       new Error(
         "404 Item with id 'rs_1' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input."
@@ -1783,9 +1836,13 @@ describe('runtime execution', () => {
     });
 
     const events = [];
-    for await (const event of execution) {
-      events.push(event);
-    }
+    await finishRetries(
+      (async () => {
+        for await (const event of execution) {
+          events.push(event);
+        }
+      })()
+    );
 
     expect(createMock).toHaveBeenCalledTimes(3);
     const statelessInput = createMock.mock.calls[2]?.[0]?.input;
@@ -1838,6 +1895,7 @@ describe('runtime execution', () => {
   it.each(['completed', 'incomplete', 'failed', 'empty', 'maxTurns', 'throw'])(
     'counts all tool-loop requests ending with %s',
     async (ending) => {
+      vi.useFakeTimers();
       const call = {
         id: 'fc_1',
         type: 'function_call',
@@ -1883,20 +1941,24 @@ describe('runtime execution', () => {
         { responses: { create } } as any
       );
       const events = [];
-      for await (const event of runtime.execute({
-        prompt: 'review',
-        cwd: '.',
-        maxTurns: 2,
-        tools: [
-          {
-            name: 'read',
-            description: 'read',
-            inputSchema: {},
-            execute: async () => ({ content: [{ type: 'text', text: 'fixture' }] }),
-          },
-        ],
-      }))
-        events.push(event);
+      await finishRetries(
+        (async () => {
+          for await (const event of runtime.execute({
+            prompt: 'review',
+            cwd: '.',
+            maxTurns: 2,
+            tools: [
+              {
+                name: 'read',
+                description: 'read',
+                inputSchema: {},
+                execute: async () => ({ content: [{ type: 'text', text: 'fixture' }] }),
+              },
+            ],
+          }))
+            events.push(event);
+        })()
+      );
       expect(events.at(-1)?.usage).toEqual(
         ending === 'throw'
           ? { inputTokens: 100, cachedInputTokens: 20, outputTokens: 10 }
@@ -2452,18 +2514,21 @@ describe('runtime execution', () => {
       prompt: 'Return JSON only',
     });
 
-    expect(createMock).toHaveBeenCalledWith({
-      model: 'gpt-5-mini',
-      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'Return JSON only' }],
-        },
-      ],
-      stream: true,
-    });
+    expect(createMock).toHaveBeenCalledWith(
+      {
+        model: 'gpt-5-mini',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Return JSON only' }],
+          },
+        ],
+        stream: true,
+      },
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
+    );
     expect(result).toEqual({
       text: 'runtime text output',
       usage: {
@@ -2474,6 +2539,7 @@ describe('runtime execution', () => {
   });
 
   it('forwards the global reasoning effort to OpenAI Responses text generation', async () => {
+    vi.useFakeTimers();
     const createMock = vi.fn().mockResolvedValue(
       createOpenAIResponseStream({
         id: 'resp_reasoning_text',
@@ -2522,13 +2588,14 @@ describe('runtime execution', () => {
       } as any
     );
 
-    await runtime.generateText({ prompt: 'Return JSON only' });
+    await finishRetries(runtime.generateText({ prompt: 'Return JSON only' }));
 
     expect(createMock).toHaveBeenCalledWith(
       expect.objectContaining({
         model: 'gpt-5.5',
         reasoning: { effort: 'high' },
-      })
+      }),
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
     );
   });
 
@@ -2675,6 +2742,7 @@ describe('runtime execution', () => {
   });
 
   it('retries OpenAI text generation with plain string input when the endpoint rejects message-list input', async () => {
+    vi.useFakeTimers();
     const incompatibleInputError = Object.assign(new Error('input must be a string'), {
       status: 400,
       error: {
@@ -2732,30 +2800,40 @@ describe('runtime execution', () => {
       } as any
     );
 
-    const result = await runtime.generateText({
-      model: 'gpt-5-mini',
-      prompt: 'Return JSON only',
-    });
+    const result = await finishRetries(
+      runtime.generateText({
+        model: 'gpt-5-mini',
+        prompt: 'Return JSON only',
+      })
+    );
 
     expect(createMock).toHaveBeenCalledTimes(2);
-    expect(createMock).toHaveBeenNthCalledWith(1, {
-      model: 'gpt-5-mini',
-      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'Return JSON only' }],
-        },
-      ],
-      stream: true,
-    });
-    expect(createMock).toHaveBeenNthCalledWith(2, {
-      model: 'gpt-5-mini',
-      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
-      input: 'Return JSON only',
-      stream: true,
-    });
+    expect(createMock).toHaveBeenNthCalledWith(
+      1,
+      {
+        model: 'gpt-5-mini',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Return JSON only' }],
+          },
+        ],
+        stream: true,
+      },
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
+    );
+    expect(createMock).toHaveBeenNthCalledWith(
+      2,
+      {
+        model: 'gpt-5-mini',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
+        input: 'Return JSON only',
+        stream: true,
+      },
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
+    );
     expect(result).toEqual({
       text: 'runtime text output',
       usage: {
@@ -2766,6 +2844,7 @@ describe('runtime execution', () => {
   });
 
   it('retries OpenAI text generation without max_output_tokens when the endpoint rejects that parameter', async () => {
+    vi.useFakeTimers();
     const maxOutputTokensError = Object.assign(new Error('400 status code (no body)'), {
       status: 400,
     });
@@ -2820,38 +2899,48 @@ describe('runtime execution', () => {
       } as any
     );
 
-    const result = await runtime.generateText({
-      model: 'gpt-5-mini',
-      maxOutputTokens: 1024,
-      prompt: 'Return JSON only',
-    });
+    const result = await finishRetries(
+      runtime.generateText({
+        model: 'gpt-5-mini',
+        maxOutputTokens: 1024,
+        prompt: 'Return JSON only',
+      })
+    );
 
     expect(createMock).toHaveBeenCalledTimes(2);
-    expect(createMock).toHaveBeenNthCalledWith(1, {
-      model: 'gpt-5-mini',
-      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'Return JSON only' }],
-        },
-      ],
-      max_output_tokens: 1024,
-      stream: true,
-    });
-    expect(createMock).toHaveBeenNthCalledWith(2, {
-      model: 'gpt-5-mini',
-      instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'Return JSON only' }],
-        },
-      ],
-      stream: true,
-    });
+    expect(createMock).toHaveBeenNthCalledWith(
+      1,
+      {
+        model: 'gpt-5-mini',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Return JSON only' }],
+          },
+        ],
+        max_output_tokens: 1024,
+        stream: true,
+      },
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
+    );
+    expect(createMock).toHaveBeenNthCalledWith(
+      2,
+      {
+        model: 'gpt-5-mini',
+        instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Return JSON only' }],
+          },
+        ],
+        stream: true,
+      },
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
+    );
     expect(result).toEqual({
       text: 'runtime text output',
       usage: {
@@ -2862,6 +2951,7 @@ describe('runtime execution', () => {
   });
 
   it('retries OpenAI text generation with a larger max_output_tokens when reasoning exhausts the budget', async () => {
+    vi.useFakeTimers();
     const createMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -2924,11 +3014,13 @@ describe('runtime execution', () => {
       } as any
     );
 
-    const result = await runtime.generateText({
-      model: 'gpt-5-mini',
-      maxOutputTokens: 1024,
-      prompt: 'Return JSON only',
-    });
+    const result = await finishRetries(
+      runtime.generateText({
+        model: 'gpt-5-mini',
+        maxOutputTokens: 1024,
+        prompt: 'Return JSON only',
+      })
+    );
 
     expect(createMock).toHaveBeenCalledTimes(2);
     expect(createMock).toHaveBeenNthCalledWith(
@@ -2936,14 +3028,16 @@ describe('runtime execution', () => {
       expect.objectContaining({
         max_output_tokens: 1024,
         reasoning: { effort: 'max' },
-      })
+      }),
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
     );
     expect(createMock).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         max_output_tokens: 2048,
         reasoning: { effort: 'max' },
-      })
+      }),
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
     );
     expect(result).toEqual({
       text: 'runtime text output',
@@ -2955,6 +3049,7 @@ describe('runtime execution', () => {
   });
 
   it('keeps failing when the escalated OpenAI output budget is exhausted too', async () => {
+    vi.useFakeTimers();
     const createMock = vi.fn().mockResolvedValue(
       createOpenAIResponseStream({
         id: 'resp_budget_exhausted_2',
@@ -2988,16 +3083,18 @@ describe('runtime execution', () => {
       } as any
     );
 
-    const error = await runtime
-      .generateText({
-        model: 'gpt-5-mini',
-        maxOutputTokens: 1024,
-        prompt: 'Return JSON only',
-      })
-      .then(
-        () => undefined,
-        (thrown: Error) => thrown
-      );
+    const error = await finishRetries(
+      runtime
+        .generateText({
+          model: 'gpt-5-mini',
+          maxOutputTokens: 1024,
+          prompt: 'Return JSON only',
+        })
+        .then(
+          () => undefined,
+          (thrown: Error) => thrown
+        )
+    );
 
     expect(error?.message).toContain('OpenAI Responses stream completed without text output');
     expect(error?.message).toContain('reason=max_output_tokens');
@@ -3006,6 +3103,7 @@ describe('runtime execution', () => {
   });
 
   it('does not retry an incomplete OpenAI response that was not cut off by max_output_tokens', async () => {
+    vi.useFakeTimers();
     const createMock = vi.fn().mockResolvedValue(
       createOpenAIResponseStream({
         id: 'resp_filtered_1',
@@ -3039,17 +3137,20 @@ describe('runtime execution', () => {
       } as any
     );
 
-    await expect(
-      runtime.generateText({
-        model: 'gpt-5-mini',
-        maxOutputTokens: 1024,
-        prompt: 'Return JSON only',
-      })
-    ).rejects.toThrow('OpenAI Responses stream completed without text output');
+    await finishRetries(
+      expect(
+        runtime.generateText({
+          model: 'gpt-5-mini',
+          maxOutputTokens: 1024,
+          prompt: 'Return JSON only',
+        })
+      ).rejects.toThrow('OpenAI Responses stream completed without text output')
+    );
     expect(createMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not reintroduce max_output_tokens after the endpoint rejected it', async () => {
+    vi.useFakeTimers();
     const maxOutputTokensError = Object.assign(new Error('400 status code (no body)'), {
       status: 400,
     });
@@ -3090,13 +3191,15 @@ describe('runtime execution', () => {
       } as any
     );
 
-    await expect(
-      runtime.generateText({
-        model: 'gpt-5-mini',
-        maxOutputTokens: 1024,
-        prompt: 'Return JSON only',
-      })
-    ).rejects.toThrow('OpenAI Responses stream completed without text output');
+    await finishRetries(
+      expect(
+        runtime.generateText({
+          model: 'gpt-5-mini',
+          maxOutputTokens: 1024,
+          prompt: 'Return JSON only',
+        })
+      ).rejects.toThrow('OpenAI Responses stream completed without text output')
+    );
 
     expect(createMock).toHaveBeenCalledTimes(2);
     const secondRequest = createMock.mock.calls[1][0] as Record<string, unknown>;
@@ -3104,6 +3207,7 @@ describe('runtime execution', () => {
   });
 
   it('retries an incomplete OpenAI response that carries no incomplete_details reason', async () => {
+    vi.useFakeTimers();
     const createMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -3164,21 +3268,25 @@ describe('runtime execution', () => {
       } as any
     );
 
-    const result = await runtime.generateText({
-      model: 'gpt-5-mini',
-      maxOutputTokens: 1024,
-      prompt: 'Return JSON only',
-    });
+    const result = await finishRetries(
+      runtime.generateText({
+        model: 'gpt-5-mini',
+        maxOutputTokens: 1024,
+        prompt: 'Return JSON only',
+      })
+    );
 
     expect(createMock).toHaveBeenCalledTimes(2);
     expect(createMock).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ max_output_tokens: 2048 })
+      expect.objectContaining({ max_output_tokens: 2048 }),
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
     );
     expect(result.text).toBe('runtime text output');
   });
 
   it('escalates the realtime deduplication budget when the floor budget is exhausted', async () => {
+    vi.useFakeTimers();
     const createMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -3240,16 +3348,19 @@ describe('runtime execution', () => {
       } as any
     );
 
-    const result = await runtime.generateText({
-      model: 'gpt-5-mini',
-      maxOutputTokens: 2048,
-      prompt: 'Return JSON only',
-    });
+    const result = await finishRetries(
+      runtime.generateText({
+        model: 'gpt-5-mini',
+        maxOutputTokens: 2048,
+        prompt: 'Return JSON only',
+      })
+    );
 
     expect(createMock).toHaveBeenCalledTimes(2);
     expect(createMock).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ max_output_tokens: 4096 })
+      expect.objectContaining({ max_output_tokens: 4096 }),
+      expect.objectContaining({ maxRetries: 0, signal: expect.any(AbortSignal) })
     );
     expect(result.text).toBe('{"is_duplicate":false}');
     expect(result.usage).toEqual({
@@ -3259,6 +3370,7 @@ describe('runtime execution', () => {
   });
 
   it('does not escalate a max_output_tokens budget that already reached the escalation ceiling', async () => {
+    vi.useFakeTimers();
     const createMock = vi.fn().mockResolvedValue(
       createOpenAIResponseStream({
         id: 'resp_budget_at_ceiling_1',
@@ -3292,16 +3404,18 @@ describe('runtime execution', () => {
       } as any
     );
 
-    const error = await runtime
-      .generateText({
-        model: 'gpt-5-mini',
-        maxOutputTokens: 8192,
-        prompt: 'Return JSON only',
-      })
-      .then(
-        () => undefined,
-        (thrown: Error) => thrown
-      );
+    const error = await finishRetries(
+      runtime
+        .generateText({
+          model: 'gpt-5-mini',
+          maxOutputTokens: 8192,
+          prompt: 'Return JSON only',
+        })
+        .then(
+          () => undefined,
+          (thrown: Error) => thrown
+        )
+    );
 
     expect(error?.message).toContain('OpenAI Responses stream completed without text output');
     expect(error?.message).toContain('attempts=1');
@@ -3310,6 +3424,7 @@ describe('runtime execution', () => {
   });
 
   it('keeps the exhausted attempt context when the escalated budget is rejected', async () => {
+    vi.useFakeTimers();
     const maxOutputTokensError = Object.assign(new Error('400 status code (no body)'), {
       status: 400,
     });
@@ -3328,7 +3443,7 @@ describe('runtime execution', () => {
           },
         })
       )
-      .mockRejectedValueOnce(maxOutputTokensError);
+      .mockRejectedValue(maxOutputTokensError);
 
     const runtime = new OpenAIResponsesSdkRuntime(
       {
@@ -3350,25 +3465,28 @@ describe('runtime execution', () => {
       } as any
     );
 
-    const error = await runtime
-      .generateText({
-        model: 'gpt-5-mini',
-        maxOutputTokens: 2048,
-        prompt: 'Return JSON only',
-      })
-      .then(
-        () => undefined,
-        (thrown: Error) => thrown
-      );
+    const error = await finishRetries(
+      runtime
+        .generateText({
+          model: 'gpt-5-mini',
+          maxOutputTokens: 2048,
+          prompt: 'Return JSON only',
+        })
+        .then(
+          () => undefined,
+          (thrown: Error) => thrown
+        )
+    );
 
     expect(error?.message).toContain('reason=max_output_tokens');
-    expect(error?.message).toContain('attempts=2');
+    expect(error?.message).toContain('attempts=3');
     expect(error?.message).toContain('tokensUsed=2448');
     expect((error as (Error & { cause?: unknown }) | undefined)?.cause).toBe(maxOutputTokensError);
-    expect(createMock).toHaveBeenCalledTimes(2);
+    expect(createMock).toHaveBeenCalledTimes(3);
   });
 
   it('reports completed OpenAI stream turns with no text or tool calls as an error', async () => {
+    vi.useFakeTimers();
     const createMock = vi.fn().mockResolvedValue(
       createOpenAIResponseStream({
         id: 'resp_empty_1',
@@ -3409,9 +3527,13 @@ describe('runtime execution', () => {
     });
 
     const events = [];
-    for await (const event of execution) {
-      events.push(event);
-    }
+    await finishRetries(
+      (async () => {
+        for await (const event of execution) {
+          events.push(event);
+        }
+      })()
+    );
 
     expect(events).toEqual([
       {
@@ -3606,5 +3728,467 @@ describe('review completion budget', () => {
     const closingInput = requests[2].input as Array<Record<string, any>>;
     const closingLast = closingInput[closingInput.length - 1];
     expect(JSON.stringify(closingLast)).toContain('closing phase');
+  });
+});
+
+// Recovery happens inside a model turn, so provider retries cannot replay completed tools.
+describe('OpenAI SDK provider recovery', () => {
+  const config: ArgusRuntimeConfig = {
+    runtime: 'openai-responses',
+    models: { main: 'test', light: 'test', validator: 'test' },
+    openai: { apiKey: 'test', source: 'argus' },
+  };
+  const toolCall = {
+    id: 'fc_1',
+    type: 'function_call',
+    call_id: 'call_1',
+    name: 'read',
+    arguments: '{}',
+  };
+  const success = () =>
+    createOpenAIResponseStream({
+      id: 'done',
+      status: 'completed',
+      output_text: 'Done',
+      usage: { input_tokens: 30, output_tokens: 3 },
+    });
+  const runtimeFor = (create: ReturnType<typeof vi.fn>) =>
+    new OpenAIResponsesSdkRuntime(config, { responses: { create } } as any);
+  const runtimeWithAbortedSdkSignal = async () => {
+    const { default: OpenAIClient, APIUserAbortError } =
+      await vi.importActual<typeof import('openai')>('openai');
+    const sdkAbortController = new AbortController();
+    const cancellationReason = 'independent SDK cancellation';
+    sdkAbortController.abort(cancellationReason);
+    const fetchMock = vi.fn();
+    const client = new OpenAIClient({
+      apiKey: 'test',
+      maxRetries: 0,
+      fetch: fetchMock as any,
+      fetchOptions: { signal: sdkAbortController.signal },
+    });
+    const create = vi.spyOn(client.responses, 'create');
+
+    return {
+      runtime: new OpenAIResponsesSdkRuntime(config, client),
+      APIUserAbortError,
+      cancellationReason,
+      create,
+      fetchMock,
+    };
+  };
+  const collect = async (execution: AsyncIterable<unknown>) => {
+    const events: any[] = [];
+    for await (const event of execution) events.push(event);
+    return events;
+  };
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+  });
+
+  it.each([400, 401, 403, 404, 409, 429, 500, 502, 503, 599, 'thrown'])(
+    'retries every non-cancellation failure %s exactly twice',
+    async (status) => {
+      const failure =
+        typeof status === 'number'
+          ? Object.assign(new Error('upstream failed'), { status })
+          : 'arbitrary thrown value';
+      const create = vi.fn().mockRejectedValue(failure);
+      const runtime = runtimeFor(create);
+      const events = await finishRetries(
+        collect(runtime.execute({ prompt: 'Review', cwd: '.', maxTurns: 1 }))
+      );
+      expect(create).toHaveBeenCalledTimes(3);
+      expect(events).toEqual([
+        {
+          type: 'result',
+          status: 'error',
+          error: typeof status === 'number' ? 'upstream failed' : failure,
+          usage: undefined,
+        },
+      ]);
+      for (const call of create.mock.calls)
+        expect(call[1]).toMatchObject({ maxRetries: 0, signal: expect.any(AbortSignal) });
+      expect(vi.getTimerCount()).toBe(0);
+
+      create.mockClear();
+      await expect(finishRetries(runtime.generateText({ prompt: 'Summary' }))).rejects.toBe(
+        failure
+      );
+      expect(create).toHaveBeenCalledTimes(3);
+    }
+  );
+
+  it('normalizes the actual OpenAI SDK abort during text generation without parent cancellation', async () => {
+    const { runtime, APIUserAbortError, cancellationReason, create, fetchMock } =
+      await runtimeWithAbortedSdkSignal();
+    const reviewAbortController = new AbortController();
+    const pending = runtime
+      .generateText({ prompt: 'Summary', abortController: reviewAbortController })
+      .then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error })
+      );
+
+    await vi.runAllTimersAsync();
+    const outcome = await pending;
+    const error = 'error' in outcome ? outcome.error : undefined;
+
+    expect(error).toMatchObject({ name: 'AbortError' });
+    expect((error as Error & { cause?: unknown }).cause).toBeInstanceOf(APIUserAbortError);
+    expect((error as Error & { cause: Error }).cause.cause).toBe(cancellationReason);
+    expect(reviewAbortController.signal.aborted).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('normalizes the actual OpenAI SDK abort during execute without parent cancellation', async () => {
+    const { runtime, APIUserAbortError, cancellationReason, create, fetchMock } =
+      await runtimeWithAbortedSdkSignal();
+    const reviewAbortController = new AbortController();
+    const pending = collect(
+      runtime.execute({
+        prompt: 'Review',
+        cwd: '.',
+        maxTurns: 1,
+        abortController: reviewAbortController,
+      })
+    ).then(
+      (events) => ({ events }),
+      (error: unknown) => ({ error })
+    );
+
+    await vi.runAllTimersAsync();
+    const outcome = await pending;
+    const error = 'error' in outcome ? outcome.error : undefined;
+
+    expect(error).toMatchObject({ name: 'AbortError' });
+    expect((error as Error & { cause?: unknown }).cause).toBeInstanceOf(APIUserAbortError);
+    expect((error as Error & { cause: Error }).cause.cause).toBe(cancellationReason);
+    expect(reviewAbortController.signal.aborted).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('recovers text generation after a completed empty response', async () => {
+    const create = vi
+      .fn()
+      .mockImplementationOnce(() =>
+        createOpenAIResponseStream({
+          id: 'empty',
+          status: 'completed',
+          output_text: '',
+          output: [],
+          usage: { input_tokens: 10, output_tokens: 4 },
+        })
+      )
+      .mockImplementationOnce(success);
+    const result = await finishRetries(runtimeFor(create).generateText({ prompt: 'Summary' }));
+
+    expect(result).toEqual({
+      text: 'Done',
+      usage: { inputTokens: 40, outputTokens: 7 },
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries completed empty text three times and reports attempts and accumulated usage', async () => {
+    const create = vi.fn(() =>
+      createOpenAIResponseStream({
+        id: 'empty',
+        status: 'completed',
+        output_text: '',
+        output: [],
+        usage: { input_tokens: 10, output_tokens: 4 },
+      })
+    );
+    const error = await finishRetries(
+      runtimeFor(create)
+        .generateText({ prompt: 'Summary' })
+        .then(
+          () => undefined,
+          (thrown: Error) => thrown
+        )
+    );
+
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(error?.message).toContain('attempts=3');
+    expect(error?.message).toContain('tokensUsed=42');
+  });
+
+  it('shares the three-request budget between request errors and completed empty text', async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error('network'), {
+          usage: { input_tokens: 5, output_tokens: 1 },
+        })
+      )
+      .mockImplementationOnce(() =>
+        createOpenAIResponseStream({
+          id: 'empty',
+          status: 'completed',
+          output_text: '',
+          output: [],
+          usage: { input_tokens: 10, output_tokens: 4 },
+        })
+      )
+      .mockImplementationOnce(success);
+    const result = await finishRetries(runtimeFor(create).generateText({ prompt: 'Summary' }));
+
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(result).toEqual({
+      text: 'Done',
+      usage: { inputTokens: 45, outputTokens: 8 },
+    });
+  });
+
+  it('cancels the retry after a completed empty response during backoff', async () => {
+    const controller = new AbortController();
+    const create = vi.fn().mockImplementation(() =>
+      createOpenAIResponseStream({
+        id: 'empty',
+        status: 'completed',
+        output_text: '',
+        output: [],
+        usage: { input_tokens: 10, output_tokens: 4 },
+      })
+    );
+    const pending = runtimeFor(create)
+      .generateText({ prompt: 'Summary', abortController: controller })
+      .catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(create).toHaveBeenCalledTimes(1);
+    controller.abort('cancel empty retry');
+    expect(await pending).toMatchObject({ name: 'AbortError', cause: 'cancel empty retry' });
+    await vi.runAllTimersAsync();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('uses exponential waits and still succeeds on the final request of a single allowed turn', async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('first'))
+      .mockRejectedValueOnce(new Error('second'))
+      .mockImplementationOnce(success);
+    const pending = collect(
+      runtimeFor(create).execute({ prompt: 'Review', cwd: '.', maxTurns: 1 })
+    );
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(create).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(create).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(create).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await pending).filter((event) => event.type === 'result')).toEqual([
+      {
+        type: 'result',
+        status: 'success',
+        text: 'Done',
+        usage: { inputTokens: 30, outputTokens: 3 },
+      },
+    ]);
+  });
+
+  it('retries a failed SSE continuation with its completed tool output, excluding failed tools and text', async () => {
+    const execute = vi.fn(async () => ({
+      content: [{ type: 'text' as const, text: 'saved output' }],
+    }));
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'tool',
+          status: 'completed',
+          output: [toolCall],
+          usage: { input_tokens: 10, output_tokens: 1 },
+        })
+      )
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'failed',
+          status: 'failed',
+          output: [{ ...toolCall, call_id: 'failed_call' }],
+          output_text: 'Do not publish',
+          error: { message: 'provider failure' },
+          usage: { input_tokens: 20, output_tokens: 2 },
+        })
+      )
+      .mockImplementationOnce(success);
+    const events = await finishRetries(
+      collect(
+        runtimeFor(create).execute({
+          prompt: 'Review',
+          cwd: '.',
+          maxTurns: 2,
+          tools: [{ name: 'read', description: 'read', inputSchema: {}, execute }],
+        })
+      )
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[2]![0]).toEqual(create.mock.calls[1]![0]);
+    expect(create.mock.calls[2]![0]).toMatchObject({
+      previous_response_id: 'tool',
+      input: [{ type: 'function_call_output', call_id: 'call_1', output: 'saved output' }],
+    });
+    expect(events.filter((event) => event.type === 'assistant.text')).toEqual([
+      { type: 'assistant.text', text: 'Done' },
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: 'result',
+      status: 'success',
+      usage: { inputTokens: 60, outputTokens: 6 },
+    });
+  });
+
+  it('retries EOF without a terminal event and counts reported usage without executing partial tools', async () => {
+    const execute = vi.fn();
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createAsyncStream([
+          {
+            type: 'response.created',
+            response: {
+              id: 'partial',
+              status: 'in_progress',
+              output: [],
+              usage: { input_tokens: 7, output_tokens: 2 },
+            },
+          },
+          { type: 'response.output_item.added', output_index: 0, item: toolCall },
+        ])
+      )
+      .mockImplementationOnce(success);
+    const events = await finishRetries(
+      collect(
+        runtimeFor(create).execute({
+          prompt: 'Review',
+          cwd: '.',
+          maxTurns: 1,
+          tools: [{ name: 'read', description: 'read', inputSchema: {}, execute }],
+        })
+      )
+    );
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(execute).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({
+      status: 'success',
+      usage: { inputTokens: 37, outputTokens: 5 },
+    });
+  });
+
+  it('keeps incomplete tools unexecuted and emits a single terminal on the last allowed turn', async () => {
+    const execute = vi.fn();
+    const create = vi.fn().mockResolvedValue(
+      createOpenAIResponseStream({
+        id: 'cut',
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        output: [toolCall],
+      })
+    );
+    const events = await collect(
+      runtimeFor(create).execute({
+        prompt: 'Review',
+        cwd: '.',
+        maxTurns: 1,
+        tools: [{ name: 'read', description: 'read', inputSchema: {}, execute }],
+      })
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.type === 'result').map((event) => event.status)).toEqual([
+      'incomplete',
+    ]);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['cancelled', { arbitrary: true }, 123])(
+    'propagates cancellation during backoff for reason %j without another request',
+    async (reason) => {
+      const controller = new AbortController();
+      const create = vi.fn().mockRejectedValue(new Error('network'));
+      const pending = collect(
+        runtimeFor(create).execute({
+          prompt: 'Review',
+          cwd: '.',
+          maxTurns: 1,
+          abortController: controller,
+        })
+      ).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(create).toHaveBeenCalledTimes(1);
+      controller.abort(reason);
+      expect(await pending).toMatchObject({ name: 'AbortError', cause: reason });
+      await vi.runAllTimersAsync();
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
+  it.each(['creation', 'next'])(
+    'bounds a hanging stream %s and cleanup for all three requests',
+    async (stage) => {
+      const controller = new AbortController();
+      const add = vi.spyOn(controller.signal, 'addEventListener');
+      const remove = vi.spyOn(controller.signal, 'removeEventListener');
+      const cleanup = vi.fn(() => new Promise<IteratorResult<unknown>>(() => {}));
+      const create = vi.fn(() =>
+        stage === 'creation'
+          ? new Promise(() => {})
+          : {
+              [Symbol.asyncIterator]: () => ({
+                next: () => new Promise(() => {}),
+                return: cleanup,
+              }),
+            }
+      );
+      const events = await finishRetries(
+        collect(
+          runtimeFor(create).execute({
+            prompt: 'Review',
+            cwd: '.',
+            maxTurns: 1,
+            abortController: controller,
+          })
+        )
+      );
+      expect(create).toHaveBeenCalledTimes(3);
+      expect(events).toEqual([
+        {
+          type: 'result',
+          status: 'error',
+          usage: undefined,
+          error: 'Model stream idle timeout after 300000ms',
+        },
+      ]);
+      expect(cleanup).toHaveBeenCalledTimes(stage === 'next' ? 3 : 0);
+      expect(remove).toHaveBeenCalledTimes(add.mock.calls.length);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(controller.signal.aborted).toBe(false);
+    }
+  );
+
+  it('includes reported failed-response usage in text generation recovery', async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createOpenAIResponseStream({
+          id: 'failed',
+          status: 'failed',
+          usage: { input_tokens: 11, output_tokens: 2 },
+        })
+      )
+      .mockImplementationOnce(success);
+    expect(await finishRetries(runtimeFor(create).generateText({ prompt: 'Summary' }))).toEqual({
+      text: 'Done',
+      usage: { inputTokens: 41, outputTokens: 5 },
+    });
   });
 });

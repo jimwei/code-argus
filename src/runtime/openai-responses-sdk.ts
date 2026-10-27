@@ -21,6 +21,15 @@ import type {
   RuntimeToolDefinition,
   RuntimeUsage,
 } from './types.js';
+import {
+  calculateRetryDelayMs,
+  createAbortError,
+  createStreamIdleWatchdog,
+  DEFAULT_PROVIDER_MAX_RETRIES,
+  getRetryAfterMs,
+  throwIfAborted,
+  waitForRetry,
+} from '../review/retry-policy.js';
 
 type OpenAIResponse = {
   id: string;
@@ -319,21 +328,6 @@ function appendTurnNote(input: OpenAIResponseInput, note: string): OpenAIRespons
   return [...input, createUserMessageInput(note)];
 }
 
-function buildUserPromptInputVariants(
-  prompt: string
-): Array<{ mode: OpenAIUserPromptInputMode; input: OpenAIResponseInput }> {
-  return [
-    {
-      mode: 'message_list',
-      input: [createUserMessageInput(prompt)],
-    },
-    {
-      mode: 'string',
-      input: prompt,
-    },
-  ];
-}
-
 function isFunctionCallOutputItem(item: unknown): item is OpenAIFunctionCallOutputItem {
   return Boolean(
     item &&
@@ -593,12 +587,20 @@ function shouldRetryUserPromptAsString(mode: OpenAIUserPromptInputMode, error: u
   );
 }
 
-function normalizeUsage(usage: OpenAIResponse['usage'] | undefined): RuntimeUsage | undefined {
-  if (!usage) {
+function normalizeUsage(usage: unknown): RuntimeUsage | undefined {
+  if (
+    !isPlainObject(usage) ||
+    typeof usage.input_tokens !== 'number' ||
+    typeof usage.output_tokens !== 'number'
+  ) {
     return undefined;
   }
 
-  const cachedInputTokens = usage.input_tokens_details?.cached_tokens ?? 0;
+  const cachedInputTokens =
+    isPlainObject(usage.input_tokens_details) &&
+    typeof usage.input_tokens_details.cached_tokens === 'number'
+      ? usage.input_tokens_details.cached_tokens
+      : 0;
   return {
     inputTokens: usage.input_tokens,
     ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
@@ -745,128 +747,76 @@ function applyFunctionCallArgumentsDelta(
 async function createOpenAIStreamSnapshot(
   client: OpenAI,
   request: OpenAIResponseRequest,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onUsage?: (usage: RuntimeUsage | undefined) => void
 ): Promise<OpenAIResponse> {
-  const requestWithDefaults = {
-    instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
-    ...request,
-  };
-
-  const stream = (
-    signal
-      ? await client.responses.create(
-          {
-            ...requestWithDefaults,
-            stream: true,
-          },
-          { signal }
-        )
-      : await client.responses.create({
-          ...requestWithDefaults,
-          stream: true,
-        })
-  ) as OpenAIResponseStream;
-
+  const watchdog = createStreamIdleWatchdog(signal);
   let snapshot: OpenAIResponse | undefined;
-  let sawTerminalEvent = false;
-
-  for await (const event of stream) {
-    switch (event.type) {
-      case 'response.created':
-        snapshot = createResponseSnapshot(event.response as OpenAIResponse);
-        break;
-      case 'response.output_item.added':
-        if (!snapshot) {
-          snapshot = createResponseSnapshot({
-            id: '',
-            output: [],
-          });
-        }
-        applyOutputItemAdded(snapshot, event);
-        break;
-      case 'response.content_part.added':
-        if (!snapshot) {
-          snapshot = createResponseSnapshot({
-            id: '',
-            output: [],
-          });
-        }
-        applyContentPartAdded(snapshot, event);
-        break;
-      case 'response.output_text.delta':
-        if (!snapshot) {
-          snapshot = createResponseSnapshot({
-            id: '',
-            output: [],
-          });
-        }
-        applyOutputTextDelta(snapshot, event);
-        break;
-      case 'response.function_call_arguments.delta':
-        if (!snapshot) {
-          snapshot = createResponseSnapshot({
-            id: '',
-            output: [],
-          });
-        }
-        applyFunctionCallArgumentsDelta(snapshot, event);
-        break;
-      case 'response.completed':
-      case 'response.failed':
-      case 'response.incomplete':
-        snapshot = mergeResponseSnapshot(snapshot, event.response as OpenAIResponse);
-        sawTerminalEvent = true;
-        break;
-      case 'error':
-        throw new Error(event.message);
-      default:
-        break;
-    }
-  }
-
-  if (!snapshot) {
-    throw new Error('OpenAI Responses stream ended without a response');
-  }
-
-  if (!sawTerminalEvent) {
-    throw new Error('OpenAI Responses stream ended before completion');
-  }
-
-  return snapshot;
-}
-
-async function createOpenAIStreamSnapshotForUserPrompt(
-  client: OpenAI,
-  request: Omit<OpenAIResponseRequest, 'input'> & {
-    prompt: string;
-  },
-  signal?: AbortSignal
-): Promise<OpenAIResponse> {
-  let lastError: unknown;
-  const { prompt, ...requestWithoutPrompt } = request;
-
-  for (const variant of buildUserPromptInputVariants(prompt)) {
-    try {
-      return await createOpenAIStreamSnapshot(
-        client,
+  let requestError: unknown;
+  try {
+    throwIfAborted(signal);
+    const stream = (await watchdog.wait(() =>
+      client.responses.create(
         {
-          ...requestWithoutPrompt,
-          input: variant.input,
+          instructions: DEFAULT_OPENAI_RESPONSES_INSTRUCTIONS,
+          ...request,
+          stream: true,
         },
-        signal
-      );
-    } catch (error) {
-      if (!shouldRetryUserPromptAsString(variant.mode, error)) {
-        throw error;
+        { signal: watchdog.signal, maxRetries: 0 }
+      )
+    )) as OpenAIResponseStream;
+
+    for await (const event of watchdog.wrap(stream)) {
+      switch (event.type) {
+        case 'response.created':
+        case 'response.in_progress':
+          snapshot = mergeResponseSnapshot(snapshot, event.response as OpenAIResponse);
+          break;
+        case 'response.output_item.added':
+        case 'response.content_part.added':
+        case 'response.output_text.delta':
+        case 'response.function_call_arguments.delta':
+          snapshot ??= createResponseSnapshot({ id: '', output: [] });
+          applyOutputItemAdded(snapshot, event);
+          applyContentPartAdded(snapshot, event);
+          applyOutputTextDelta(snapshot, event);
+          applyFunctionCallArgumentsDelta(snapshot, event);
+          break;
+        case 'response.completed':
+        case 'response.failed':
+        case 'response.incomplete': {
+          snapshot = mergeResponseSnapshot(snapshot, event.response as OpenAIResponse);
+          throwIfAborted(signal);
+          const error = getResponseError(snapshot);
+          if (error) throw Object.assign(new Error(error), snapshot.error);
+          return snapshot;
+        }
+        case 'error':
+          throw Object.assign(new Error(event.message), event);
+        default:
+          break;
       }
-
-      lastError = error;
     }
+    throwIfAborted(signal);
+    throw new Error(
+      snapshot
+        ? 'OpenAI Responses stream ended before completion'
+        : 'OpenAI Responses stream ended without a response'
+    );
+  } catch (error) {
+    requestError = error;
+    if (error instanceof OpenAI.APIUserAbortError) {
+      throw createAbortError(error);
+    }
+    throwIfAborted(signal, error);
+    throw error;
+  } finally {
+    watchdog.dispose();
+    // One usage record per physical request, including a failed response or a partial stream.
+    const record = isPlainObject(requestError) ? requestError : undefined;
+    const errorBody = isPlainObject(record?.error) ? record.error : undefined;
+    onUsage?.(normalizeUsage(snapshot?.usage ?? record?.usage ?? errorBody?.usage));
   }
-
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('OpenAI Responses request failed for all supported input formats');
 }
 
 function normalizeResponseStatus(response: OpenAIResponse): string {
@@ -1085,102 +1035,94 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
       client ||
       new OpenAI({
         apiKey: config.openai.apiKey,
+        maxRetries: 0,
         ...(config.openai.baseUrl ? { baseURL: config.openai.baseUrl } : {}),
       });
   }
 
   async generateText(options: RuntimeGenerateTextOptions): Promise<RuntimeGenerateTextResult> {
-    const reasoningRequest = buildReasoningRequest(this.config.reasoningEffort);
-    const request = {
+    const signal = options.abortController?.signal;
+    const request: OpenAIResponseRequest = {
       model: options.model || this.config.models.main,
-      prompt: options.prompt,
+      input: [createUserMessageInput(options.prompt)],
       ...(options.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}),
-      ...reasoningRequest,
+      ...buildReasoningRequest(this.config.reasoningEffort),
     };
-
-    let response: OpenAIResponse;
-    let sentMaxOutputTokens = Boolean(request.max_output_tokens);
+    let inputMode: OpenAIUserPromptInputMode = 'message_list';
+    let usage: RuntimeUsage | undefined;
     let retriedOutputBudget = false;
-    try {
-      response = await createOpenAIStreamSnapshotForUserPrompt(
-        this.client,
-        request,
-        options.abortController?.signal
-      );
-    } catch (error) {
-      if (!request.max_output_tokens || !isMaxOutputTokensUnsupportedError(error)) {
-        throw error;
-      }
+    let exhaustedResponse: OpenAIResponse | undefined;
+    let attempts = 0;
 
-      sentMaxOutputTokens = false;
-      const { max_output_tokens: _maxOutputTokens, ...requestWithoutMaxOutputTokens } = request;
-      response = await createOpenAIStreamSnapshotForUserPrompt(
-        this.client,
-        requestWithoutMaxOutputTokens,
-        options.abortController?.signal
-      );
-    }
-
-    const error = getResponseError(response);
-    if (error) {
-      throw new Error(error);
-    }
-
-    let text = getResponseText(response);
-    let spentUsage: RuntimeUsage | undefined;
-    const escalatedMaxOutputTokens = sentMaxOutputTokens
-      ? escalateMaxOutputTokens(options.maxOutputTokens ?? 0)
-      : undefined;
-
-    if (!text && escalatedMaxOutputTokens !== undefined && isOutputBudgetExhausted(response)) {
-      // 推理长度波动会让同一请求偶尔吃光输出预算；升档重试一次，避免整条调用直接失败。
-      spentUsage = normalizeUsage(response.usage);
-      const exhaustedResponse = response;
-      retriedOutputBudget = true;
+    while (true) {
+      throwIfAborted(signal);
+      let response: OpenAIResponse;
+      attempts++;
       try {
-        response = await createOpenAIStreamSnapshotForUserPrompt(
-          this.client,
-          {
-            ...request,
-            max_output_tokens: escalatedMaxOutputTokens,
-          },
-          options.abortController?.signal
-        );
-      } catch (retryFailure) {
-        // 上游拒绝更大的预算时不再发第三次请求，保留原始的“无文本”失败语义。
-        if (isMaxOutputTokensUnsupportedError(retryFailure)) {
-          throw buildNoTextError(
-            exhaustedResponse,
-            {
-              attempts: 2,
-              tokensUsed: totalTokens(spentUsage),
-            },
-            retryFailure
-          );
+        response = await createOpenAIStreamSnapshot(this.client, request, signal, (spent) => {
+          usage = mergeUsage(usage, spent);
+        });
+      } catch (error) {
+        throwIfAborted(signal, error);
+        if (attempts > DEFAULT_PROVIDER_MAX_RETRIES) {
+          if (exhaustedResponse && isMaxOutputTokensUnsupportedError(error)) {
+            throw buildNoTextError(
+              exhaustedResponse,
+              { attempts, tokensUsed: totalTokens(usage) },
+              error
+            );
+          }
+          throw error;
         }
-
-        throw retryFailure;
+        if (shouldRetryUserPromptAsString(inputMode, error)) {
+          inputMode = 'string';
+          request.input = options.prompt;
+        } else if (
+          request.max_output_tokens &&
+          !retriedOutputBudget &&
+          isMaxOutputTokensUnsupportedError(error)
+        ) {
+          delete request.max_output_tokens;
+        }
+        const delayMs = calculateRetryDelayMs(attempts, { retryAfterMs: getRetryAfterMs(error) });
+        console.warn(
+          `[OpenAIResponsesSdkRuntime] Text request retry ${attempts}/${DEFAULT_PROVIDER_MAX_RETRIES} in ${delayMs}ms: ${error instanceof Error ? error.message : String(error)}`
+        );
+        if (!(await waitForRetry(delayMs, signal))) {
+          throwIfAborted(signal);
+        }
+        continue;
       }
 
-      const retryError = getResponseError(response);
-      if (retryError) {
-        throw new Error(retryError);
+      const text = getResponseText(response);
+      if (text) return { text, usage };
+      const escalated =
+        !retriedOutputBudget && request.max_output_tokens
+          ? escalateMaxOutputTokens(request.max_output_tokens)
+          : undefined;
+      if (
+        escalated !== undefined &&
+        isOutputBudgetExhausted(response) &&
+        attempts <= DEFAULT_PROVIDER_MAX_RETRIES
+      ) {
+        exhaustedResponse = response;
+        retriedOutputBudget = true;
+        request.max_output_tokens = escalated;
+        continue;
       }
-
-      text = getResponseText(response);
+      if (response.status === 'completed' && attempts <= DEFAULT_PROVIDER_MAX_RETRIES) {
+        const error = buildNoTextError(response, { attempts, tokensUsed: totalTokens(usage) });
+        const delayMs = calculateRetryDelayMs(attempts);
+        console.warn(
+          `[OpenAIResponsesSdkRuntime] Text request retry ${attempts}/${DEFAULT_PROVIDER_MAX_RETRIES} in ${delayMs}ms: ${error.message}`
+        );
+        if (!(await waitForRetry(delayMs, signal))) {
+          throwIfAborted(signal);
+        }
+        continue;
+      }
+      throw buildNoTextError(response, { attempts, tokensUsed: totalTokens(usage) });
     }
-
-    if (!text) {
-      throw buildNoTextError(response, {
-        attempts: retriedOutputBudget ? 2 : 1,
-        tokensUsed: totalTokens(spentUsage) + totalTokens(normalizeUsage(response.usage)),
-      });
-    }
-
-    return {
-      text,
-      usage: mergeUsage(spentUsage, normalizeUsage(response.usage)),
-    };
   }
 
   execute(options: RuntimeExecuteOptions): RuntimeExecution {
@@ -1245,11 +1187,16 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
             remainingTurns--;
 
             let response: OpenAIResponse;
+            let retries = 0;
+            let inputMode: OpenAIUserPromptInputMode = 'message_list';
             while (true) {
               const requestInput = turnBudgetNote ? appendTurnNote(input, turnBudgetNote) : input;
               const request = {
                 model: options.model || defaultModel,
-                input: requestInput,
+                input:
+                  typeof requestInput === 'string' && inputMode === 'message_list'
+                    ? [createUserMessageInput(requestInput)]
+                    : requestInput,
                 ...(continuationMode === 'managed' && previousResponseId
                   ? { previous_response_id: previousResponseId }
                   : {}),
@@ -1264,38 +1211,25 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
               };
 
               try {
-                response =
-                  continuationMode === 'managed' && typeof input === 'string'
-                    ? await createOpenAIStreamSnapshotForUserPrompt(
-                        client,
-                        {
-                          model: request.model,
-                          ...(request.instructions ? { instructions: request.instructions } : {}),
-                          ...(request.previous_response_id
-                            ? { previous_response_id: request.previous_response_id }
-                            : {}),
-                          ...(request.tools ? { tools: request.tools } : {}),
-                          ...(request.parallel_tool_calls !== undefined
-                            ? { parallel_tool_calls: request.parallel_tool_calls }
-                            : {}),
-                          ...(request.reasoning ? { reasoning: request.reasoning } : {}),
-                          prompt: typeof requestInput === 'string' ? requestInput : input,
-                        },
-                        abortController.signal
-                      )
-                    : await createOpenAIStreamSnapshot(client, request, abortController.signal);
+                response = await createOpenAIStreamSnapshot(
+                  client,
+                  request,
+                  abortController.signal,
+                  (spent) => {
+                    lastUsage = mergeUsage(lastUsage, spent);
+                  }
+                );
                 break;
               } catch (error) {
-                if (error instanceof Error && error.name === 'AbortError') {
-                  throw error;
-                }
-                // SDK 的 APIUserAbortError 与静默断流不一定带 AbortError 名称。
-                if (abortController.signal.aborted) {
-                  const abortError = new Error('OpenAI Responses request aborted', {
-                    cause: error,
-                  });
-                  abortError.name = 'AbortError';
-                  throw abortError;
+                throwIfAborted(abortController.signal, error);
+                if (retries >= DEFAULT_PROVIDER_MAX_RETRIES) {
+                  yield {
+                    type: 'result',
+                    status: 'error',
+                    usage: lastUsage,
+                    error: error instanceof Error ? error.message : String(error),
+                  };
+                  return;
                 }
                 const shouldFallbackToStatelessReplay =
                   continuationMode === 'managed' &&
@@ -1313,7 +1247,6 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
                   continuationMode = 'stateless_full';
                   previousResponseId = undefined;
                   input = buildStatelessConversationInput(continuationMode, conversationItems);
-                  continue;
                 }
 
                 const shouldFallbackToItemReferenceReplay =
@@ -1324,16 +1257,21 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
                 if (shouldFallbackToItemReferenceReplay) {
                   continuationMode = 'stateless_item_reference';
                   input = buildStatelessConversationInput(continuationMode, conversationItems);
-                  continue;
+                }
+                if (typeof input === 'string' && shouldRetryUserPromptAsString(inputMode, error)) {
+                  inputMode = 'string';
                 }
 
-                yield {
-                  type: 'result',
-                  status: 'error',
-                  usage: lastUsage,
-                  error: error instanceof Error ? error.message : String(error),
-                };
-                return;
+                retries++;
+                const delayMs = calculateRetryDelayMs(retries, {
+                  retryAfterMs: getRetryAfterMs(error),
+                });
+                console.warn(
+                  `[OpenAIResponsesSdkRuntime] Stream request retry ${retries}/${DEFAULT_PROVIDER_MAX_RETRIES} in ${delayMs}ms: ${error instanceof Error ? error.message : String(error)}`
+                );
+                if (!(await waitForRetry(delayMs, abortController.signal))) {
+                  throwIfAborted(abortController.signal);
+                }
               }
             }
 
@@ -1341,7 +1279,6 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
               previousResponseId = response.id;
             }
             // 每个 result 汇总当前 prompt 的全部工具轮次；下个 prompt 重新计数。
-            lastUsage = mergeUsage(lastUsage, normalizeUsage(response.usage));
             const responseText = getResponseText(response);
             const responseOutputItems = Array.isArray(response.output)
               ? (response.output as OpenAIResponseInputItem[])
@@ -1359,6 +1296,21 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
             const functionCalls = responseOutputItems.filter(
               (item): item is OpenAIFunctionCallItem => isFunctionCallItem(item)
             );
+            if (response.status !== 'completed') {
+              promptFinished = true;
+              const responseError = getResponseError(response);
+              yield {
+                type: 'result',
+                status: normalizeResponseStatus(response),
+                ...(responseText ? { text: responseText } : {}),
+                usage: lastUsage,
+                ...(responseError ? { error: responseError } : {}),
+                ...(response.incomplete_details?.reason
+                  ? { rawStopReason: `incomplete.${response.incomplete_details.reason}` }
+                  : {}),
+              };
+              break;
+            }
             if (functionCalls.length === 0) promptFinished = true;
             if (response.status === 'completed' && !responseText && functionCalls.length === 0) {
               yield {
@@ -1385,10 +1337,12 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
             const toolOutputs: OpenAIFunctionCallOutputItem[] = [];
 
             for (const functionCall of functionCalls) {
+              throwIfAborted(abortController.signal);
               yield {
                 type: 'activity',
                 event: `function_call:${functionCall.name}`,
               };
+              throwIfAborted(abortController.signal);
 
               if (closing && !completionBudget!.toolNames.includes(functionCall.name)) {
                 toolOutputs.push({
@@ -1418,6 +1372,7 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
                   output: toolResultToOutput(result),
                 });
               } catch (error) {
+                throwIfAborted(abortController.signal, error);
                 const message = error instanceof Error ? error.message : String(error);
                 toolOutputs.push({
                   type: 'function_call_output',
@@ -1434,6 +1389,7 @@ export class OpenAIResponsesSdkRuntime implements AgentRuntime {
                 : buildStatelessConversationInput(continuationMode, conversationItems);
           }
 
+          throwIfAborted(abortController.signal);
           if (!closed && remainingTurns === 0 && !promptFinished) {
             yield {
               type: 'result',
