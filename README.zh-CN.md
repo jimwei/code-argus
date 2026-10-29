@@ -212,7 +212,7 @@ argus config set model gpt-5
   验证模型本身仍取 `ARGUS_VALIDATOR_MODEL`；可用
   `ARGUS_VALIDATOR_REASONING_EFFORT` 显式覆盖；主流程未配置推理强度时，验证阶段沿用 Provider 默认值
 - `ARGUS_OPENAI_RESPONSE_IMPL` 选择 `openai-responses` 的协议实现：`sdk` 为默认值，
-  使用自行维护的 `openai` SDK 实现；设为 `pi-ai` 时使用 `@earendil-works/pi-ai`。
+  使用自行维护的 `openai` SDK 实现；设为 `pi-ai` 时使用精确锁定的 `@earendil-works/pi-ai@1.4.0`。
   两者使用相同的 `AgentRuntime` 接口约定和事件状态；未知值会告警并回退到 `sdk`
 - `pi-ai` 实现每次请求均发送 `store: false` 和完整 transcript
 - `pi-ai` 实现现在与 SDK 实现一样重放原生推理块：保留 `reasoning.summary` /

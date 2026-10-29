@@ -280,7 +280,7 @@ Notes:
   in #9974)
 - `ARGUS_OPENAI_RESPONSE_IMPL` selects which protocol stack backs the `openai-responses`
   runtime: `sdk` (default, the self-maintained `openai` SDK implementation) or `pi-ai`
-  (`@earendil-works/pi-ai`, opt-in). Both share the same
+  (`@earendil-works/pi-ai` pinned to `1.4.0`, opt-in). Both share the same
   `AgentRuntime` contract and event statuses, so nothing else in the pipeline changes;
   an unknown value falls back to `sdk` with a warning
 

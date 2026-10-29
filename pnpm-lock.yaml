@@ -15,8 +15,8 @@ importers:
         specifier: ^0.80.0
         version: 0.80.0(zod@4.3.5)
       '@earendil-works/pi-ai':
-        specifier: 1.1.0
-        version: 1.1.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(ws@8.22.0)(zod@4.3.5)
+        specifier: 1.4.0
+        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(ws@8.22.0)(zod@4.3.5)
       dotenv:
         specifier: ^17.2.3
         version: 17.2.3
@@ -286,13 +286,13 @@ packages:
     resolution: {integrity: sha512-bVUNBqG6aznYcYjTjnc3+Cat/iBgbgpflxbIBTnsHTX0YVpnmINPEkSRWymT2Q8aSH3Y7aKnEbunilkYe8TybA==}
     engines: {node: '>=v18'}
 
-  '@earendil-works/pi-ai@1.1.0':
-    resolution: {integrity: sha512-1T7LAkc/5Bvc0v6w4vAGVdCrli0o/E0pEmYKTnixu95vSFArBjvbhS/G4ZwI0RUePgf0Imcu0VyqlM4EcXxqfw==}
+  '@earendil-works/pi-ai@1.4.0':
+    resolution: {integrity: sha512-hQM/C4+1w8rHYACzDDf+0vQMnEnpzIop1tptIERVgR3ZeT/hHSzBNG8PaWPgxWQjqSeKCyBZSyp8uTT6eKK1pQ==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
-  '@earendil-works/pi-telemetry@1.2.0':
-    resolution: {integrity: sha512-NZ3aJE6dr7aTgzzXDe53OW7BsAsF8ZUKHPJTtnjaQcxtlagkUT0Ew8Qas0EvYQsZqR/KpF1lB+z209XBzIC7xg==}
+  '@earendil-works/pi-telemetry@1.4.0':
+    resolution: {integrity: sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w==}
     engines: {node: '>=22.19.0'}
 
   '@esbuild/aix-ppc64@0.25.12':
@@ -2650,11 +2650,11 @@ snapshots:
       '@types/conventional-commits-parser': 5.0.2
       chalk: 5.6.2
 
-  '@earendil-works/pi-ai@1.1.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(ws@8.22.0)(zod@4.3.5)':
+  '@earendil-works/pi-ai@1.4.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(ws@8.22.0)(zod@4.3.5)':
     dependencies:
       '@anthropic-ai/sdk': 0.129.0(zod@4.3.5)
       '@aws-sdk/client-bedrock-runtime': 3.1127.0
-      '@earendil-works/pi-telemetry': 1.2.0
+      '@earendil-works/pi-telemetry': 1.4.0
       '@google/genai': 2.21.0
       '@smithy/node-http-handler': 4.12.1
       http-proxy-agent: 9.1.0
@@ -2675,7 +2675,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-telemetry@1.2.0': {}
+  '@earendil-works/pi-telemetry@1.4.0': {}
 
   '@esbuild/aix-ppc64@0.25.12':
     optional: true
