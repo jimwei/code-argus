@@ -1,9 +1,10 @@
-import { lstat, readdir, readFile, stat } from 'node:fs/promises';
+import { lstat, open, readdir, readFile, stat } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 
 import { Minimatch } from 'minimatch';
 import { z } from 'zod';
 
+import { isBinaryContent, isBinaryPath } from '../utils/binary-files.js';
 import type { RuntimeToolDefinition } from './types.js';
 
 const DEFAULT_READ_LIMIT = 200;
@@ -26,9 +27,8 @@ const DEFAULT_MAX_INDEXED_FILE_BYTES = 1024 * 1024;
 const MAX_MAX_INDEXED_FILE_BYTES = 8 * 1024 * 1024;
 const STAT_CONCURRENCY = 32;
 const IGNORED_DIRS = new Set(['.git', 'node_modules', '.worktrees']);
-// Generated bundles, lockfiles, and binary assets are noise for repository-wide
-// scanning and are frequently huge (or single-line), so they are skipped unless
-// the caller overrides `excludedFilePatterns`.
+// Generated bundles and lockfiles can be included by overriding these globs.
+// Binary exclusion is unconditional and uses the shared path/content classifier.
 const DEFAULT_EXCLUDED_FILE_PATTERNS = [
   '**/*.min.js',
   '**/*.min.mjs',
@@ -41,29 +41,6 @@ const DEFAULT_EXCLUDED_FILE_PATTERNS = [
   '**/yarn.lock',
   '**/dist/**',
   '**/coverage/**',
-  '**/*.png',
-  '**/*.jpg',
-  '**/*.jpeg',
-  '**/*.gif',
-  '**/*.webp',
-  '**/*.bmp',
-  '**/*.ico',
-  '**/*.pdf',
-  '**/*.ttf',
-  '**/*.otf',
-  '**/*.woff',
-  '**/*.woff2',
-  '**/*.eot',
-  '**/*.zip',
-  '**/*.gz',
-  '**/*.7z',
-  '**/*.mp3',
-  '**/*.mp4',
-  '**/*.mov',
-  '**/*.xls',
-  '**/*.xlsx',
-  '**/*.doc',
-  '**/*.docx',
 ];
 
 export interface FocusedReadWindow {
@@ -85,7 +62,7 @@ export interface RepoContextToolsOptions {
   grepLineCharLimit?: number;
   /** Files larger than this are hidden from Grep and Glob. */
   maxIndexedFileBytes?: number;
-  /** Overrides the default generated/binary file exclusion globs. */
+  /** Overrides generated file exclusion globs, but never binary exclusion. */
   excludedFilePatterns?: string[];
 }
 
@@ -230,12 +207,28 @@ interface CollectedFiles {
   skippedCount: number;
 }
 
+async function hasBinaryContent(absolutePath: string, knownBinaryPath = false): Promise<boolean> {
+  const handle = await open(absolutePath, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(knownBinaryPath ? 1 : 8192);
+    let position = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (knownBinaryPath || isBinaryContent(buffer.subarray(0, bytesRead))) return true;
+      if (bytesRead === 0) return false;
+      position += bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
 async function keepFilesWithinSizeLimit(
   repoPath: string,
   candidates: readonly string[],
   maxFileBytes: number
 ): Promise<{ kept: string[]; skipped: number }> {
-  const kept: boolean[] = new Array<boolean>(candidates.length).fill(false);
+  const kept = new Array<boolean | undefined>(candidates.length).fill(false);
   let cursor = 0;
   const workerCount = Math.min(STAT_CONCURRENCY, candidates.length);
 
@@ -249,12 +242,14 @@ async function keepFilesWithinSizeLimit(
         continue;
       }
 
-      try {
-        const fileStat = await stat(resolve(repoPath, candidate));
-        kept[index] = fileStat.size <= maxFileBytes;
-      } catch {
-        kept[index] = false;
+      const absolutePath = resolve(repoPath, candidate);
+      const fileStat = await stat(absolutePath);
+      // Detect binary content before size filtering so it is silently out of scope.
+      if (await hasBinaryContent(absolutePath)) {
+        kept[index] = undefined;
+        continue;
       }
+      kept[index] = fileStat.size <= maxFileBytes;
     }
   });
 
@@ -265,7 +260,7 @@ async function keepFilesWithinSizeLimit(
   for (let index = 0; index < candidates.length; index += 1) {
     if (kept[index]) {
       keptFiles.push(candidates[index]!);
-    } else {
+    } else if (kept[index] === false) {
       skipped += 1;
     }
   }
@@ -292,9 +287,12 @@ async function collectFiles(
     return { files: [], skippedCount: 0 };
   }
   if (startStat.isFile()) {
-    // An explicit file path bypasses the listing filters; the caller asked for it and the
-    // output caps still bound the result.
-    return { files: [toRepoRelativePath(root, startAbsolutePath)], skippedCount: 0 };
+    // Explicit paths bypass generated/size filters, but never binary filtering.
+    const file = toRepoRelativePath(root, startAbsolutePath);
+    return {
+      files: isBinaryPath(file) || (await hasBinaryContent(startAbsolutePath)) ? [] : [file],
+      skippedCount: 0,
+    };
   }
 
   async function walk(currentPath: string): Promise<void> {
@@ -317,7 +315,13 @@ async function collectFiles(
       }
 
       if (entry.isFile()) {
+        if (isBinaryPath(relativeEntryPath)) {
+          continue;
+        }
         if (isExcluded(relativeEntryPath)) {
+          if (await hasBinaryContent(absoluteEntryPath)) {
+            continue;
+          }
           excludedCount += 1;
           continue;
         }
@@ -452,7 +456,20 @@ export function createRepoContextTools(
       execute: async (args: ReadToolArgs) => {
         const absolutePath = resolveRepoPath(repoPath, args.file_path);
         const relativePath = toRepoRelativePath(repoPath, absolutePath);
-        const fileContent = await readFile(absolutePath, 'utf8');
+        if (isBinaryPath(relativePath)) {
+          // Still open/read the path so missing files and real filesystem errors propagate.
+          await hasBinaryContent(absolutePath, true);
+          return {
+            content: [{ type: 'text', text: `File: ${relativePath}\nOutside text review scope.` }],
+          };
+        }
+        const bytes = await readFile(absolutePath);
+        if (isBinaryContent(bytes)) {
+          return {
+            content: [{ type: 'text', text: `File: ${relativePath}\nOutside text review scope.` }],
+          };
+        }
+        const fileContent = bytes.toString('utf8');
         const lines = fileContent.split(/\r?\n/);
         const { startLine, lineLimit } = getReadBounds(relativePath, lines.length, args, options);
         const requestedEndLine = Math.min(lines.length, startLine + lineLimit - 1);
@@ -491,7 +508,7 @@ export function createRepoContextTools(
         const notes: string[] = [];
         if (isExcludedFile(relativePath)) {
           notes.push(
-            `Note: ${relativePath} is excluded from repository-wide scanning (generated or binary file); content may be low signal.`
+            `Note: ${relativePath} is excluded from repository-wide scanning (generated file); content may be low signal.`
           );
         }
         if (clippedLine) {
@@ -558,7 +575,7 @@ export function createRepoContextTools(
         let truncatedByBytes = false;
         const skippedNote =
           skippedCount > 0
-            ? `[${skippedCount} generated, binary, or oversized file(s) were skipped during scanning; use Read with an explicit path to inspect one]`
+            ? `[${skippedCount} generated or oversized file(s) were skipped during scanning; use Read with an explicit path to inspect one]`
             : undefined;
         const appendNotes = (body: string, notes: Array<string | undefined>): string =>
           [body, ...notes.filter((note): note is string => Boolean(note))].join('\n');
@@ -576,7 +593,11 @@ export function createRepoContextTools(
             continue;
           }
 
-          const fileContent = await readFile(resolveRepoPath(repoPath, file), 'utf8');
+          const bytes = await readFile(resolveRepoPath(repoPath, file));
+          if (isBinaryPath(file) || isBinaryContent(bytes)) {
+            continue;
+          }
+          const fileContent = bytes.toString('utf8');
           const lines = fileContent.split(/\r?\n/);
 
           for (let index = 0; index < lines.length; index++) {
@@ -683,7 +704,7 @@ export function createRepoContextTools(
         });
         const skippedNote =
           skippedCount > 0
-            ? `[${skippedCount} generated, binary, or oversized file(s) were skipped during scanning; use Read with an explicit path to inspect one]`
+            ? `[${skippedCount} generated or oversized file(s) were skipped during scanning; use Read with an explicit path to inspect one]`
             : undefined;
         const body =
           matches.length > 0

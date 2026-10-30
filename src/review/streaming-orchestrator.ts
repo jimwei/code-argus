@@ -45,7 +45,7 @@ import {
   type GitRef,
   type ReviewMode,
 } from '../git/ref.js';
-import { parseDiff, type DiffFile } from '../git/parser.js';
+import type { DiffFile } from '../git/parser.js';
 import { isFileIgnored, stripIgnoredFromDiff } from '../config/reviewignore.js';
 import { createRuntimeFromEnv } from '../runtime/factory.js';
 import { createRepoContextTools } from '../runtime/repo-context-tools.js';
@@ -241,6 +241,35 @@ export class StreamingReviewOrchestrator {
     };
   }
 
+  /** No text changes means no AI review, unless previous findings still need verification. */
+  private finishEmptyReview(context: ReviewContext, startTime: number): ReviewReport | undefined {
+    if (
+      context.diffFiles?.length !== 0 ||
+      (context.deletedFiles?.length ?? 0) > 0 ||
+      (this.options.previousReviewData?.issues.length && this.options.verifyFixes !== false)
+    ) {
+      return undefined;
+    }
+    const metadata = {
+      review_time_ms: Date.now() - startTime,
+      input_tokens_used: 0,
+      cached_input_tokens_used: 0,
+      output_tokens_used: 0,
+      tokens_used: 0,
+      ...this.getReviewExecutionMetadata(),
+    };
+    const report = generateReport(
+      [],
+      [],
+      calculateMetrics([], [], 0),
+      context,
+      metadata,
+      this.options.language
+    );
+    this.progress.complete(0, metadata.review_time_ms);
+    return report;
+  }
+
   private recordRejectedIssue(agentName: string, title: string, reason: string): void {
     const message = `${agentName}: report_issue rejected for "${title}": ${reason}`;
     if (!this.incompleteReasons.includes(message)) {
@@ -360,6 +389,8 @@ export class StreamingReviewOrchestrator {
       }
 
       const { context, diffFiles } = await this.buildContext(input);
+      const emptyReport = this.finishEmptyReview(context, startTime);
+      if (emptyReport) return emptyReport;
 
       // Load custom rules if specified
       if (this.options.rulesDirs.length > 0) {
@@ -969,6 +1000,8 @@ export class StreamingReviewOrchestrator {
       }
 
       const { context, diffFiles, sourceRef, targetRef } = await this.buildContextByRefs(input);
+      const emptyReport = this.finishEmptyReview(context, startTime);
+      if (emptyReport) return emptyReport;
 
       // Show review mode info
       const validationMode =
@@ -1665,7 +1698,9 @@ export class StreamingReviewOrchestrator {
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
 
     this.progress.progress('解析 diff...');
-    let diffFiles = parseDiff(diffResult.diff);
+    const preprocessed = preprocessDiff(diffResult.diff);
+    let diffFiles = preprocessed.diffFiles;
+    diffResult = { ...diffResult, diff: preprocessed.processedDiff };
 
     // Apply .argusignore filtering
     const ignorePatterns = this.options.reviewIgnorePatterns;
@@ -2111,7 +2146,8 @@ export class StreamingReviewOrchestrator {
     context: ReviewContext,
     repoPath: string
   ): Promise<CustomAgentResult[]> {
-    if (agents.length === 0) return [];
+    if (agents.length === 0 || (context.diffFiles?.length === 0 && !context.deletedFiles?.length))
+      return [];
     return executeCustomAgents(
       agents,
       {
@@ -2179,6 +2215,15 @@ export class StreamingReviewOrchestrator {
     cachedInputTokensUsed: number;
     outputTokensUsed: number;
   }> {
+    if (context.diffFiles?.length === 0 && !context.deletedFiles?.length) {
+      return {
+        checklists: [],
+        tokens: 0,
+        inputTokensUsed: 0,
+        cachedInputTokensUsed: 0,
+        outputTokensUsed: 0,
+      };
+    }
     await this.preparePrimaryReviewer();
     const reviewersToRun: ReviewerId[] = this.primaryReviewer
       ? [this.primaryReviewer.id as ReviewerId]

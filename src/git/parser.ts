@@ -2,6 +2,9 @@
  * Git diff parser with intelligent categorization
  */
 
+import { TextDecoder, TextEncoder } from 'node:util';
+import { isBinaryDiff, isBinaryPath } from '../utils/binary-files.js';
+
 /**
  * File category for intelligent processing
  */
@@ -103,6 +106,45 @@ export function parseDiff(raw: string): DiffFile[] {
   return files;
 }
 
+function decodeGitQuotedPath(value: string): string {
+  if (!value.startsWith('"') || !value.endsWith('"')) return value;
+  // Git C-quotes non-ASCII path bytes as octal escapes.
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  const escapeBytes: Record<string, number> = {
+    a: 0x07,
+    b: 0x08,
+    t: 0x09,
+    n: 0x0a,
+    v: 0x0b,
+    f: 0x0c,
+    r: 0x0d,
+    '"': 0x22,
+    '\\': 0x5c,
+  };
+  for (let index = 1; index < value.length - 1; index++) {
+    const character = value[index];
+    if (character !== '\\') {
+      const codePoint = value.codePointAt(index);
+      if (codePoint === undefined) break;
+      const rawCharacter = String.fromCodePoint(codePoint);
+      bytes.push(...encoder.encode(rawCharacter));
+      index += rawCharacter.length - 1;
+      continue;
+    }
+    const escaped = value[++index];
+    if (escaped === undefined) break;
+    if (/[0-7]/.test(escaped)) {
+      let octal = escaped;
+      while (octal.length < 3 && /[0-7]/.test(value[index + 1] ?? '')) octal += value[++index];
+      bytes.push(parseInt(octal, 8));
+    } else {
+      bytes.push(escapeBytes[escaped] ?? escaped.charCodeAt(0));
+    }
+  }
+  return new TextDecoder().decode(Uint8Array.from(bytes));
+}
+
 /**
  * Parse a single file diff chunk
  *
@@ -110,16 +152,20 @@ export function parseDiff(raw: string): DiffFile[] {
  * @returns Parsed diff file or null if invalid
  */
 function parseFileDiff(chunk: string): DiffFile | null {
-  // Extract file path from first line: a/path/to/file b/path/to/file
+  // Each side can be independently C-quoted by Git, including rename headers.
   const firstLine = chunk.split('\n')[0];
-  const pathMatch = firstLine?.match(/^a\/(.+?)\s+b\/(.+?)$/);
+  const pathMatch = firstLine?.match(/^("a\/(?:\\.|[^"])*"|a\/.+?)\s+("b\/(?:\\.|[^"])*"|b\/.+)$/);
 
   if (!pathMatch) {
     return null;
   }
 
-  const aPath = pathMatch[1]!;
-  const bPath = pathMatch[2]!;
+  const aPath = decodeGitQuotedPath(pathMatch[1]!).slice(2);
+  const bPath = decodeGitQuotedPath(pathMatch[2]!).slice(2);
+
+  if (isBinaryPath(aPath) || isBinaryPath(bPath) || isBinaryDiff(chunk)) {
+    return null;
+  }
 
   // Determine change type and file path
   let type: 'add' | 'delete' | 'modify';

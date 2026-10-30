@@ -38,6 +38,96 @@ afterEach(async () => {
 });
 
 describe('repo context tools', () => {
+  it('silently excludes binary paths and unknown-extension bytes from scans, including explicit paths', async () => {
+    const repoPath = await createTempRepo('argus-repo-binary');
+    const binaryFiles = ['sheet.XLS', 'book.XLSM', 'payload.unknown', 'bad.min.js', 'large.opaque'];
+    for (const file of binaryFiles) {
+      await writeFile(
+        join(repoPath, file),
+        file === 'large.opaque'
+          ? Buffer.concat([Buffer.from('BINARY_NEEDLE\0'), Buffer.alloc(2 * 1024 * 1024)])
+          : Buffer.from('BINARY_NEEDLE\0private binary payload')
+      );
+    }
+    await writeFile(join(repoPath, 'readme.txt'), 'reviewable text');
+
+    // Custom exclusion overrides must not re-enable binary content.
+    for (const options of [{}, { excludedFilePatterns: [] }]) {
+      const tools = createRepoContextTools(repoPath, options);
+      const grep = await tools[1]!.execute({ pattern: 'BINARY_NEEDLE' });
+      expect(grep.content[0]?.text).toBe('No matches found.');
+      const glob = await tools[2]!.execute({ pattern: '**/*' });
+      expect(glob.content[0]?.text).toBe('readme.txt');
+      for (const file of binaryFiles) {
+        const read = await tools[0]!.execute({ file_path: file });
+        expect(read).not.toHaveProperty('isError', true);
+        expect(read.content[0]?.text).not.toContain('BINARY_NEEDLE');
+        expect(read.content[0]?.text).not.toContain('\0');
+        expect(read.content[0]?.text).not.toMatch(/incomplete|warning|error/i);
+        const explicitGrep = await tools[1]!.execute({ path: file, pattern: 'BINARY_NEEDLE' });
+        expect(explicitGrep.content[0]?.text).toBe('No matches found.');
+        const explicitGlob = await tools[2]!.execute({ path: file, pattern: '*' });
+        expect(explicitGlob.content[0]?.text).not.toContain(file);
+      }
+    }
+  });
+
+  it('keeps Unicode and ordinary data text searchable and explicit minified text readable', async () => {
+    const repoPath = await createTempRepo('argus-repo-binary-text');
+    const textFiles = [
+      'data.csv',
+      'schema.sql',
+      'data.xml',
+      'data.json',
+      'unicode.txt',
+      'dependencies.dot',
+    ];
+    for (const file of textFiles) {
+      await writeFile(join(repoPath, file), 'TEXT_NEEDLE 中文 日本語 café 🚀');
+    }
+    await writeFile(join(repoPath, 'app.min.js'), 'const text="中文 🚀";');
+    // Path classification must precede content inspection even for text-looking bytes.
+    await writeFile(join(repoPath, 'text-looking.XLSB'), 'TEXT_NEEDLE');
+    const tools = createRepoContextTools(repoPath);
+    for (const file of textFiles) {
+      const read = await tools[0]!.execute({ file_path: file });
+      expect(read.content[0]?.text).toContain('中文 日本語 café 🚀');
+    }
+    const grep = await tools[1]!.execute({ pattern: 'TEXT_NEEDLE' });
+    for (const file of textFiles) {
+      expect(grep.content[0]?.text).toContain(`${file}:1`);
+    }
+    expect(grep.content[0]?.text).not.toContain('text-looking.XLSB');
+    const minified = await tools[0]!.execute({ file_path: 'app.min.js' });
+    expect(minified.content[0]?.text).toContain('const text="中文 🚀";');
+  });
+
+  it('does not expose late binary content through Read, Grep, or Glob', async () => {
+    const repoPath = await createTempRepo('argus-repo-late-binary');
+    await writeFile(
+      join(repoPath, 'late.opaque'),
+      `${'a'.repeat(8192)}\nBINARY_NEEDLE\0private bytes`
+    );
+    const tools = createRepoContextTools(repoPath);
+    const read = await tools[0]!.execute({ file_path: 'late.opaque' });
+    expect(read.content[0]?.text).not.toContain('BINARY_NEEDLE');
+    const grep = await tools[1]!.execute({ pattern: 'BINARY_NEEDLE' });
+    expect(grep.content[0]?.text).toBe('No matches found.');
+    const glob = await tools[2]!.execute({ pattern: '**/*' });
+    expect(glob.content[0]?.text).not.toContain('late.opaque');
+  });
+
+  it('propagates real filesystem errors rather than treating them as binary exclusions', async () => {
+    const repoPath = await createTempRepo('argus-repo-binary-errors');
+    const tools = createRepoContextTools(repoPath);
+    await expect(tools[0]!.execute({ file_path: 'missing.txt' })).rejects.toThrow();
+    await expect(tools[0]!.execute({ file_path: 'missing.xls' })).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(tools[1]!.execute({ path: 'missing', pattern: 'anything' })).rejects.toThrow();
+    await expect(tools[2]!.execute({ path: 'missing', pattern: '*' })).rejects.toThrow();
+  });
+
   it('provides Read, Grep, and Glob tools for runtime parity', async () => {
     const repoPath = await createTempRepo('argus-repo-tools');
     await mkdir(join(repoPath, 'src', 'components'), { recursive: true });

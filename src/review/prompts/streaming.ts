@@ -5,7 +5,7 @@
  */
 
 import type { IssueCategory, PRContext } from '../types.js';
-import { DIFF_ANALYSIS_INSTRUCTIONS } from './base.js';
+import { DIFF_ANALYSIS_INSTRUCTIONS, TEXT_REVIEW_SCOPE_POLICY } from './base.js';
 
 /**
  * Get language label for prompt instructions
@@ -225,6 +225,8 @@ Your task is to analyze code changes and report issues using the report_issue to
 5. Prefer early emission of concrete, high-confidence findings over exhaustive exploration
 6. Zero issues is a valid outcome when the review is complete; never invent findings to avoid an empty result.
 7. If evidence is insufficient to complete review, call report_incomplete with the missing evidence instead of claiming a clean review.
+
+${TEXT_REVIEW_SCOPE_POLICY}
 
 ## Tool Usage
 

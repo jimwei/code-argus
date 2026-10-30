@@ -7,6 +7,7 @@
 
 import type { IssueCategory, ValidationPromptConfig } from '../types.js';
 import { loadBaseValidationTemplate, loadCategoryValidationTemplate } from './template-loader.js';
+import { TEXT_REVIEW_SCOPE_POLICY } from './base.js';
 
 /**
  * Validation prompt configurations for different issue categories
@@ -181,6 +182,7 @@ ${options.projectRules}
   // Combine base template with category-specific rules and project rules
   const prompt = [
     baseTemplate,
+    TEXT_REVIEW_SCOPE_POLICY,
     '',
     categoryConfig.additionalSystemPrompt,
     '',

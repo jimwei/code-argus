@@ -115,7 +115,14 @@ describe('streaming orchestrator runtime bridge', () => {
         standards: {
           source: [],
         },
-        diffFiles: [],
+        diffFiles: [
+          {
+            path: 'src/api/service.ts',
+            type: 'modify',
+            category: 'source',
+            content: '+fetch("/api/service")',
+          },
+        ],
         dependencyContext: {
           snapshots: [
             {
@@ -173,7 +180,9 @@ const minimalReviewContext = {
   standards: {
     source: [],
   },
-  diffFiles: [],
+  diffFiles: [
+    { path: 'src/a.ts', type: 'modify', category: 'source', content: '+const ready = true' },
+  ],
 };
 
 function createMaxTurnsRuntime(options: { callReportIssue?: boolean } = {}) {
@@ -576,7 +585,9 @@ describe('streaming orchestrator issue category validation', () => {
         standards: {
           source: [],
         },
-        diffFiles: [],
+        diffFiles: [
+          { path: 'src/a.ts', type: 'modify', category: 'source', content: '+const ready = true' },
+        ],
       },
       'C:\\repo',
       ['logic-reviewer']
@@ -650,7 +661,9 @@ describe('streaming orchestrator issue category validation', () => {
         standards: {
           source: [],
         },
-        diffFiles: [],
+        diffFiles: [
+          { path: 'src/a.ts', type: 'modify', category: 'source', content: '+const ready = true' },
+        ],
       },
       'C:\\repo',
       ['logic-reviewer']

@@ -510,6 +510,10 @@ build/**
 !critical.test.ts
 ```
 
+### Text-only review scope
+
+XLS/XLSX/XLSM/XLSB workbooks and other binary/non-text changes are silently excluded from both the parsed file list and the diff sent to reviewers. Exclusion alone does not produce findings, coverage warnings, or an incomplete review. SQL, CSV, Graphviz `.dot`, and UTF-8 text (including Chinese and Japanese) remain reviewable. With neither reviewable text changes nor text-file deletions, review completes without model calls unless previous findings still need fix verification. Real provider and tool failures remain errors.
+
 ### Repository context tool limits
 
 Agents explore the repository with the built-in `Read`, `Grep`, and `Glob` tools. Every tool result is replayed to the model on later turns, so these tools are bounded by default to keep one oversized file from exhausting the provider context window:
@@ -520,7 +524,7 @@ Agents explore the repository with the built-in `Read`, `Grep`, and `Glob` tools
 | `Grep`        | ~48 KB per call; matched lines are truncated to 400 characters                                                           |
 | `Grep`/`Glob` | generated bundles (`*.min.js`, `iconfont.js`, `*.map`), lockfiles, binary assets, and files larger than 1 MB are skipped |
 
-`Read` still opens an excluded file when its path is requested explicitly, the returned content is just bounded. Embedders can override the budgets with `createRepoContextTools(repoPath, { readByteLimit, grepByteLimit, grepLineCharLimit, maxIndexedFileBytes, excludedFilePatterns })`.
+An explicit `Read` can still open text files excluded from search, such as generated bundles; the returned content is bounded. Binary/non-text files are blocked by path or content detection even for an explicit `Read`, and their bytes are not returned to the model. Embedders can override the budgets with `createRepoContextTools(repoPath, { readByteLimit, grepByteLimit, grepLineCharLimit, maxIndexedFileBytes, excludedFilePatterns })`.
 
 ## JSON Event Stream
 

@@ -11,6 +11,12 @@ import {
   loadDiffAnalysisTemplate,
 } from './template-loader.js';
 
+export const TEXT_REVIEW_SCOPE_POLICY = `## Text Review Scope
+
+Binary and other non-text files (including XLS/XLSX/XLSM/XLSB spreadsheets) are outside AI code-review scope. Silently skip them, including binary diff markers and files that repository tools identify as non-text. Do not read, decode, convert, or validate excluded binary content, and do not use another tool to bypass this exclusion.
+
+Binary exclusion alone is not a defect, warning, missing evidence, or an incomplete review: do not call report_incomplete, fail review, or add exclusion warnings to the review summary solely for it. Review the remaining text normally; real runtime, authentication, transport, and tool errors remain failures and must not be hidden as binary exclusions. CSV, SQL, XML, JSON, Unicode source, and explicitly requested generated/minified text remain text-reviewable.`;
+
 // ============================================================================
 // JSON Schemas for Agent Output
 // ============================================================================
@@ -205,6 +211,8 @@ Your task is to analyze code changes and identify issues within your specialty a
 2. NEVER review unchanged existing code (context lines)
 3. All descriptions and suggestions MUST be in Chinese
 4. Be efficient - directly analyze the diff and output findings
+
+${TEXT_REVIEW_SCOPE_POLICY}
 
 ${getToolUsageInstructions()}
 

@@ -12,7 +12,9 @@ const context = {
   diff: { diff: '+const ready = true' },
   fileAnalyses: [],
   standards: { source: [] },
-  diffFiles: [],
+  diffFiles: [
+    { path: 'src/a.ts', type: 'modify', category: 'source', content: '+const ready = true' },
+  ],
   prContext: {
     issues: [
       {

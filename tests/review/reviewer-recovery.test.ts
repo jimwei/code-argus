@@ -10,7 +10,9 @@ import { StreamingReviewOrchestrator } from '../../src/review/streaming-orchestr
 const context = {
   repoPath: '.',
   diff: { diff: '+updateAccount()' },
-  diffFiles: [],
+  diffFiles: [
+    { path: 'src/auth.ts', type: 'modify', category: 'source', content: '+updateAccount()' },
+  ],
   fileAnalyses: [],
   standards: { source: [] },
 };

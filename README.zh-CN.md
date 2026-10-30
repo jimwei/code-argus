@@ -470,6 +470,10 @@ build/**
 !critical.test.ts
 ```
 
+### 仅审核文本变更
+
+XLS/XLSX/XLSM/XLSB 工作簿及其他二进制/非文本变更会从文件列表和发送给审核模型的 diff 中静默排除，不因排除本身产生问题、覆盖 warning 或未完成状态。SQL、CSV、Graphviz `.dot`、包含中文或日文的 UTF-8 文本仍正常审核；文本文件删除也继续作为逻辑审核上下文。既无可审核文本变更、也无文本文件删除时直接完成、不调用模型；仍有历史问题需要修复验证时继续执行验证。真实的模型提供商或工具执行错误仍按错误处理。
+
 ### 仓库上下文工具的输出上限
 
 Agent 使用内置的 `Read`、`Grep`、`Glob` 工具浏览仓库。每次工具结果都会在后续轮次重复发送给模型，因此这些工具默认带有限额，避免单个超大文件直接撑爆模型上下文：
@@ -480,7 +484,7 @@ Agent 使用内置的 `Read`、`Grep`、`Glob` 工具浏览仓库。每次工具
 | `Grep`        | 单次约 48 KB；单条匹配行截断到 400 字符                                                    |
 | `Grep`/`Glob` | 跳过生成物（`*.min.js`、`iconfont.js`、`*.map`）、锁文件、二进制资源，以及大于 1 MB 的文件 |
 
-显式指定路径时 `Read` 仍可打开被排除的文件，只是返回内容受限。以库的方式内嵌审查引擎时，可以通过 `createRepoContextTools(repoPath, { readByteLimit, grepByteLimit, grepLineCharLimit, maxIndexedFileBytes, excludedFilePatterns })` 覆盖这些默认值。
+显式指定路径时，`Read` 仍可打开被搜索排除的文本文件（如生成的代码），只是返回内容受限；二进制/非文本文件则会根据路径或内容检测被拒绝，不向模型返回原始字节。以库的方式内嵌审查引擎时，可以通过 `createRepoContextTools(repoPath, { readByteLimit, grepByteLimit, grepLineCharLimit, maxIndexedFileBytes, excludedFilePatterns })` 覆盖这些默认值。
 
 ## JSON 事件流
 

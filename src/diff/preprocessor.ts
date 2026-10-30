@@ -13,7 +13,7 @@ import { parseDiff, type DiffFile } from '../git/parser.js';
  * 预处理后的 diff 结果
  */
 export interface PreprocessedDiff {
-  /** 处理后的 diff 内容（删除文件内容已移除） */
+  /** 处理后的 diff 内容（已移除二进制、无需审核及删除文件内容） */
   processedDiff: string;
   /** 处理后的 diff 大小（字节） */
   processedSize: number;
@@ -78,37 +78,29 @@ export function preprocessDiff(
 
   const originalSize = Buffer.byteLength(rawDiff, 'utf8');
 
-  // 解析 diff 获取文件信息
-  const allDiffFiles = parseDiff(rawDiff);
-
-  // 分离删除文件和其他文件
+  // Rebuild from the same accepted blocks used by parseDiff so skipped binary
+  // (and other non-reviewable) content cannot leak into the raw prompt diff.
+  const allDiffFiles: DiffFile[] = [];
   const deletedFiles: string[] = [];
   const nonDeletedFiles: DiffFile[] = [];
+  const retainedBlocks: string[] = [];
 
-  for (const file of allDiffFiles) {
-    if (file.type === 'delete') {
-      deletedFiles.push(file.path);
-    } else {
-      nonDeletedFiles.push(file);
+  for (const block of rawDiff.split(/(?=^diff --git )/m)) {
+    const files = parseDiff(block);
+    for (const file of files) {
+      allDiffFiles.push(file);
+      if (file.type === 'delete') {
+        deletedFiles.push(file.path);
+      } else {
+        nonDeletedFiles.push(file);
+      }
+    }
+    if (files.some((file) => file.type !== 'delete')) {
+      retainedBlocks.push(block);
     }
   }
 
-  // 重建 diff：移除删除文件的具体内容
-  let processedDiff = rawDiff;
-
-  if (deletedFiles.length > 0) {
-    // 使用正则匹配并移除删除文件的 diff 块
-    for (const deletedPath of deletedFiles) {
-      // 转义路径中的特殊字符
-      const escapedPath = deletedPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // 匹配从 "diff --git" 到下一个 "diff --git" 或文件末尾的内容
-      const regex = new RegExp(
-        `diff --git a\\/${escapedPath} b\\/${escapedPath}[\\s\\S]*?(?=diff --git|$)`,
-        'g'
-      );
-      processedDiff = processedDiff.replace(regex, '');
-    }
-  }
+  const processedDiff = retainedBlocks.join('');
 
   const processedSize = Buffer.byteLength(processedDiff, 'utf8');
   const savedBytes = originalSize - processedSize;

@@ -165,6 +165,21 @@ it('runs the selected primary once, preserves supplemental matching and validato
   expect(report.metadata.tokens_used).toBe(18);
 });
 
+it('does not report text-only deletions as complete when the reviewer fails', async () => {
+  const { orchestrator } = await fixture({ skipValidation: true });
+  vi.mocked((orchestrator as any).buildContextByRefs).mockResolvedValue({
+    context: { ...context, diff: { diff: '' }, diffFiles: [], deletedFiles: ['src/auth.ts'] },
+    diffFiles: [],
+  });
+  mocks.execute.mockImplementation(() => ({
+    async *[Symbol.asyncIterator]() {
+      yield { type: 'result', status: 'error', error: 'Deletion inspection unavailable' };
+    },
+    close: async () => {},
+  }));
+  await expect(review(orchestrator)).rejects.toThrow('Deletion inspection unavailable');
+});
+
 it('keeps multi selection and custom triggers compatible when a primary path is configured', async () => {
   const { orchestrator, primary } = await fixture({
     reviewStrategy: 'multi',
