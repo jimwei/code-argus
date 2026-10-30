@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import type { RuntimeExecuteOptions, RuntimeExecution } from '../../src/runtime/types.js';
 const mocks = vi.hoisted(() => ({
   execute: vi.fn(),
   custom: vi.fn(),
@@ -248,22 +249,120 @@ it('marks a failed segment incomplete and retains successful usage and partial f
 
 it('resets execution completeness between repeated reviews on the same orchestrator', async () => {
   const { orchestrator } = await fixture({ skipValidation: true });
-  const incompleteExecution = (options: any) => ({
+  const incompleteExecution = (options: RuntimeExecuteOptions): RuntimeExecution => ({
     async *[Symbol.asyncIterator]() {
-      await options.tools
-        .find((tool: any) => tool.name === 'report_incomplete')
-        .execute({ reason: 'Missing evidence' });
+      const tool = options.tools?.find((tool) => tool.name === 'report_incomplete');
+      if (!tool) throw new Error('Missing report_incomplete tool');
+      await tool.execute({ reason: 'Missing evidence' });
       yield { type: 'result', status: 'success' };
     },
     close: async () => {},
   });
-  mocks.execute
-    .mockImplementationOnce(incompleteExecution)
-    .mockImplementationOnce(incompleteExecution);
-  await expect(review(orchestrator)).rejects.toThrow('Missing evidence');
-  expect((orchestrator as any).getReviewExecutionMetadata().review_complete).toBe(false);
+  mocks.execute.mockImplementationOnce(incompleteExecution);
+  const partial = await review(orchestrator);
+  expect(partial.metadata.review_complete).toBe(false);
+  expect(partial.metadata.incomplete_reasons?.join(' ')).toContain('Missing evidence');
   expect((await review(orchestrator)).metadata.review_complete).toBe(true);
 });
+
+it.each(['refs', 'legacy', 'segmented'] as const)(
+  'returns an incomplete zero-finding report without retrying missing evidence through %s',
+  async (entry) => {
+    mocks.segmented = entry === 'segmented';
+    const { orchestrator } = await fixture({
+      skipValidation: true,
+      local: true,
+      customAgentsDirs: [],
+    });
+    // Inject the parsed diff fixture to isolate execution-state transitions from Git setup.
+    const contextBuilder = orchestrator as unknown as { buildContext(): Promise<unknown> };
+    vi.spyOn(contextBuilder, 'buildContext').mockResolvedValue({ context, diffFiles: files });
+    mocks.execute.mockImplementation(
+      (options: RuntimeExecuteOptions): RuntimeExecution => ({
+        async *[Symbol.asyncIterator]() {
+          const tool = options.tools?.find((tool) => tool.name === 'report_incomplete');
+          if (!tool) throw new Error('Missing report_incomplete tool');
+          await tool.execute({ reason: 'ActiveReports rendering is unavailable' });
+          yield { type: 'result', status: 'success', usage: { inputTokens: 10, outputTokens: 2 } };
+        },
+        close: async () => {},
+      })
+    );
+    const report =
+      entry === 'legacy'
+        ? await orchestrator.review({
+            repoPath: '.',
+            sourceBranch: 'feature',
+            targetBranch: 'main',
+          })
+        : await review(orchestrator);
+    expect(report.issues).toEqual([]);
+    expect(report.metadata.review_complete).toBe(false);
+    expect(report.metadata.incomplete_reasons?.join(' ')).toContain(
+      'ActiveReports rendering is unavailable'
+    );
+    expect(mocks.execute).toHaveBeenCalledTimes(entry === 'segmented' ? 2 : 1);
+    expect(report.metadata.tokens_used).toBe(entry === 'segmented' ? 24 : 12);
+  }
+);
+
+it('retains confirmed findings alongside a successful reviewer coverage warning', async () => {
+  const { orchestrator } = await fixture({ skipValidation: true, customAgentsDirs: [] });
+  mocks.execute.mockImplementation(
+    (options: RuntimeExecuteOptions): RuntimeExecution => ({
+      async *[Symbol.asyncIterator]() {
+        const issueTool = options.tools?.find((tool) => tool.name === 'report_issue');
+        const incompleteTool = options.tools?.find((tool) => tool.name === 'report_incomplete');
+        if (!issueTool || !incompleteTool) throw new Error('Missing reviewer tools');
+        await issueTool.execute({
+          file: 'src/a.ts',
+          line_start: 1,
+          line_end: 1,
+          category: 'security',
+          severity: 'error',
+          title: 'Missing permission check',
+          description: 'The mutation allows another user account to be updated.',
+          confidence: 0.95,
+        });
+        await incompleteTool.execute({ reason: 'A separate visual change cannot be rendered' });
+        yield { type: 'result', status: 'success', usage: { inputTokens: 10, outputTokens: 2 } };
+      },
+      close: async () => {},
+    })
+  );
+  const report = await review(orchestrator);
+  expect(report.issues).toMatchObject([{ file: 'src/a.ts', title: 'Missing permission check' }]);
+  expect(report.metadata.review_complete).toBe(false);
+  expect(report.metadata.incomplete_reasons?.join(' ')).toContain(
+    'A separate visual change cannot be rendered'
+  );
+  expect(report.metadata.tokens_used).toBe(12);
+});
+
+it.each(['error', 'missing-terminal', 'cancelled'] as const)(
+  'does not hide a real %s after an explicit coverage warning',
+  async (outcome) => {
+    const { orchestrator } = await fixture({ skipValidation: true, customAgentsDirs: [] });
+    mocks.execute.mockImplementation(
+      (options: RuntimeExecuteOptions): RuntimeExecution => ({
+        async *[Symbol.asyncIterator]() {
+          const tool = options.tools?.find((tool) => tool.name === 'report_incomplete');
+          if (!tool) throw new Error('Missing report_incomplete tool');
+          await tool.execute({ reason: 'Missing visual evidence' });
+          if (outcome === 'missing-terminal') return;
+          if (outcome === 'cancelled')
+            throw Object.assign(new Error('Cancelled'), { name: 'AbortError' });
+          yield { type: 'result', status: 'error', error: 'HTTP 401 Invalid API key' };
+        },
+        close: async () => {},
+      })
+    );
+    await expect(review(orchestrator)).rejects.toThrow(
+      outcome === 'error' ? /HTTP 401/ : outcome === 'cancelled' ? /Cancelled/ : /terminal result/
+    );
+    expect(mocks.execute).toHaveBeenCalledTimes(outcome === 'cancelled' ? 1 : 2);
+  }
+);
 
 it.each(['refs', 'legacy'])(
   'preserves partial findings and known usage after exhausted failures through %s',

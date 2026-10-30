@@ -47,6 +47,8 @@ argus review /path/to/repo feature-branch main
 
 详见 [综合规则示例与预算、完整性说明](./README.md#审核策略与可配置主-reviewer)。审核未完成时保留部分 findings，并在 `metadata.review_complete=false` 和可读报告中说明原因；validator 崩溃重试耗尽或问题缺少有效 `file` 也会标记为不完整。零 findings 不能证明审核完成。
 
+reviewer 正常结束并调用 `report_incomplete` 时，CLI 以 `0` 退出并输出带覆盖 warning 的不完整报告，即使 findings 为空也不会仅因此重试。鉴权、网络、取消或缺少终止结果等真正运行错误不会被这类声明掩盖，仍按原有策略处理。
+
 ## 安装
 
 需要 Node.js 22 或更高版本（OpenAI Responses 运行时依赖 `openai` v7，该 SDK 要求 Node 22+）。

@@ -2438,6 +2438,11 @@ export class StreamingReviewOrchestrator {
 
       if (res.success) {
         // Usage is counted for every attempt, including failed attempts, by the callback above.
+        if (res.result.coverageWarning) {
+          const reason = `${res.agentType}: ${res.result.coverageWarning}`;
+          this.incompleteReasons.push(reason);
+          this.progress.warn(reason);
+        }
         allChecklists.push(...res.result.checklists);
 
         // Get issue count for this agent
@@ -2822,6 +2827,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     cachedInputTokensUsed: number;
     outputTokensUsed: number;
     checklists: ChecklistItem[];
+    coverageWarning?: string;
   }> {
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Starting agent: ${agentType}`);
@@ -2878,6 +2884,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       while (exploration.join('').length > 12000) exploration.shift();
     };
     let incompleteReason: string | undefined;
+    let coverageWarning: string | undefined;
     const runtimeTools: RuntimeToolDefinition[] = runtimeToolsFactory(agentType, invocationKey).map(
       (tool) => {
         if (tool.name === 'report_issue') {
@@ -2919,7 +2926,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         reason: z.string().min(1).describe('Unresolved hypothesis and missing evidence'),
       },
       execute: async (args: { reason: string }) => {
-        incompleteReason = args.reason || 'Reviewer could not complete the review';
+        coverageWarning = args.reason || 'Reviewer could not complete the review';
         return {
           content: [
             {
@@ -3067,6 +3074,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       cachedInputTokensUsed,
       outputTokensUsed,
       checklists: [],
+      coverageWarning,
     };
   }
 
