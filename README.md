@@ -107,6 +107,8 @@ max_turns: 80
 
 主 reviewer 或补充审核因预算耗尽、缺少证据等原因未完成时，报告的 `metadata.review_complete` 为 `false`，`incomplete_reasons` 列出原因，已报告的部分 findings 会保留。validator 崩溃并耗尽恢复重试、问题缺少 `file` 等结构性错误同样会标记为不完整；缺少有效位置的 finding 不会进入验证，也不会把未处理队列当作成功的 clean 结果。可读报告会明确“审核不完整”，不能把零 findings 当作完整 clean 结论。`metadata.review_strategy`、`primary_reviewer`、`reviewer_max_turns` 记录实际策略、主 reviewer 标识和执行预算，便于核验。
 
+当 reviewer 通过 `report_incomplete` 明确声明证据不足、且运行时正常结束时，CLI 正常生成报告并以 `0` 退出；即使没有 findings，也会保留 `review_complete=false` 和原因作为覆盖 warning，不会仅因此重试。鉴权、网络、取消、缺少终止结果等真正运行错误仍遵循原有的重试与失败处理，不能因提前声明覆盖不足而被降级为 warning。
+
 ## Runtime and Authentication
 
 ### Runtime selection

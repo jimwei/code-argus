@@ -94,28 +94,6 @@ describe('primary reviewer runtime', () => {
     expect(result.tokens).toBe(12);
   });
 
-  it('keeps an incomplete primary reviewer from being overwritten as completed', async () => {
-    createRuntimeMock.mockReturnValue(runtimeWith('success', true));
-    const events: any[] = [];
-    const orchestrator = new StreamingReviewOrchestrator({
-      reviewStrategy: 'single',
-      skipValidation: true,
-      progressMode: 'auto',
-      onEvent: (event: any) => events.push(event),
-    } as any);
-    await (orchestrator as any).preparePrimaryReviewer();
-    await expect((orchestrator as any).runAgentsWithStreaming(context, '.', [])).rejects.toThrow(
-      'Missing policy implementation'
-    );
-    expect(executeMock).toHaveBeenCalledTimes(2);
-    const terminal = events.filter((event) => event.type === 'agent:complete');
-    expect(terminal).toHaveLength(1);
-    expect(terminal.at(-1)?.data?.status).toBe('error');
-    expect((orchestrator as any).incompleteReasons.join(' ')).toContain(
-      'Missing policy implementation'
-    );
-  });
-
   it('fails a primary reviewer with no terminal runtime result', async () => {
     createRuntimeMock.mockReturnValue({
       kind: 'openai-responses',
