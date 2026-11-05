@@ -105,9 +105,17 @@ max_turns: 80
 
 包内综合定义包含 severity 分级标准：确认的安全回归——尤其是 diff 移除或弱化既有校验、且不可信输入仍可达的情况——不低于 `error`；`suggestion` 只用于非缺陷的可选改进，缺陷不能降级到该级别。
 
-主 reviewer 或补充审核因预算耗尽、缺少证据等原因未完成时，报告的 `metadata.review_complete` 为 `false`，`incomplete_reasons` 列出原因，已报告的部分 findings 会保留。validator 崩溃并耗尽恢复重试、问题缺少 `file` 等结构性错误同样会标记为不完整；缺少有效位置的 finding 不会进入验证，也不会把未处理队列当作成功的 clean 结果。可读报告会明确“审核不完整”，不能把零 findings 当作完整 clean 结论。`metadata.review_strategy`、`primary_reviewer`、`reviewer_max_turns` 记录实际策略、主 reviewer 标识和执行预算，便于核验。
+主 reviewer 或补充审核因预算耗尽、独立执行错误等原因未完成时，报告的 `metadata.review_complete` 为 `false`，`incomplete_reasons` 列出原因，已报告的部分 findings 会保留。显式 `report_incomplete` 覆盖警告默认忽略，关闭忽略后也会按原因标记不完整。validator 崩溃并耗尽恢复重试、问题缺少 `file` 等结构性错误同样会标记为不完整；缺少有效位置的 finding 不会进入验证，也不会把未处理队列当作成功的 clean 结果。可读报告会明确“审核不完整”，不能把零 findings 当作完整 clean 结论。`metadata.review_strategy`、`primary_reviewer`、`reviewer_max_turns` 记录实际策略、主 reviewer 标识和执行预算，便于核验。
 
-当 reviewer 通过 `report_incomplete` 明确声明证据不足、且运行时正常结束时，CLI 正常生成报告并以 `0` 退出；即使没有 findings，也会保留 `review_complete=false` 和原因作为覆盖 warning，不会仅因此重试。鉴权、网络、取消、缺少终止结果等真正运行错误仍遵循原有的重试与失败处理，不能因提前声明覆盖不足而被降级为 warning。
+显式关闭覆盖警告忽略时，当 reviewer 通过 `report_incomplete` 明确声明证据不足、且运行时正常结束时，CLI 正常生成报告并以 `0` 退出；即使没有 findings，也会保留 `review_complete=false` 和原因作为覆盖 warning，不会仅因此重试。鉴权、网络、取消、缺少终止结果等真正运行错误仍遵循原有的重试与失败处理，不能因提前声明覆盖不足而被降级为 warning。
+
+## 忽略审核覆盖 warning
+
+默认忽略所有审核覆盖 warning。可用 `--ignore-coverage-warnings=false` 或 `ARGUS_IGNORE_COVERAGE_WARNINGS=false` 显式关闭忽略，恢复覆盖警告；`--ignore-coverage-warnings` 或 `=true` 显式开启。API 对应 `OrchestratorOptions.ignoreCoverageWarnings`，显式 boolean > 环境变量 > `true`；环境变量去除首尾空白并忽略大小写，接受 `true` / `false`，未设置或空值为 `true`，其他值报错。
+
+启用后，multi、single 和补充 custom reviewer 通过 `report_incomplete({ reason })` 显式报告的审核覆盖缺口会整体忽略，不区分原因，包括本地证据不足、视觉效果无法验证、调用链或外部库不可验证等。这些声明不输出 progress warning、不进入 `incomplete_reasons`，也不单独使 `review_complete=false`。prompt 同时要求不能改用 summary warning 或普通 finding 绕过开关；忽略覆盖警告不能据此证明未审核代码安全。
+
+该开关仅作用于 `report_incomplete` 信号，真实 `report_issue`（包括 warning 级别）、独立的工具／鉴权／网络／运行错误、取消、预算耗尽、validator 和修复验证的不完整／失败结果均保持原有处理。即使 reviewer 先调用 `report_incomplete`，后续真实执行错误也不会被抑制。
 
 ## Runtime and Authentication
 

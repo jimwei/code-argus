@@ -327,6 +327,9 @@ export interface CustomAgentResult {
    */
   execution_time_ms: number;
 
+  /** Explicit coverage gaps retained after applying the review policy. */
+  coverage_warnings?: string[];
+
   /**
    * Any errors encountered
    */

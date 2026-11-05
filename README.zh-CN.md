@@ -47,7 +47,9 @@ argus review /path/to/repo feature-branch main
 
 详见 [综合规则示例与预算、完整性说明](./README.md#审核策略与可配置主-reviewer)。审核未完成时保留部分 findings，并在 `metadata.review_complete=false` 和可读报告中说明原因；validator 崩溃重试耗尽或问题缺少有效 `file` 也会标记为不完整。零 findings 不能证明审核完成。
 
-reviewer 正常结束并调用 `report_incomplete` 时，CLI 以 `0` 退出并输出带覆盖 warning 的不完整报告，即使 findings 为空也不会仅因此重试。鉴权、网络、取消或缺少终止结果等真正运行错误不会被这类声明掩盖，仍按原有策略处理。
+显式关闭覆盖警告忽略时，reviewer 正常结束并调用 `report_incomplete` 时，CLI 以 `0` 退出并输出带覆盖 warning 的不完整报告，即使 findings 为空也不会仅因此重试。鉴权、网络、取消或缺少终止结果等真正运行错误不会被这类声明掩盖，仍按原有策略处理。
+
+默认整体忽略 reviewer 通过 `report_incomplete({ reason })` 显式报告的审核覆盖 warning；可用 `--ignore-coverage-warnings=false` 或 `ARGUS_IGNORE_COVERAGE_WARNINGS=false` 显式关闭忽略，恢复覆盖警告。不区分本地证据、视觉效果、调用链、外部库等原因。显式 CLI/API boolean 优先于环境变量；API 字段为 `ignoreCoverageWarnings`。环境变量去除首尾空白并忽略大小写，未设置或空值为 `true`，显式 `false` 为关闭，其他非布尔值报错。multi、single 与补充 custom reviewer 均适用。被忽略的声明不进入 progress warning 或 `incomplete_reasons`，也不单独使 `review_complete=false`；prompt 要求不能改用 summary warning 或普通 finding 绕过开关。真实 findings（含 warning 严重级别）、独立的工具／运行／鉴权／网络错误、取消、预算耗尽、validator／修复验证失败或不完整仍保持原有处理，不能因忽略覆盖警告就断言未审核代码安全。
 
 ## 安装
 

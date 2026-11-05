@@ -131,6 +131,72 @@ describe('custom agent incomplete runtime results', () => {
     expect(result.tokens_used).toBe(18);
   });
 
+  it.each([false, true])(
+    'applies the coverage policy to custom reviewers (enabled=%s)',
+    async (enabled) => {
+      executeMock.mockImplementation((options: RuntimeExecuteOptions) => ({
+        async *[Symbol.asyncIterator]() {
+          expect(options.prompt).toContain(
+            enabled ? 'warnings is ENABLED' : 'warnings is DISABLED'
+          );
+          const gap = options.tools!.find((tool) => tool.name === 'report_incomplete')!;
+          await gap.execute({
+            reason: 'Caller unavailable',
+          });
+          await gap.execute({
+            reason: 'Required local evidence missing',
+          });
+          await options.tools![0]!.execute({
+            file: 'src/service.ts',
+            line_start: 1,
+            line_end: 1,
+            title: 'External call chain warning finding',
+            description: 'Concrete data loss',
+            confidence: 0.9,
+            severity: 'warning',
+          });
+          yield { type: 'result', status: 'success', usage };
+        },
+        close: closeMock,
+      }));
+      const result = await executeCustomAgent(agent, {
+        repoPath: '/repo',
+        diffContent: '+changed',
+        ignoreCoverageWarnings: enabled,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.coverage_warnings ?? []).toEqual(
+        enabled ? [] : ['Caller unavailable', 'Required local evidence missing']
+      );
+      expect(result.issues).toMatchObject([
+        { title: 'External call chain warning finding', severity: 'warning' },
+      ]);
+    }
+  );
+
+  it('ignores all explicit custom coverage gaps but retains budget failures', async () => {
+    executeMock.mockImplementation((options: RuntimeExecuteOptions) => ({
+      async *[Symbol.asyncIterator]() {
+        const gap = options.tools!.find((tool) => tool.name === 'report_incomplete')!;
+        await gap.execute({ reason: 'Missing local evidence' });
+        await gap.execute({ reason: 'Visual output cannot be verified' });
+        await gap.execute({
+          reason: 'Caller unavailable',
+        });
+        yield { type: 'result', status: 'error_max_turns', error: 'Turn budget exhausted', usage };
+      },
+      close: closeMock,
+    }));
+    const result = await executeCustomAgent(agent, {
+      repoPath: '/repo',
+      diffContent: '+changed',
+      ignoreCoverageWarnings: true,
+    });
+    expect(result.coverage_warnings ?? []).toEqual([]);
+    expect(result.error).toContain('Turn budget exhausted');
+    expect(result.tokens_used).toBe(18);
+  });
+
   it('keeps the onAgentError path for thrown exceptions and retains partial findings and usage', async () => {
     mockExecution([{ type: 'result', status: 'incomplete', usage }], true);
     const onAgentComplete = vi.fn();
