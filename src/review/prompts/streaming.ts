@@ -6,6 +6,7 @@
 
 import type { IssueCategory, PRContext } from '../types.js';
 import { DIFF_ANALYSIS_INSTRUCTIONS, TEXT_REVIEW_SCOPE_POLICY } from './base.js';
+import { buildCoverageWarningPolicy } from '../coverage-policy.js';
 
 /**
  * Get language label for prompt instructions
@@ -210,7 +211,8 @@ export const REPORT_ISSUE_TOOL_INSTRUCTIONS = getReportIssueToolInstructions('zh
  */
 export function buildStreamingSystemPrompt(
   agentRole: string,
-  language: 'en' | 'zh' = 'zh'
+  language: 'en' | 'zh' = 'zh',
+  ignoreCoverageWarnings = true
 ): string {
   const lang = getLangLabel(language);
   return `You are an expert code reviewer specializing in ${agentRole}.
@@ -227,6 +229,8 @@ Your task is to analyze code changes and report issues using the report_issue to
 7. If evidence is insufficient to complete review, call report_incomplete with the missing evidence instead of claiming a clean review.
 
 ${TEXT_REVIEW_SCOPE_POLICY}
+
+${buildCoverageWarningPolicy(ignoreCoverageWarnings)}
 
 ## Tool Usage
 

@@ -18,6 +18,11 @@ import {
 } from '../types.js';
 import type { CustomAgentIssue, CustomAgentResult, LoadedCustomAgent } from './types.js';
 import { CUSTOM_AGENT_DEFAULTS } from './types.js';
+import {
+  buildCoverageWarningPolicy,
+  createCoverageWarningTool,
+  resolveIgnoreCoverageWarnings,
+} from '../coverage-policy.js';
 
 // ============================================================================
 // Types
@@ -41,6 +46,8 @@ export interface CustomAgentExecutorOptions {
   maxTurns?: number;
   /** Output language for review comments */
   language?: 'en' | 'zh';
+  /** Explicit values override ARGUS_IGNORE_COVERAGE_WARNINGS. Default: true. */
+  ignoreCoverageWarnings?: boolean;
 }
 
 /**
@@ -284,14 +291,24 @@ export async function executeCustomAgent(
   };
 
   const runtime = createRuntimeFromEnv();
-  const runtimeTools = createCustomAgentRuntimeTools(
+  const ignoreCoverageWarnings = resolveIgnoreCoverageWarnings(options.ignoreCoverageWarnings);
+  const coverageWarnings: string[] = [];
+  const runtimeTools: RuntimeToolDefinition[] = createCustomAgentRuntimeTools(
     agent,
     onIssue,
     callbacks?.onIssueRejected,
     options.language,
     options.verbose
   );
-  const systemPrompt = buildCustomAgentSystemPrompt(agent, options.language);
+  runtimeTools.push(
+    createCoverageWarningTool(ignoreCoverageWarnings, (reason) => {
+      if (!coverageWarnings.includes(reason)) coverageWarnings.push(reason);
+    })
+  );
+  const systemPrompt =
+    buildCustomAgentSystemPrompt(agent, options.language) +
+    '\n\n' +
+    buildCoverageWarningPolicy(ignoreCoverageWarnings);
   const userPrompt = buildCustomAgentUserPrompt(
     options.diffContent,
     options.fileAnalysesSummary,
@@ -374,6 +391,7 @@ export async function executeCustomAgent(
       output_tokens_used: outputTokensUsed,
       tokens_used: tokensUsed,
       execution_time_ms: Date.now() - startTime,
+      ...(coverageWarnings.length > 0 ? { coverage_warnings: [...coverageWarnings] } : {}),
       ...(!receivedResult
         ? { error: 'Runtime stream ended without a terminal result' }
         : runtimeError
@@ -407,6 +425,7 @@ export async function executeCustomAgent(
       output_tokens_used: outputTokensUsed,
       tokens_used: tokensUsed,
       execution_time_ms: Date.now() - startTime,
+      ...(coverageWarnings.length > 0 ? { coverage_warnings: [...coverageWarnings] } : {}),
       error: errorMessage,
     };
   } finally {

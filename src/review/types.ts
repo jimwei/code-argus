@@ -651,6 +651,8 @@ export interface OrchestratorOptions {
   validationReadLimit?: number;
   /** Review mode: fast (2-round) or normal (5-round validation). Default: normal */
   reviewMode?: 'fast' | 'normal';
+  /** Ignore reviewer report_incomplete coverage warnings for every reason. Runtime/budget/validator/fix failures and real findings remain unchanged. Default: true; explicit values override ARGUS_IGNORE_COVERAGE_WARNINGS. */
+  ignoreCoverageWarnings?: boolean;
   /** Skip validation (not recommended) */
   skipValidation?: boolean;
   /** Show CLI progress output (default: true) */

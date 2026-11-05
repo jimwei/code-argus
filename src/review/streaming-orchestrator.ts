@@ -54,6 +54,7 @@ import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
 import { createStreamingValidator, type StreamingValidator } from './streaming-validator.js';
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
+import { createCoverageWarningTool, resolveIgnoreCoverageWarnings } from './coverage-policy.js';
 import { standardsToText } from './prompts/specialist.js';
 import {
   getRecommendedMaxTurns,
@@ -130,6 +131,7 @@ const DEFAULT_OPTIONS: Required<
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
   skipValidation: false,
+  ignoreCoverageWarnings: true,
   reviewMode: 'normal',
   showProgress: true,
   smartAgentSelection: true,
@@ -193,6 +195,9 @@ export class StreamingReviewOrchestrator {
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.options.ignoreCoverageWarnings = resolveIgnoreCoverageWarnings(
+      options?.ignoreCoverageWarnings
+    );
     this.options.reviewStrategy = parseReviewStrategy(
       options?.reviewStrategy ?? process.env.ARGUS_REVIEW_STRATEGY
     );
@@ -2159,6 +2164,7 @@ export class StreamingReviewOrchestrator {
           .join('\n'),
         standardsText: standardsToText(context.standards),
         language: this.options.language,
+        ignoreCoverageWarnings: this.options.ignoreCoverageWarnings,
       },
       {
         onAgentStart: (agent) => {
@@ -2167,6 +2173,11 @@ export class StreamingReviewOrchestrator {
         },
         onAgentComplete: (agent, result) => {
           if (result.error) this.incompleteReasons.push(`${agent.id}: ${result.error}`);
+          for (const warning of result.coverage_warnings ?? []) {
+            const reason = `${agent.id}: ${warning}`;
+            this.incompleteReasons.push(reason);
+            this.progress.warn(reason);
+          }
           this.progress.agent(
             agent.name,
             result.error ? 'error' : 'completed',
@@ -2438,8 +2449,8 @@ export class StreamingReviewOrchestrator {
 
       if (res.success) {
         // Usage is counted for every attempt, including failed attempts, by the callback above.
-        if (res.result.coverageWarning) {
-          const reason = `${res.agentType}: ${res.result.coverageWarning}`;
+        for (const warning of res.result.coverageWarnings) {
+          const reason = `${res.agentType}: ${warning}`;
           this.incompleteReasons.push(reason);
           this.progress.warn(reason);
         }
@@ -2827,7 +2838,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
     cachedInputTokensUsed: number;
     outputTokensUsed: number;
     checklists: ChecklistItem[];
-    coverageWarning?: string;
+    coverageWarnings: string[];
   }> {
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Starting agent: ${agentType}`);
@@ -2840,7 +2851,11 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         : undefined;
 
     const systemPrompt =
-      buildStreamingSystemPrompt(definition?.description || agentType, this.options.language) +
+      buildStreamingSystemPrompt(
+        definition?.description || agentType,
+        this.options.language,
+        this.options.ignoreCoverageWarnings
+      ) +
       (definition ? `\n\n## Configured Reviewer: ${definition.name}\n\n${definition.prompt}` : '');
 
     const deletedFilesContext =
@@ -2884,7 +2899,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       while (exploration.join('').length > 12000) exploration.shift();
     };
     let incompleteReason: string | undefined;
-    let coverageWarning: string | undefined;
+    const coverageWarnings: string[] = [];
     const runtimeTools: RuntimeToolDefinition[] = runtimeToolsFactory(agentType, invocationKey).map(
       (tool) => {
         if (tool.name === 'report_issue') {
@@ -2918,25 +2933,11 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
         };
       }
     );
-    runtimeTools.push({
-      name: 'report_incomplete',
-      description:
-        'Report missing evidence that prevents completing the review. This marks the review incomplete, not clean.',
-      inputSchema: {
-        reason: z.string().min(1).describe('Unresolved hypothesis and missing evidence'),
-      },
-      execute: async (args: { reason: string }) => {
-        coverageWarning = args.reason || 'Reviewer could not complete the review';
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: 'Incomplete review recorded. Finish with a brief summary.',
-            },
-          ],
-        };
-      },
-    });
+    runtimeTools.push(
+      createCoverageWarningTool(this.options.ignoreCoverageWarnings, (reason) => {
+        if (!coverageWarnings.includes(reason)) coverageWarnings.push(reason);
+      })
+    );
 
     let inputTokensUsed = 0;
     let cachedInputTokensUsed = 0;
@@ -3074,7 +3075,7 @@ Write all text (title, description, suggestion) in ${langLabel}.`,
       cachedInputTokensUsed,
       outputTokensUsed,
       checklists: [],
-      coverageWarning,
+      coverageWarnings,
     };
   }
 

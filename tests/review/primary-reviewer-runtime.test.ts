@@ -134,6 +134,11 @@ describe('primary reviewer runtime', () => {
                 description: 'A user can update other accounts.',
                 confidence: 0.95,
               });
+            await options.tools
+              .find((tool: any) => tool.name === 'report_incomplete')
+              .execute({
+                reason: 'Caller unavailable',
+              });
             yield {
               type: 'result',
               status,
@@ -147,6 +152,7 @@ describe('primary reviewer runtime', () => {
       const orchestrator = new StreamingReviewOrchestrator({
         reviewStrategy: 'single',
         skipValidation: true,
+        ignoreCoverageWarnings: true,
         progressMode: 'silent',
       });
       const error = await (orchestrator as any)

@@ -39,6 +39,7 @@ process.on('SIGINT', () => handleGlobalShutdown('SIGINT'));
 
 import 'dotenv/config';
 import { parseReviewStrategy } from './review/primary-reviewer.js';
+import { parseIgnoreCoverageWarnings } from './review/coverage-policy.js';
 import {
   parseValidationMaxTurns,
   parseValidationReadLimit,
@@ -189,6 +190,8 @@ Options (review command):
   --rules-dir=<path>       Custom review rules directory
   --agents-dir=<path>      Custom agent definitions directory
   --skip-validation        Skip issue validation (faster but less accurate)
+  --ignore-coverage-warnings[=true|false]  Ignore reviewer report_incomplete coverage warnings for all reasons
+                           Explicit true/false overrides ARGUS_IGNORE_COVERAGE_WARNINGS; default true
   --review-mode=<mode>     Review mode: normal (default, 5-round validation) | fast (2-round compressed)
   --review-strategy=<mode> 审核策略：multi（默认）| single（主 reviewer + supplemental agents）
   --primary-reviewer=<yaml> single 的可选主定义；留空使用内置综合 reviewer
@@ -485,6 +488,7 @@ function parseOptions(args: string[]): {
   customAgentsDirs: string[];
   reviewIgnorePatterns: string[];
   skipValidation: boolean;
+  ignoreCoverageWarnings?: boolean;
   reviewMode: 'fast' | 'normal';
   reviewStrategy?: 'multi' | 'single';
   primaryReviewerFile?: string;
@@ -507,6 +511,7 @@ function parseOptions(args: string[]): {
     customAgentsDirs: string[];
     reviewIgnorePatterns: string[];
     skipValidation: boolean;
+    ignoreCoverageWarnings?: boolean;
     reviewMode: 'fast' | 'normal';
     reviewStrategy?: 'multi' | 'single';
     primaryReviewerFile?: string;
@@ -573,6 +578,13 @@ function parseOptions(args: string[]): {
     } else if (arg.startsWith('--validation-read-limit=')) {
       options.validationReadLimit = parseValidationReadLimit(
         arg.slice('--validation-read-limit='.length)
+      );
+    } else if (arg === '--ignore-coverage-warnings') {
+      options.ignoreCoverageWarnings = true;
+    } else if (arg.startsWith('--ignore-coverage-warnings=')) {
+      options.ignoreCoverageWarnings = parseIgnoreCoverageWarnings(
+        arg.slice('--ignore-coverage-warnings='.length),
+        '--ignore-coverage-warnings'
       );
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
@@ -772,6 +784,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
     options: {
       verbose: options.verbose,
       skipValidation: options.skipValidation,
+      ignoreCoverageWarnings: options.ignoreCoverageWarnings,
       reviewMode: options.reviewMode,
       reviewStrategy: options.reviewStrategy,
       primaryReviewerFile: options.primaryReviewerFile,

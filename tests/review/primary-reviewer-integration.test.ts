@@ -248,7 +248,7 @@ it('marks a failed segment incomplete and retains successful usage and partial f
 });
 
 it('resets execution completeness between repeated reviews on the same orchestrator', async () => {
-  const { orchestrator } = await fixture({ skipValidation: true });
+  const { orchestrator } = await fixture({ skipValidation: true, ignoreCoverageWarnings: false });
   const incompleteExecution = (options: RuntimeExecuteOptions): RuntimeExecution => ({
     async *[Symbol.asyncIterator]() {
       const tool = options.tools?.find((tool) => tool.name === 'report_incomplete');
@@ -270,6 +270,7 @@ it.each(['refs', 'legacy', 'segmented'] as const)(
   async (entry) => {
     mocks.segmented = entry === 'segmented';
     const { orchestrator } = await fixture({
+      ignoreCoverageWarnings: false,
       skipValidation: true,
       local: true,
       customAgentsDirs: [],
@@ -307,7 +308,11 @@ it.each(['refs', 'legacy', 'segmented'] as const)(
 );
 
 it('retains confirmed findings alongside a successful reviewer coverage warning', async () => {
-  const { orchestrator } = await fixture({ skipValidation: true, customAgentsDirs: [] });
+  const { orchestrator } = await fixture({
+    skipValidation: true,
+    customAgentsDirs: [],
+    ignoreCoverageWarnings: false,
+  });
   mocks.execute.mockImplementation(
     (options: RuntimeExecuteOptions): RuntimeExecution => ({
       async *[Symbol.asyncIterator]() {
@@ -339,26 +344,231 @@ it('retains confirmed findings alongside a successful reviewer coverage warning'
   expect(report.metadata.tokens_used).toBe(12);
 });
 
-it.each(['error', 'missing-terminal', 'cancelled'] as const)(
+it.each([
+  ['multi', 'refs'],
+  ['single', 'refs'],
+  ['single', 'legacy'],
+  ['single', 'segmented'],
+] as const)(
+  'ignores explicit coverage gaps but keeps warning findings in %s/%s',
+  async (strategy, entry) => {
+    mocks.segmented = entry === 'segmented';
+    const { orchestrator } = await fixture({
+      reviewStrategy: strategy,
+      ignoreCoverageWarnings: true,
+      skipValidation: true,
+      local: true,
+      customAgentsDirs: [],
+    });
+    vi.spyOn(orchestrator as any, 'buildContext').mockResolvedValue({ context, diffFiles: files });
+    const warn = vi.spyOn((orchestrator as any).progress, 'warn');
+    mocks.execute.mockImplementation(
+      (options: RuntimeExecuteOptions): RuntimeExecution => ({
+        async *[Symbol.asyncIterator]() {
+          expect(options.prompt).toContain('Ignoring coverage warnings is ENABLED');
+          const issue = options.tools!.find((tool) => tool.name === 'report_issue')!;
+          const gap = options.tools!.find((tool) => tool.name === 'report_incomplete')!;
+          if (!String(options.prompt).includes('+src/b.ts'))
+            await issue.execute({
+              file: 'src/a.ts',
+              line_start: 1,
+              line_end: 1,
+              category: 'logic',
+              severity: 'warning',
+              title: 'Changed code loses a supplied value',
+              description:
+                'The changed code drops the supplied value before invoking the dependency.',
+              confidence: 0.95,
+            });
+          await gap.execute({
+            reason: 'Caller source unavailable',
+          });
+          await gap.execute({
+            reason: 'Visual change cannot be rendered',
+          });
+          yield { type: 'result', status: 'success', usage: { inputTokens: 10, outputTokens: 2 } };
+        },
+        close: async () => {},
+      })
+    );
+    const report =
+      entry === 'legacy'
+        ? await orchestrator.review({
+            repoPath: '.',
+            sourceBranch: 'feature',
+            targetBranch: 'main',
+          })
+        : await review(orchestrator);
+    expect(report.metadata.review_complete).toBe(true);
+    expect(report.metadata.incomplete_reasons).toEqual([]);
+    expect(report.issues).toMatchObject([
+      { severity: 'warning', title: 'Changed code loses a supplied value' },
+    ]);
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('source unavailable');
+  }
+);
+
+it.each([false, true])(
+  'handles all explicit coverage reasons (ignore=%s)',
+  async (ignoreCoverageWarnings) => {
+    const { orchestrator } = await fixture({
+      ignoreCoverageWarnings,
+      skipValidation: true,
+      customAgentsDirs: [],
+    });
+    mocks.execute.mockImplementation(
+      (options: RuntimeExecuteOptions): RuntimeExecution => ({
+        async *[Symbol.asyncIterator]() {
+          const gap = options.tools!.find((tool) => tool.name === 'report_incomplete')!;
+          await gap.execute({ reason: 'Required local evidence missing' });
+          await gap.execute({ reason: 'Visual changes cannot be rendered' });
+          await gap.execute({
+            reason: 'Caller source unavailable',
+          });
+          yield { type: 'result', status: 'success' };
+        },
+        close: async () => {},
+      })
+    );
+    const report = await review(orchestrator);
+    expect(report.metadata.review_complete).toBe(ignoreCoverageWarnings);
+    expect(report.metadata.incomplete_reasons).toHaveLength(ignoreCoverageWarnings ? 0 : 3);
+    if (!ignoreCoverageWarnings) {
+      expect(report.metadata.incomplete_reasons?.join(' ')).toContain(
+        'Required local evidence missing'
+      );
+      expect(report.metadata.incomplete_reasons?.join(' ')).toContain(
+        'Visual changes cannot be rendered'
+      );
+      expect(report.metadata.incomplete_reasons?.join(' ')).toContain('Caller source unavailable');
+    }
+  }
+);
+
+it.each([undefined, '', ' '])(
+  'defaults env %j to ignoring coverage warnings and permits API false',
+  async (envValue) => {
+    vi.stubEnv('ARGUS_IGNORE_COVERAGE_WARNINGS', envValue);
+    try {
+      mocks.execute.mockImplementation(
+        (options: RuntimeExecuteOptions): RuntimeExecution => ({
+          async *[Symbol.asyncIterator]() {
+            await options
+              .tools!.find((tool) => tool.name === 'report_incomplete')!
+              .execute({ reason: 'Missing visual evidence' });
+            yield { type: 'result', status: 'success' };
+          },
+          close: async () => {},
+        })
+      );
+      const enabled = await fixture({ skipValidation: true, customAgentsDirs: [] });
+      const disabled = await fixture({
+        skipValidation: true,
+        customAgentsDirs: [],
+        ignoreCoverageWarnings: false,
+      });
+      expect((await review(enabled.orchestrator)).metadata.review_complete).toBe(true);
+      const report = await review(disabled.orchestrator);
+      expect(report.metadata.review_complete).toBe(false);
+      expect(report.metadata.incomplete_reasons?.join(' ')).toContain('Missing visual evidence');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }
+);
+
+it('captures env once, allows explicit false, and passes the policy to supplemental reviewers', async () => {
+  vi.stubEnv('ARGUS_IGNORE_COVERAGE_WARNINGS', 'true');
+  try {
+    const enabled = await fixture({ skipValidation: true });
+    const disabled = await fixture({ skipValidation: true, ignoreCoverageWarnings: false });
+    vi.stubEnv('ARGUS_IGNORE_COVERAGE_WARNINGS', 'false');
+    mocks.execute.mockImplementation(
+      (options: RuntimeExecuteOptions): RuntimeExecution => ({
+        async *[Symbol.asyncIterator]() {
+          const gap = options.tools!.find((tool) => tool.name === 'report_incomplete')!;
+          await gap.execute({
+            reason: 'Library unavailable',
+          });
+          yield { type: 'result', status: 'success' };
+        },
+        close: async () => {},
+      })
+    );
+    expect((await review(enabled.orchestrator)).metadata.review_complete).toBe(true);
+    expect(mocks.custom.mock.calls.at(-1)![1].ignoreCoverageWarnings).toBe(true);
+    expect((await review(disabled.orchestrator)).metadata.review_complete).toBe(false);
+    expect(mocks.custom.mock.calls.at(-1)![1].ignoreCoverageWarnings).toBe(false);
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it('includes supplemental coverage gaps in metadata and warning progress', async () => {
+  const { orchestrator } = await fixture({
+    skipValidation: true,
+    ignoreCoverageWarnings: false,
+  });
+  const warn = vi.spyOn((orchestrator as any).progress, 'warn');
+  mocks.custom.mockImplementation(async (agents: any[], _options, callbacks) =>
+    agents.map((agent) => {
+      const result = {
+        agent_id: agent.id,
+        agent_name: agent.name,
+        issues: [],
+        execution_time_ms: 1,
+        ...usage,
+        coverage_warnings: ['Missing local evidence'],
+      };
+      callbacks.onAgentComplete(agent, result);
+      return result;
+    })
+  );
+  const report = await review(orchestrator);
+  expect(report.metadata.review_complete).toBe(false);
+  expect(report.metadata.incomplete_reasons?.join(' ')).toContain(
+    'custom:extra: Missing local evidence'
+  );
+  expect(warn).toHaveBeenCalledWith('custom:extra: Missing local evidence');
+});
+
+it.each(['error', 'network', 'missing-terminal', 'cancelled'] as const)(
   'does not hide a real %s after an explicit coverage warning',
   async (outcome) => {
-    const { orchestrator } = await fixture({ skipValidation: true, customAgentsDirs: [] });
+    const { orchestrator } = await fixture({
+      skipValidation: true,
+      customAgentsDirs: [],
+      ignoreCoverageWarnings: true,
+    });
     mocks.execute.mockImplementation(
       (options: RuntimeExecuteOptions): RuntimeExecution => ({
         async *[Symbol.asyncIterator]() {
           const tool = options.tools?.find((tool) => tool.name === 'report_incomplete');
           if (!tool) throw new Error('Missing report_incomplete tool');
-          await tool.execute({ reason: 'Missing visual evidence' });
+          await tool.execute({
+            reason: 'Missing visual evidence',
+          });
           if (outcome === 'missing-terminal') return;
           if (outcome === 'cancelled')
             throw Object.assign(new Error('Cancelled'), { name: 'AbortError' });
-          yield { type: 'result', status: 'error', error: 'HTTP 401 Invalid API key' };
+          yield {
+            type: 'result',
+            status: 'error',
+            error:
+              outcome === 'network' ? 'Network transport disconnected' : 'HTTP 401 Invalid API key',
+          };
         },
         close: async () => {},
       })
     );
     await expect(review(orchestrator)).rejects.toThrow(
-      outcome === 'error' ? /HTTP 401/ : outcome === 'cancelled' ? /Cancelled/ : /terminal result/
+      outcome === 'error'
+        ? /HTTP 401/
+        : outcome === 'network'
+          ? /Network transport/
+          : outcome === 'cancelled'
+            ? /Cancelled/
+            : /terminal result/
     );
     expect(mocks.execute).toHaveBeenCalledTimes(outcome === 'cancelled' ? 1 : 2);
   }
@@ -488,7 +698,7 @@ it('marks the review incomplete when a validator session was cut short', async (
       ],
     }),
   });
-  const { orchestrator } = await fixture();
+  const { orchestrator } = await fixture({ ignoreCoverageWarnings: true });
   const report = await review(orchestrator);
   expect(report.metadata.review_complete).toBe(false);
   expect(report.metadata.incomplete_reasons?.join(' ')).toContain('turn budget exhausted');
@@ -509,6 +719,7 @@ it.each(['refs', 'legacy', 'segmented'])(
     const { orchestrator } = await fixture({
       local: true,
       abortController,
+      ignoreCoverageWarnings: true,
       previousReviewData: { issues: [{ id: 'previous-1' }] },
     });
     vi.spyOn(orchestrator as any, 'buildContext').mockResolvedValue({ context, diffFiles: files });
