@@ -338,8 +338,10 @@ function extractContent(chunk: string, category: FileCategory): string {
 export function parseHunks(chunk: string): DiffHunk[] {
   const hunks: DiffHunk[] = [];
 
-  // Match hunk headers: @@ -oldStart,oldCount +newStart,newCount @@
-  const hunkHeaderRegex = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm;
+  // Consume the entire header, including optional function/section text after @@.
+  // Otherwise a leading space in that text is parsed as a context line and
+  // shifts every subsequent old/new line number by one.
+  const hunkHeaderRegex = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[^\r\n]*/gm;
   let match: RegExpExecArray | null;
   const hunkPositions: {
     start: number;

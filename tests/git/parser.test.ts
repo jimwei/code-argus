@@ -153,6 +153,79 @@ index abc123..def456 100644
     expect(hunks[0].newCount).toBe(1);
   });
 
+  describe.each(['\n', '\r\n'])('hunk header sections with %j line endings', (newline) => {
+    it.each([
+      '',
+      ' namespace Example',
+      '\tfunction example()',
+      ' void Example() // contains @@ markers',
+      ' 定期区間の状態を更新',
+    ])('should exclude section text %j from hunk lines and coordinates', (section) => {
+      const chunk = [
+        `@@ -40,3 +50,3 @@${section}`,
+        ' before',
+        '-old value',
+        '+new value',
+        ' after',
+      ].join(newline);
+
+      const hunks = parseHunks(chunk);
+
+      expect(hunks).toHaveLength(1);
+      expect(
+        hunks[0].lines.map(({ type, oldLineNumber, newLineNumber }) => [
+          type,
+          oldLineNumber,
+          newLineNumber,
+        ])
+      ).toEqual([
+        ['context', 40, 50],
+        ['removed', 41, undefined],
+        ['added', undefined, 51],
+        ['context', 42, 52],
+      ]);
+      expect(getChangedLineNumbers(hunks)).toEqual([51]);
+      expect(hunks[0].lines.filter((line) => line.type !== 'added')).toHaveLength(3);
+      expect(hunks[0].lines.filter((line) => line.type !== 'removed')).toHaveLength(3);
+    });
+  });
+
+  it('should preserve coordinates across section headers with omitted and zero counts', () => {
+    const chunk = `@@ -10 +10 @@ function replace()
+-old value
++new value
+@@ -20,0 +21 @@ function insert()
++inserted value
+@@ -30 +31,0 @@ function remove()
+-removed value`;
+
+    const hunks = parseHunks(chunk);
+
+    expect(hunks).toHaveLength(3);
+    expect(hunks.map(({ oldCount, newCount }) => [oldCount, newCount])).toEqual([
+      [1, 1],
+      [0, 1],
+      [1, 0],
+    ]);
+    expect(hunks.map((hunk) => hunk.lines)).toEqual([
+      [
+        { type: 'removed', content: 'old value', oldLineNumber: 10 },
+        { type: 'added', content: 'new value', newLineNumber: 10 },
+      ],
+      [{ type: 'added', content: 'inserted value', newLineNumber: 21 }],
+      [{ type: 'removed', content: 'removed value', oldLineNumber: 30 }],
+    ]);
+    expect(getChangedLineNumbers(hunks)).toEqual([10, 21]);
+  });
+
+  it('should not invent a context line for a section header without a body or final newline', () => {
+    const hunks = parseHunks('@@ -0,0 +0,0 @@ namespace Example');
+
+    expect(hunks).toHaveLength(1);
+    expect(hunks[0].lines).toEqual([]);
+    expect(getChangedLineNumbers(hunks)).toEqual([]);
+  });
+
   it('should return empty array for content without hunks', () => {
     const chunk = `a/file.ts b/file.ts
 --- a/file.ts
