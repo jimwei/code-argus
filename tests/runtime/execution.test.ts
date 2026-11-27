@@ -1103,17 +1103,28 @@ describe('openai-responses text generation (pi-ai)', () => {
     ).toBe(true);
   });
 
-  it('declares json_schema constrained sampling so pi-ai actually sends strict tools', () => {
-    const tool = createTool('inspect', async () => ({
-      content: [{ type: 'text' as const, text: 'ok' }],
-    }));
+  it('passes plain JSON Schema to pi-ai while preserving strict sampling', () => {
+    const tool = createTool(
+      'inspect',
+      async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }),
+      { nested: z.object({ id: z.string().optional() }) }
+    );
     const [converted] = convertResponsesTools([toPiTool(tool)], { supportsStrictMode: true });
 
-    // pi-ai 的 defaultStrict 是 false，只有 constrainedSampling 才能让 strict 变成 true
     expect(converted?.strict).toBe(true);
+    expect(converted?.parameters).not.toHaveProperty('$schema');
     expect(converted?.parameters).toMatchObject({
       type: 'object',
       additionalProperties: false,
+      required: ['nested'],
+      properties: {
+        nested: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['id'],
+          properties: { id: { type: ['string', 'null'] } },
+        },
+      },
     });
   });
 

@@ -13,7 +13,7 @@
  *
  * `RuntimeEvent` 契约保持不变，orchestrator / validator 无需改动。
  */
-import { Type } from '@earendil-works/pi-ai';
+import { randomUUID } from 'node:crypto';
 import { completeSimple, streamSimple } from '@earendil-works/pi-ai/compat';
 import type {
   Api,
@@ -118,8 +118,7 @@ export function buildPiModel(
       // 32k 上限会被长推理整轮吃光，上游返回 incomplete(max_output_tokens) 后编排层
       // 整轮重试该 agent——103 实测单次浪费约 600K token 与数分钟墙钟。
       supportsMaxOutputTokens: false,
-      // 仅决定 pi-ai 构造首条指令的角色；该指令随后会被搬到顶层 `instructions`
-      // （见 liftInstructionsToPayload），因此对出站请求不再有影响。
+      // 仅在多轮请求选择保留 input 首条指令时，才影响出站角色。
       supportsDeveloperRole: config.openai?.supportsDeveloperRole ?? true,
     },
   };
@@ -190,7 +189,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * SDK 实现与官方 Responses 语义都使用顶层 `instructions` 字段；103 实测把同一段
  * 指令从 developer 消息移到 `instructions` 后，四个 reviewer 的工具调用轮数从
  * 80–103 降到 44–67、总 token 从 3.3–4.7M 降到 2.3–3.1M（同窗 SDK 为 2.2–2.5M）。
- * 这里在出站 payload 上做等价的搬运，保持与 SDK 相同的请求形态。
+ * 默认在出站 payload 上做搬运，以保留相同的请求形态。多轮请求可选择保留
+ * pi-ai 原生的首条指令消息，供前缀缓存对照；实际缓存边界取决于提供方。
  */
 function liftInstructionsToPayload(payload: unknown): unknown {
   if (!payload || typeof payload !== 'object') {
@@ -335,12 +335,12 @@ export function buildToolParameters(tool: RuntimeToolDefinition): Record<string,
   ) as Record<string, unknown>;
 }
 
-/** RuntimeToolDefinition → pi-ai Tool（TypeBox 只作为 JSON Schema 的载体）。 */
+/** RuntimeToolDefinition → pi-ai Tool；pi-ai 直接接收标准 JSON Schema。 */
 export function toPiTool(tool: RuntimeToolDefinition): PiTool {
   return {
     name: tool.name,
     description: tool.description,
-    parameters: Type.Unsafe(buildToolParameters(tool)),
+    parameters: buildToolParameters(tool),
     /**
      * pi-ai 只在工具声明 json_schema 约束采样时才发送 `strict: true`
      * （convertResponsesTools 的 defaultStrict 默认为 false）。旧实现每个工具都发 strict:true，
@@ -702,13 +702,29 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
         : buildPiModel(this.config, this.config.models.main, activeEffort);
     const transcriptBudgetTokens = this.config.openai?.transcriptBudgetTokens;
     const streamFn = this.streamFn;
-    const buildOptions = (extra: SimpleStreamOptions = {}) =>
+    const cacheKeyEnabled = this.config.openai?.promptCacheKeyEnabled === true;
+    const adjustInstructions = this.config.openai?.agentInstructionsInInput
+      ? (payload: unknown) => payload
+      : liftInstructionsToPayload;
+    const buildOptions = (extra: SimpleStreamOptions) =>
       this.buildStreamOptions(extra, activeEffort);
 
     let closed = false;
 
     return {
       async *[Symbol.asyncIterator]() {
+        // Scope the key to this transcript, not the shared runtime, since segments
+        // and validators can run concurrently. Do not set pi-ai's sessionId: that
+        // can add affinity headers in addition to changing the JSON body.
+        const cacheKey = cacheKeyEnabled ? `argus-${randomUUID()}` : undefined;
+        const onPayload: SimpleStreamOptions['onPayload'] = cacheKey
+          ? (payload) => {
+              const adjusted = adjustInstructions(payload);
+              return isPlainObject(adjusted)
+                ? { ...adjusted, prompt_cache_key: cacheKey }
+                : adjusted;
+            }
+          : adjustInstructions;
         let messages: Message[] = [];
         let remainingTurns = totalTurns;
         let warnedTranscriptBudgetMiss = false;
@@ -796,6 +812,7 @@ export class OpenAIResponsesRuntime implements AgentRuntime {
                     buildOptions({
                       fetch: transport.fetch,
                       signal: watchdog.signal,
+                      onPayload,
                       onProviderStreamEvent: (event) => {
                         watchdog.touch();
                         reportedUsage = normalizeProviderUsage(event) ?? reportedUsage;

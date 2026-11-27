@@ -2289,7 +2289,13 @@ export class StreamingReviewOrchestrator {
 
     const runtime = createRuntimeFromEnv();
     const repoContextTools =
-      runtime.kind === 'openai-responses' ? createRepoContextTools(reviewRepoPath) : [];
+      runtime.kind === 'openai-responses'
+        ? createRepoContextTools(reviewRepoPath, {
+            compactGrepOutput:
+              runtime.config.openai?.responseImpl === 'pi-ai' &&
+              runtime.config.openai.compactReviewerGrepOutput === true,
+          })
+        : [];
 
     // Create runtime tool bridge with report_issue (includes filter maps)
     const runtimeTools = this.createReportIssueRuntimeTools(

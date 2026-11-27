@@ -251,8 +251,24 @@ Notes:
   historical thinking blocks are written back to the transcript (older ones may later be
   dropped by transcript folding, see below). There is no reasoning-replay mode setting;
   native reasoning replay is always enabled
-- The pi-ai runtime also lifts the session instructions from the leading `developer`
-  input message into the top-level `instructions` field, matching the SDK request shape.
+- By default, the pi-ai runtime lifts the leading instructions into the top-level
+  `instructions` field, matching the SDK request shape.
+  `ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT=true` instead retains the leading
+  instruction message in `input` for prefix-cache testing. This keeps pi-ai's native
+  role selection: `developer` when a supported reasoning effort is configured and
+  developer messages are allowed, otherwise `system`. In particular, an unset effort
+  or `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE=false` yields `system`. This switch does not enable the
+  cache key or add session headers, and does not affect standalone text or SDK calls.
+- `ARGUS_OPENAI_PROMPT_CACHE_KEY=true` adds an opaque `prompt_cache_key` to pi-ai
+  agent requests. It is stable across the turns and retries of one execution, but
+  different for each reviewer segment and validator execution. It does not add
+  session-affinity headers or affect standalone text calls or the SDK path. It is off by
+  default; leave it off or set it to `false` if the gateway rejects the field.
+  This is a routing hint, not a guarantee of a cache hit.
+- `ARGUS_OPENAI_COMPACT_REVIEW_GREP=true` groups new Grep results by file in pi-ai
+  streaming reviewers only when it reduces both text and JSON bytes. It is off by
+  default and leaves the selected hits, line numbers, code, and truncation notes
+  unchanged. It does not change validation or either cache switch.
 - `ARGUS_TRANSCRIPT_BUDGET_TOKENS` (default `160000`, `0` disables) bounds the pi-ai
   transcript on a best-effort basis: once the estimated request size crosses the
   budget, the oldest tool outputs are folded (and the thinking blocks of older assistant
@@ -290,7 +306,7 @@ Notes:
   in #9974)
 - `ARGUS_OPENAI_RESPONSE_IMPL` selects which protocol stack backs the `openai-responses`
   runtime: `sdk` (default, the self-maintained `openai` SDK implementation) or `pi-ai`
-  (`@earendil-works/pi-ai` pinned to `1.4.0`, opt-in). Both share the same
+  (`@earendil-works/pi-ai` pinned to `1.6.1`, opt-in). Both share the same
   `AgentRuntime` contract and event statuses, so nothing else in the pipeline changes;
   an unknown value falls back to `sdk` with a warning
 
@@ -307,6 +323,9 @@ Notes:
 | Reasoning effort                | `ARGUS_REASONING_EFFORT`                        |
 | Validator reasoning effort      | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
 | pi-ai transcript budget         | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
+| pi-ai per-execution cache key   | `ARGUS_OPENAI_PROMPT_CACHE_KEY`                 |
+| pi-ai agent instruction layout  | `ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT`      |
+| pi-ai reviewer Grep grouping    | `ARGUS_OPENAI_COMPACT_REVIEW_GREP`              |
 | Claude API key                  | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
 | Claude OAuth or proxy           | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
 | Claude base URL                 | `ARGUS_ANTHROPIC_BASE_URL`                      |
