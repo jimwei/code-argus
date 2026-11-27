@@ -226,6 +226,9 @@ Config keys:
 Runtime environment:
   ARGUS_RUNTIME        claude-agent (default) | openai-responses
   ARGUS_OPENAI_RESPONSE_IMPL  sdk (default) | pi-ai   (openai-responses protocol stack)
+  ARGUS_OPENAI_PROMPT_CACHE_KEY  false (default) | true   (pi-ai agent requests only)
+  ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT  false (default) | true   (pi-ai agent requests only)
+  ARGUS_OPENAI_COMPACT_REVIEW_GREP  false (default) | true   (pi-ai streaming reviewers only)
   Claude credentials   ARGUS_ANTHROPIC_API_KEY / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
   OpenAI credentials   ARGUS_OPENAI_API_KEY / OPENAI_API_KEY
   ARGUS_REVIEW_STRATEGY  multi（默认）| single；CLI 参数优先，与 normal/fast 验证模式独立

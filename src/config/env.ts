@@ -45,9 +45,8 @@ export interface OpenAIAuthConfig {
   baseUrl?: string;
   source: 'argus' | 'openai-api';
   /**
-   * 仅决定 pi-ai 构造首条指令时使用的角色（developer / system）；运行时随后会把
-   * 该指令搬到顶层 `instructions` 字段，因此该开关不再改变出站请求，标记为废弃。
    * 读自 ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE，未设置时按 true 处理。
+   * 只在多轮请求启用 agentInstructionsInInput 时影响出站指令的角色。
    */
   supportsDeveloperRole?: boolean;
   /**
@@ -60,6 +59,12 @@ export interface OpenAIAuthConfig {
    * 缺省 160000；`0` 表示禁用（字段缺省）。
    */
   transcriptBudgetTokens?: number;
+  /** Opt in to a body-only prompt cache key per pi-ai Responses execution. */
+  promptCacheKeyEnabled?: boolean;
+  /** Keep the leading system/developer message in input for pi-ai agent requests. */
+  agentInstructionsInInput?: boolean;
+  /** Opt in to compact Grep results in pi-ai streaming reviewers only. */
+  compactReviewerGrepOutput?: boolean;
 }
 
 /**
@@ -252,6 +257,27 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
   const transcriptBudgetTokens = resolveTranscriptBudgetTokens(
     process.env.ARGUS_TRANSCRIPT_BUDGET_TOKENS
   );
+  const promptCacheKeyEnabled =
+    responseImpl === 'pi-ai' &&
+    resolveBooleanEnv(
+      process.env.ARGUS_OPENAI_PROMPT_CACHE_KEY,
+      false,
+      'ARGUS_OPENAI_PROMPT_CACHE_KEY'
+    );
+  const agentInstructionsInInput =
+    responseImpl === 'pi-ai' &&
+    resolveBooleanEnv(
+      process.env.ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT,
+      false,
+      'ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT'
+    );
+  const compactReviewerGrepOutput =
+    responseImpl === 'pi-ai' &&
+    resolveBooleanEnv(
+      process.env.ARGUS_OPENAI_COMPACT_REVIEW_GREP,
+      false,
+      'ARGUS_OPENAI_COMPACT_REVIEW_GREP'
+    );
   const argusApiKey = process.env.ARGUS_OPENAI_API_KEY;
   if (argusApiKey) {
     return {
@@ -260,6 +286,9 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       source: 'argus',
       supportsDeveloperRole,
       responseImpl,
+      ...(promptCacheKeyEnabled ? { promptCacheKeyEnabled } : {}),
+      ...(agentInstructionsInInput ? { agentInstructionsInInput } : {}),
+      ...(compactReviewerGrepOutput ? { compactReviewerGrepOutput } : {}),
       ...(transcriptBudgetTokens !== undefined ? { transcriptBudgetTokens } : {}),
     };
   }
@@ -272,6 +301,9 @@ function getOpenAIAuthConfig(): OpenAIAuthConfig {
       source: 'openai-api',
       supportsDeveloperRole,
       responseImpl,
+      ...(promptCacheKeyEnabled ? { promptCacheKeyEnabled } : {}),
+      ...(agentInstructionsInInput ? { agentInstructionsInInput } : {}),
+      ...(compactReviewerGrepOutput ? { compactReviewerGrepOutput } : {}),
       ...(transcriptBudgetTokens !== undefined ? { transcriptBudgetTokens } : {}),
     };
   }

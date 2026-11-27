@@ -58,6 +58,8 @@ export interface RepoContextToolsOptions {
   readByteLimit?: number;
   /** Approximate byte budget for one Grep result. */
   grepByteLimit?: number;
+  /** Group admitted Grep matches by file when the resulting output is smaller. */
+  compactGrepOutput?: boolean;
   /** Matched Grep lines longer than this are truncated. */
   grepLineCharLimit?: number;
   /** Files larger than this are hidden from Grep and Glob. */
@@ -125,6 +127,39 @@ function createGlobMatcher(patterns: readonly string[]): (relativePath: string) 
 
 function byteLengthOf(text: string): number {
   return Buffer.byteLength(text, 'utf8');
+}
+
+interface GrepMatch {
+  file: string;
+  row: string;
+}
+
+function renderGrepMatches(matches: readonly GrepMatch[], compact: boolean): string {
+  const classic = matches.map(({ file, row }) => `${file}:${row}`).join('\n');
+  if (
+    !compact ||
+    matches.length < 2 ||
+    matches.some(({ file }) => /[\t\r\n\u2028\u2029]/u.test(file))
+  ) {
+    return classic;
+  }
+
+  const groupedLines = ['[Matches grouped by file; each match uses line<TAB>text]'];
+  let previousFile: string | undefined;
+  for (const { file, row } of matches) {
+    if (file !== previousFile) {
+      groupedLines.push(`File: ${file}`);
+      previousFile = file;
+    }
+    groupedLines.push(row);
+  }
+
+  const grouped = groupedLines.join('\n');
+  // Avoid increasing the provider request through extra escaped separators.
+  return byteLengthOf(grouped) < byteLengthOf(classic) &&
+    byteLengthOf(JSON.stringify(grouped)) < byteLengthOf(JSON.stringify(classic))
+    ? grouped
+    : classic;
 }
 
 function truncateToByteLength(text: string, maxBytes: number): string {
@@ -570,7 +605,8 @@ export function createRepoContextTools(
         const globMatcher = new Minimatch(globPattern, MINIMATCH_OPTIONS);
         const maxResults = clamp(args.max_results, DEFAULT_GREP_RESULTS, MAX_GREP_RESULTS);
         const regex = buildSearchRegex(args.pattern, args.ignore_case ?? false);
-        const matches: string[] = [];
+        const matches: GrepMatch[] = [];
+        const renderMatches = () => renderGrepMatches(matches, options.compactGrepOutput === true);
         let usedBytes = 0;
         let truncatedByBytes = false;
         const skippedNote =
@@ -611,22 +647,23 @@ export function createRepoContextTools(
               truncatedLine.length < matchedLine.length
                 ? `${truncatedLine}…[+${matchedLine.length - truncatedLine.length} chars]`
                 : matchedLine;
-            const matchLine = `${file}:${index + 1}\t${renderedLine}`;
-            const matchBytes = byteLengthOf(matchLine) + 1;
+            const row = `${index + 1}\t${renderedLine}`;
+            // Charge the classic representation so the smaller encoding never changes selected hits.
+            const matchBytes = byteLengthOf(`${file}:${row}`) + 1;
 
             if (usedBytes + matchBytes > grepByteLimit) {
               truncatedByBytes = true;
               break;
             }
 
-            matches.push(matchLine);
+            matches.push({ file, row });
             usedBytes += matchBytes;
             if (matches.length >= maxResults) {
               return {
                 content: [
                   {
                     type: 'text',
-                    text: appendNotes(matches.join('\n'), [skippedNote]),
+                    text: appendNotes(renderMatches(), [skippedNote]),
                   },
                 ],
               };
@@ -658,7 +695,7 @@ export function createRepoContextTools(
           content: [
             {
               type: 'text',
-              text: appendNotes(matches.join('\n'), [
+              text: appendNotes(renderMatches(), [
                 truncatedByBytes
                   ? `[grep output truncated at ${grepByteLimit} bytes; refine the pattern or path to see more matches]`
                   : undefined,

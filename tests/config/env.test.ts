@@ -48,6 +48,9 @@ describe('runtime-aware env configuration', () => {
     delete process.env.ARGUS_OPENAI_BASE_URL;
     delete process.env.ARGUS_OPENAI_MODEL;
     delete process.env.ARGUS_OPENAI_RESPONSE_IMPL;
+    delete process.env.ARGUS_OPENAI_PROMPT_CACHE_KEY;
+    delete process.env.ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT;
+    delete process.env.ARGUS_OPENAI_COMPACT_REVIEW_GREP;
     delete process.env.ARGUS_REASONING_EFFORT;
     delete process.env.ARGUS_VALIDATOR_REASONING_EFFORT;
     delete process.env.ARGUS_TRANSCRIPT_BUDGET_TOKENS;
@@ -111,6 +114,72 @@ describe('runtime-aware env configuration', () => {
     process.env.ARGUS_OPENAI_RESPONSE_IMPL = 'pi-ai';
     expect(loadArgusRuntimeConfig().openai?.responseImpl).toBe('pi-ai');
   });
+
+  it.each(['ARGUS_OPENAI_API_KEY', 'OPENAI_API_KEY'])(
+    'only enables pi-ai prompt caching on explicit opt-in with %s',
+    (credential) => {
+      process.env.ARGUS_RUNTIME = 'openai-responses';
+      process.env[credential] = 'openai-key';
+      process.env.ARGUS_OPENAI_PROMPT_CACHE_KEY = ' ON ';
+      expect(loadArgusRuntimeConfig().openai).not.toHaveProperty('promptCacheKeyEnabled');
+
+      process.env.ARGUS_OPENAI_RESPONSE_IMPL = 'pi-ai';
+      expect(loadArgusRuntimeConfig().openai?.promptCacheKeyEnabled).toBe(true);
+
+      process.env.ARGUS_OPENAI_PROMPT_CACHE_KEY = '0';
+      expect(loadArgusRuntimeConfig().openai).not.toHaveProperty('promptCacheKeyEnabled');
+      delete process.env.ARGUS_OPENAI_PROMPT_CACHE_KEY;
+      expect(loadArgusRuntimeConfig().openai).not.toHaveProperty('promptCacheKeyEnabled');
+    }
+  );
+
+  it('leaves the pi-ai cache key disabled for an invalid flag', () => {
+    process.env.ARGUS_RUNTIME = 'openai-responses';
+    process.env.OPENAI_API_KEY = 'openai-key';
+    process.env.ARGUS_OPENAI_RESPONSE_IMPL = 'pi-ai';
+    process.env.ARGUS_OPENAI_PROMPT_CACHE_KEY = 'oops';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(loadArgusRuntimeConfig().openai).not.toHaveProperty('promptCacheKeyEnabled');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('ARGUS_OPENAI_PROMPT_CACHE_KEY'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each(['ARGUS_OPENAI_API_KEY', 'OPENAI_API_KEY'])(
+    'opts in to retaining pi-ai agent instructions in input with %s',
+    (credential) => {
+      process.env.ARGUS_RUNTIME = 'openai-responses';
+      process.env[credential] = 'openai-key';
+      process.env.ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT = 'true';
+      expect(loadArgusRuntimeConfig().openai).not.toHaveProperty('agentInstructionsInInput');
+
+      process.env.ARGUS_OPENAI_RESPONSE_IMPL = 'pi-ai';
+      expect(loadArgusRuntimeConfig().openai).toMatchObject({ agentInstructionsInInput: true });
+      expect(loadArgusRuntimeConfig().openai).not.toHaveProperty('promptCacheKeyEnabled');
+
+      process.env.ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT = 'false';
+      expect(loadArgusRuntimeConfig().openai).not.toHaveProperty('agentInstructionsInInput');
+    }
+  );
+
+  it.each(['ARGUS_OPENAI_API_KEY', 'OPENAI_API_KEY'])(
+    'keeps reviewer Grep independently opt-in with %s',
+    (credential) => {
+      process.env.ARGUS_RUNTIME = 'openai-responses';
+      process.env[credential] = 'openai-key';
+      process.env.ARGUS_OPENAI_COMPACT_REVIEW_GREP = 'true';
+      expect(loadArgusRuntimeConfig().openai).not.toHaveProperty('compactReviewerGrepOutput');
+      process.env.ARGUS_OPENAI_RESPONSE_IMPL = 'pi-ai';
+      const config = loadArgusRuntimeConfig().openai;
+      expect(config?.compactReviewerGrepOutput).toBe(true);
+      expect(config).not.toHaveProperty('promptCacheKeyEnabled');
+      expect(config).not.toHaveProperty('agentInstructionsInInput');
+      delete process.env.ARGUS_OPENAI_COMPACT_REVIEW_GREP;
+      expect(loadArgusRuntimeConfig().openai).not.toHaveProperty('compactReviewerGrepOutput');
+    }
+  );
 
   it('falls back to sdk when ARGUS_OPENAI_RESPONSE_IMPL is unsupported', () => {
     process.env.ARGUS_RUNTIME = 'openai-responses';

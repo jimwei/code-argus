@@ -216,17 +216,27 @@ argus config set model gpt-5
   验证模型本身仍取 `ARGUS_VALIDATOR_MODEL`；可用
   `ARGUS_VALIDATOR_REASONING_EFFORT` 显式覆盖；主流程未配置推理强度时，验证阶段沿用 Provider 默认值
 - `ARGUS_OPENAI_RESPONSE_IMPL` 选择 `openai-responses` 的协议实现：`sdk` 为默认值，
-  使用自行维护的 `openai` SDK 实现；设为 `pi-ai` 时使用精确锁定的 `@earendil-works/pi-ai@1.4.0`。
+  使用自行维护的 `openai` SDK 实现；设为 `pi-ai` 时使用精确锁定的 `@earendil-works/pi-ai@1.6.1`。
   两者使用相同的 `AgentRuntime` 接口约定和事件状态；未知值会告警并回退到 `sdk`
 - `pi-ai` 实现每次请求均发送 `store: false` 和完整 transcript
 - `pi-ai` 实现现在与 SDK 实现一样重放原生推理块：保留 `reasoning.summary` /
   `include: ["reasoning.encrypted_content"]`，并把历史思考块写回 transcript。
   无需配置重放模式；较早回合的思考块仍可能被下述 transcript 折叠移除
-- `pi-ai` 实现还会把会话指令从 `input[0]` 的 `developer` 消息搬到顶层
-  `instructions` 字段，与 SDK 的请求形态一致
+- `pi-ai` 默认把首条会话指令搬到顶层 `instructions`，与 SDK 的请求形态一致。
+  可用 `ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT=true` 将多轮会话指令保留在 `input` 开头，
+  用于比较前缀缓存效果。只有配置了受支持的推理档位且允许
+  `developer` 时才使用该角色；未配置推理档位或设 `ARGUS_OPENAI_SUPPORTS_DEVELOPER_ROLE=false`
+  时，沿用 pi-ai 的 `system` 角色。
+  该开关不启用缓存键、不添加会话请求头，不影响独立文本请求或 SDK 实现。
 - `pi-ai` 整条路径均不发送 `max_output_tokens`，包括 agent 轮次和
   selector / dedup / matcher 等轻量调用；显式 `maxOutputTokens` 预算在该路径上被忽略。
   SDK 的 agent 轮次同样不设置输出上限，SDK 轻量调用仍可显式设置预算
+- `ARGUS_OPENAI_PROMPT_CACHE_KEY=true` 为 `pi-ai` 的多轮请求加上随机的
+  `prompt_cache_key`。同一次执行的轮次和重试复用同一个键，不同主审分段和验证执行各用自己的键。
+  不添加会话粘性请求头，也不影响独立文本调用或 SDK 实现。缺省关闭；网关拒绝此字段时保持关闭或设为 `false`。
+  此键用于提示路由，不保证缓存命中。
+- `ARGUS_OPENAI_COMPACT_REVIEW_GREP=true` 默认关闭，只在 `pi-ai` 流式主审中把同文件的 Grep 命中按文件分组。
+  文本和 JSON 均更小时才使用，不改变匹配集合、行号、代码、截断提示、验证阶段或两个缓存开关。
 - 选用 `pi-ai` 实现时：`ARGUS_TRANSCRIPT_BUDGET_TOKENS`（缺省 `160000`，
   `0` 表示禁用）用于控制长会话体积，属于 best-effort 约束：估算请求超过预算时，
   最旧的工具输出会被折叠成占位文本、较早回合的思考块会被整块移除（pi-ai 依
@@ -266,6 +276,9 @@ argus config set model gpt-5
 | 推理强度                | `ARGUS_REASONING_EFFORT`                        |
 | 验证阶段推理强度        | `ARGUS_VALIDATOR_REASONING_EFFORT`              |
 | pi-ai transcript 预算   | `ARGUS_TRANSCRIPT_BUDGET_TOKENS`                |
+| pi-ai 执行级缓存键      | `ARGUS_OPENAI_PROMPT_CACHE_KEY`                 |
+| pi-ai 多轮指令位置      | `ARGUS_OPENAI_AGENT_INSTRUCTIONS_IN_INPUT`      |
+| pi-ai 主审 Grep 分组    | `ARGUS_OPENAI_COMPACT_REVIEW_GREP`              |
 | Claude API Key          | `ARGUS_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY` |
 | Claude OAuth / 兼容代理 | `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`   |
 | Claude Base URL         | `ARGUS_ANTHROPIC_BASE_URL`                      |
